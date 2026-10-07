@@ -1,0 +1,4 @@
+// tests/setupEnv.js — load the test environment before any app module is imported.
+import dotenv from 'dotenv';
+
+dotenv.config({ path: '.env.test', override: true });

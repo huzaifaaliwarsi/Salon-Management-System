@@ -1,0 +1,1787 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { useAuth } from '../../context/AuthContext';
+import { salonService } from '../../services';
+import {
+  PayrollRun,
+  PayslipRecord,
+  StaffMember,
+  CompensationType,
+  PayrollRunStatus,
+  PayrollPolicyConfig,
+  OnlineAccount,
+  CashDrawer,
+} from '../../types/salon';
+import {
+  DollarSign,
+  Calendar,
+  Filter,
+  CheckCircle2,
+  AlertCircle,
+  Clock,
+  Printer,
+  FileSpreadsheet,
+  Settings,
+  Eye,
+  CreditCard,
+  Ban,
+  RotateCcw,
+  AlertTriangle,
+  ChevronRight,
+  UserCheck,
+  Building,
+  History,
+  X,
+  Lock,
+} from 'lucide-react';
+import { roundCurrency } from '../../lib/taxCalculations';
+import { AccessDeniedView } from '../scaffold/AccessDeniedView';
+import { PayrollExtrasPanel, PayrollExtrasView } from './PayrollExtrasPanel';
+
+// Payslip parts added with allowances/adjustments/advances (absent on older payslips → 0).
+const plusExtras = (p: PayslipRecord) => (p.allowancesTotal ?? 0) + (p.holidayEarnings ?? 0);
+const minusExtras = (p: PayslipRecord) => (p.otherDeductions ?? 0) + (p.advanceRecoveryAmount ?? 0);
+const money = (n: number, sign: '+' | '-') => (n > 0 ? `${sign}Rs. ${n.toLocaleString()}` : '0');
+
+const VIEW_TABS: { id: 'RUNS' | PayrollExtrasView; label: string }[] = [
+  { id: 'RUNS', label: 'Payroll Runs' },
+  { id: 'SUMMARY', label: 'Monthly Summary (Salary + Commission)' },
+  { id: 'INPUTS', label: 'Allowances & Adjustments' },
+  { id: 'ADVANCES', label: 'Salary Advances' },
+];
+
+export const PayrollPage: React.FC = () => {
+  const { user, activeBranchId, allBranches, demoDate } = useAuth();
+
+  // Role guard: Super Admin and Admin only
+  if (!user || (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN')) {
+    return <AccessDeniedView attemptedPath="/accounts/payroll" />;
+  }
+
+  const initialMonth = (demoDate || new Date().toISOString().slice(0, 10)).slice(0, 7);
+
+  // State
+  const [loading, setLoading] = useState<boolean>(true);
+  const [payrollRuns, setPayrollRuns] = useState<PayrollRun[]>([]);
+  const [staffList, setStaffList] = useState<StaffMember[]>([]);
+  const [onlineAccounts, setOnlineAccounts] = useState<OnlineAccount[]>([]);
+  const [cashDrawers, setCashDrawers] = useState<CashDrawer[]>([]);
+  const [payrollPolicy, setPayrollPolicy] = useState<PayrollPolicyConfig | null>(null);
+
+  // Filters
+  const [selectedBranchId, setSelectedBranchId] = useState<string>(
+    user.role === 'SUPER_ADMIN' ? (activeBranchId === 'ALL' ? (allBranches[0]?.id || '') : activeBranchId) : (user.branchId || '')
+  );
+  const [selectedMonth, setSelectedMonth] = useState<string>(initialMonth);
+  const [staffFilter, setStaffFilter] = useState<string>('ALL');
+  const [compTypeFilter, setCompTypeFilter] = useState<string>('ALL');
+  const [statusFilter, setStatusFilter] = useState<string>('ALL');
+  const [view, setView] = useState<'RUNS' | PayrollExtrasView>('RUNS');
+
+  // Active Draft Run (preview currently being inspected / generated)
+  const [activeDraft, setActiveDraft] = useState<PayrollRun | null>(null);
+  const [selectedPayslip, setSelectedPayslip] = useState<PayslipRecord | null>(null);
+
+  // Modals
+  const [showPreviewModal, setShowPreviewModal] = useState<boolean>(false);
+  const [showDetailsModal, setShowDetailsModal] = useState<boolean>(false);
+  const [showPaymentModal, setShowPaymentModal] = useState<boolean>(false);
+  const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
+  const [showPolicyModal, setShowPolicyModal] = useState<boolean>(false);
+  const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
+  const [showCancelModal, setShowCancelModal] = useState<boolean>(false);
+
+  // Payment Form
+  const [paymentTargetRun, setPaymentTargetRun] = useState<PayrollRun | null>(null);
+  const [paymentTargetPayslip, setPaymentTargetPayslip] = useState<PayslipRecord | null>(null);
+  const [paymentForm, setPaymentForm] = useState({
+    amount: 0,
+    method: 'CASH' as 'CASH' | 'ONLINE',
+    onlineAccountId: '',
+    reference: '',
+  });
+
+  // Cancel / Reversal Form
+  const [cancelReason, setCancelReason] = useState<string>('');
+  const [runToCancel, setRunToCancel] = useState<PayrollRun | null>(null);
+  const [paymentToReverse, setPaymentToReverse] = useState<{ id: string; amount: number; staffName: string } | null>(null);
+  const [reverseReason, setReverseReason] = useState<string>('');
+
+  // Policy Form
+  const [policyForm, setPolicyForm] = useState<Partial<PayrollPolicyConfig>>({
+    monthlyAbsenceDivisor: 30,
+    dailyStaffPaidLeaveEligibility: true,
+    nonWorkedWeeklyOffPaid: false,
+    nonWorkedHolidayPaid: true,
+    prorationMethod: 'CALENDAR_DAYS',
+  });
+
+  // Action feedback
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [actionLoading, setActionLoading] = useState<boolean>(false);
+
+  const effectiveBranchId = user.role === 'SUPER_ADMIN' ? selectedBranchId : (user.branchId || activeBranchId);
+
+  // Fetch all initial data
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      const [runs, staff, accounts, drawers, policy] = await Promise.all([
+        salonService.getPayrollRuns(effectiveBranchId, selectedMonth, user),
+        salonService.getStaff(effectiveBranchId),
+        salonService.getOnlineAccounts(effectiveBranchId),
+        salonService.getCashDrawers(effectiveBranchId),
+        salonService.getPayrollPolicy(effectiveBranchId),
+      ]);
+
+      setPayrollRuns(runs);
+      setStaffList(staff);
+      setOnlineAccounts(accounts);
+      setCashDrawers(drawers);
+      setPayrollPolicy(policy);
+      setPolicyForm(policy);
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Failed to load payroll data.' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, [effectiveBranchId, selectedMonth]);
+
+  // Derived Statistics for the Selected Month / Branch
+  const summaryStats = useMemo(() => {
+    let finalizedPayable = 0;
+    let paid = 0;
+    let outstanding = 0;
+    let employeeCount = 0;
+
+    payrollRuns
+      .filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT')
+      .forEach((r) => {
+        finalizedPayable += r.totalPayable;
+        paid += r.totalPaid;
+        outstanding += r.totalOutstanding;
+        employeeCount += r.employeeCount;
+      });
+
+    return {
+      finalizedPayable: roundCurrency(finalizedPayable),
+      paid: roundCurrency(paid),
+      outstanding: roundCurrency(outstanding),
+      employeeCount,
+    };
+  }, [payrollRuns]);
+
+  // Filtered finalized/history payslips for the main table view
+  const displayRuns = useMemo(() => {
+    return payrollRuns.filter((r) => {
+      if (statusFilter !== 'ALL' && r.status !== statusFilter) return false;
+      return true;
+    });
+  }, [payrollRuns, statusFilter]);
+
+  // Open open drawer for active user in current branch
+  const activeUserOpenDrawer = useMemo(() => {
+    return cashDrawers.find(
+      (d) => d.branchId === effectiveBranchId && d.custodianUserId === user.id && d.status === 'OPEN'
+    );
+  }, [cashDrawers, effectiveBranchId, user.id]);
+
+  // Generate Draft Preview
+  const handleGeneratePreview = async () => {
+    try {
+      setActionLoading(true);
+      setFeedback(null);
+      const preview = await salonService.generatePayrollPreview(
+        effectiveBranchId,
+        selectedMonth,
+        staffFilter !== 'ALL' ? staffFilter : undefined,
+        user
+      );
+      setActiveDraft(preview);
+      setShowPreviewModal(true);
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Failed to generate payroll preview.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Finalize Draft Payroll
+  const handleFinalizePayroll = async () => {
+    if (!activeDraft) return;
+    try {
+      setActionLoading(true);
+      setFeedback(null);
+      const finalized = await salonService.finalizePayroll(activeDraft.id, user);
+      setFeedback({
+        type: 'success',
+        message: `Payroll ${finalized.payrollNumber} successfully finalized! Total payable: Rs. ${finalized.totalPayable.toLocaleString()}. Inputs are now locked.`,
+      });
+      setShowPreviewModal(false);
+      setActiveDraft(null);
+      await loadData();
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Failed to finalize payroll.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Open Payment Modal
+  const openPaymentModal = (run: PayrollRun, ps?: PayslipRecord) => {
+    setPaymentTargetRun(run);
+    const targetPs = ps || run.payslips.find((p) => p.outstandingAmount > 0) || run.payslips[0];
+    setPaymentTargetPayslip(targetPs);
+    setPaymentForm({
+      amount: targetPs ? targetPs.outstandingAmount : 0,
+      method: 'CASH',
+      onlineAccountId: onlineAccounts[0]?.id || '',
+      reference: `Salary payment for ${targetPs?.staffName || 'staff'} (${selectedMonth})`,
+    });
+    setShowPaymentModal(true);
+  };
+
+  // Record Payment
+  const handleRecordPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!paymentTargetRun || !paymentTargetPayslip) return;
+
+    if (paymentForm.amount <= 0 || paymentForm.amount > paymentTargetPayslip.outstandingAmount) {
+      setFeedback({
+        type: 'error',
+        message: `Payment amount must be between 1 and ${paymentTargetPayslip.outstandingAmount.toLocaleString()}`,
+      });
+      return;
+    }
+
+    try {
+      setActionLoading(true);
+      setFeedback(null);
+      await salonService.recordPayrollPayment(
+        {
+          payrollRunId: paymentTargetRun.id,
+          payslipId: paymentTargetPayslip.id,
+          amount: paymentForm.amount,
+          method: paymentForm.method,
+          onlineAccountId: paymentForm.method === 'ONLINE' ? paymentForm.onlineAccountId : undefined,
+          reference: paymentForm.reference,
+        },
+        user
+      );
+
+      setFeedback({
+        type: 'success',
+        message: `Successfully paid Rs. ${paymentForm.amount.toLocaleString()} to ${paymentTargetPayslip.staffName}!`,
+      });
+      setShowPaymentModal(false);
+      await loadData();
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Payment failed.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Cancel Unpaid Run
+  const handleCancelRun = async () => {
+    if (!runToCancel || !cancelReason.trim()) return;
+    try {
+      setActionLoading(true);
+      await salonService.cancelPayrollRun(runToCancel.id, cancelReason, user);
+      setFeedback({
+        type: 'success',
+        message: `Payroll run ${runToCancel.payrollNumber} cancelled and attendance/overtime released.`,
+      });
+      setShowCancelModal(false);
+      setRunToCancel(null);
+      setCancelReason('');
+      await loadData();
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Failed to cancel payroll run.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Reverse Payment
+  const handleReversePayment = async () => {
+    if (!paymentToReverse || !reverseReason.trim()) return;
+    try {
+      setActionLoading(true);
+      await salonService.reversePayrollPayment(paymentToReverse.id, reverseReason, user);
+      setFeedback({
+        type: 'success',
+        message: `Payment of Rs. ${paymentToReverse.amount.toLocaleString()} reversed. Funds restored to source balance.`,
+      });
+      setPaymentToReverse(null);
+      setReverseReason('');
+      await loadData();
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Failed to reverse payment.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Save Policy Configuration
+  const handleSavePolicy = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      setActionLoading(true);
+      const updated = await salonService.updatePayrollPolicy(effectiveBranchId, policyForm, user);
+      setPayrollPolicy(updated);
+      setFeedback({ type: 'success', message: 'Payroll policy settings successfully updated.' });
+      setShowPolicyModal(false);
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Failed to update payroll policy.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Export CSV
+  const handleExportCSV = (run: PayrollRun) => {
+    const headers = [
+      'Payslip Number',
+      'Employee Code',
+      'Staff Name',
+      'Compensation Type',
+      'Base Earnings',
+      'Leave Earnings',
+      'Absence Deductions',
+      'Late/Early Penalties',
+      'Approved Overtime (Mins)',
+      'Overtime Amount',
+      'Holiday/Weekly-off Pay',
+      'Allowances + Bonus',
+      'Other Deductions',
+      'Advance Recovery',
+      'Gross Payable',
+      'Total Deductions',
+      'Net Payable',
+      'Paid Amount',
+      'Outstanding',
+      'Status',
+    ];
+
+    const rows = run.payslips.map((p) => [
+      p.payslipNumber,
+      p.employeeCode,
+      `"${p.staffName}"`,
+      p.compensationType,
+      p.baseEarnings,
+      p.leaveEarnings,
+      p.absenceDeductions,
+      p.attendancePenaltyDeductions,
+      p.approvedOvertimeMinutes,
+      p.approvedOvertimeAmount,
+      p.holidayEarnings ?? 0,
+      p.allowancesTotal ?? 0,
+      p.otherDeductions ?? 0,
+      p.advanceRecoveryAmount ?? 0,
+      p.grossPayable,
+      p.totalDeductions,
+      p.netPayable,
+      p.paidAmount,
+      p.outstandingAmount,
+      p.status,
+    ]);
+
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `Payroll_${run.payrollNumber}_${run.month}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto space-y-6 font-sans">
+      {/* Top Banner / Header */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+        <div>
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl">
+              <DollarSign className="w-6 h-6" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Staff Payroll Management</h1>
+              <p className="text-sm text-slate-500">
+                Monthly base earnings, attendance penalties, approved overtime, and auditable disbursements.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => setShowPolicyModal(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium rounded-xl text-sm transition-colors"
+          >
+            <Settings className="w-4 h-4 text-slate-500" />
+            Policy Settings
+          </button>
+
+          <button
+            onClick={handleGeneratePreview}
+            disabled={actionLoading}
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-xl text-sm shadow-sm transition-all hover:shadow"
+          >
+            <Calendar className="w-4 h-4" />
+            Generate Payroll Preview
+          </button>
+        </div>
+      </div>
+
+      {/* Feedback Alerts */}
+      {feedback && (
+        <div
+          className={`p-4 rounded-xl flex items-center justify-between text-sm ${
+            feedback.type === 'success'
+              ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+              : 'bg-rose-50 text-rose-800 border border-rose-200'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {feedback.type === 'success' ? (
+              <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+            ) : (
+              <AlertCircle className="w-5 h-5 text-rose-600" />
+            )}
+            <p className="font-medium">{feedback.message}</p>
+          </div>
+          <button onClick={() => setFeedback(null)} className="text-slate-400 hover:text-slate-600">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Summary Stat Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Finalized Payable</span>
+          <div className="mt-2 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-slate-900">
+              Rs. {summaryStats.finalizedPayable.toLocaleString()}
+            </span>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium">
+              {summaryStats.employeeCount} Staff
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">Gross salary minus penalties + overtime</p>
+        </div>
+
+        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Paid</span>
+          <div className="mt-2 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-emerald-600">Rs. {summaryStats.paid.toLocaleString()}</span>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-medium">
+              Disbursed
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">Cleared through Open Drawer or Bank</p>
+        </div>
+
+        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Outstanding Balance</span>
+          <div className="mt-2 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-amber-600">
+              Rs. {summaryStats.outstanding.toLocaleString()}
+            </span>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 font-medium">
+              Pending Payout
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">Due to employees for {selectedMonth}</p>
+        </div>
+
+        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active Cash Drawer</span>
+          <div className="mt-2 flex items-baseline justify-between">
+            <span className="text-xl font-bold text-slate-800">
+              {activeUserOpenDrawer ? `Rs. ${activeUserOpenDrawer.expectedInDrawer.toLocaleString()}` : 'No Open Drawer'}
+            </span>
+            <span
+              className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                activeUserOpenDrawer ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'
+              }`}
+            >
+              {activeUserOpenDrawer ? 'Ready' : 'Locked'}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">
+            {activeUserOpenDrawer
+              ? `Custodian: ${user.name}`
+              : 'Cash payments require an open drawer'}
+          </p>
+        </div>
+      </div>
+
+      {/* Filter Toolbar */}
+      <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+        <div className="flex items-center gap-2 text-slate-700 font-semibold text-sm">
+          <Filter className="w-4 h-4 text-indigo-600" />
+          <span>Payroll Filters & Run Selector</span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+          {user.role === 'SUPER_ADMIN' && (
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Branch</label>
+              <select
+                value={selectedBranchId}
+                onChange={(e) => setSelectedBranchId(e.target.value)}
+                className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+              >
+                {allBranches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Payroll Month</label>
+            <input
+              type="month"
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Employee</label>
+            <select
+              value={staffFilter}
+              onChange={(e) => setStaffFilter(e.target.value)}
+              className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="ALL">All Employees</option>
+              {staffList.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.employeeCode})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Compensation Type</label>
+            <select
+              value={compTypeFilter}
+              onChange={(e) => setCompTypeFilter(e.target.value)}
+              className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="ALL">All Types</option>
+              <option value="MONTHLY_SALARY">Monthly Salary</option>
+              <option value="MONTHLY_PLUS_COMMISSION">Monthly + Commission</option>
+              <option value="DAILY_SALARY">Daily Salary</option>
+              <option value="DAILY_PLUS_COMMISSION">Daily + Commission</option>
+              <option value="COMMISSION_ONLY">Commission Only</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Run Status</label>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="ALL">All Statuses</option>
+              <option value="FINALIZED">Finalized</option>
+              <option value="PARTIALLY_PAID">Partially Paid</option>
+              <option value="PAID">Fully Paid</option>
+              <option value="CANCELLED">Cancelled</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* View tabs */}
+      <div className="flex flex-wrap gap-2">
+        {VIEW_TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setView(t.id)}
+            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors ${
+              view === t.id ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {view !== 'RUNS' && (
+        <PayrollExtrasPanel
+          view={view}
+          branchId={effectiveBranchId}
+          month={selectedMonth}
+          staffList={staffList}
+          onlineAccounts={onlineAccounts}
+          hasOpenDrawer={!!activeUserOpenDrawer}
+          onFeedback={(type, message) => setFeedback({ type, message })}
+        />
+      )}
+
+      {/* Finalized Payroll Runs & Payslip Breakdown */}
+      {view === 'RUNS' && (
+      <div className="space-y-6">
+        {displayRuns.length === 0 ? (
+          <div className="bg-white p-12 text-center rounded-2xl border border-slate-100 shadow-sm space-y-3">
+            <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto">
+              <Calendar className="w-6 h-6" />
+            </div>
+            <h3 className="text-lg font-bold text-slate-800">No Finalized Payroll Runs for {selectedMonth}</h3>
+            <p className="text-sm text-slate-500 max-w-md mx-auto">
+              Generate a payroll preview to verify canonical attendance records, absence divisors, approved overtime, and
+              finalize the salary register.
+            </p>
+            <button
+              onClick={handleGeneratePreview}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-xl text-sm"
+            >
+              Generate Preview for {selectedMonth}
+            </button>
+          </div>
+        ) : (
+          displayRuns.map((run) => (
+            <div key={run.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+              {/* Run Header */}
+              <div className="p-5 border-b border-slate-100 bg-slate-50/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-3">
+                    <span className="text-base font-bold text-slate-900">{run.payrollNumber}</span>
+                    <span
+                      className={`text-xs px-2.5 py-0.5 rounded-full font-semibold ${
+                        run.status === 'PAID'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : run.status === 'PARTIALLY_PAID'
+                          ? 'bg-amber-100 text-amber-800'
+                          : run.status === 'FINALIZED'
+                          ? 'bg-indigo-100 text-indigo-800'
+                          : 'bg-rose-100 text-rose-800'
+                      }`}
+                    >
+                      {run.status}
+                    </span>
+                    <span className="text-xs text-slate-500">
+                      {run.status === 'DRAFT'
+                        ? `Draft preview generated by ${run.generatedByName} on ${new Date(run.generatedAt).toLocaleDateString()} — not finalized, no liability yet`
+                        : run.status === 'CANCELLED'
+                        ? `Cancelled by ${run.cancelledByName ?? '—'}${run.cancellationReason ? `: ${run.cancellationReason}` : ''}`
+                        : `Finalized by ${run.finalizedByName} on ${new Date(run.finalizedAt || '').toLocaleDateString()}`}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Divisor: /{run.policySnapshot.monthlyAbsenceDivisor} | Proration: {run.policySnapshot.prorationMethod} | Daily Paid Leave: {run.policySnapshot.dailyStaffPaidLeaveEligibility ? 'Eligible' : 'Not Eligible'}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => handleExportCSV(run)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-xs font-medium shadow-sm"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                    CSV Export
+                  </button>
+
+                  {run.status === 'DRAFT' ? (
+                    <button
+                      onClick={() => {
+                        setActiveDraft(run);
+                        setShowPreviewModal(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-medium shadow-sm"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                      Review & Finalize
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => openPaymentModal(run)}
+                      disabled={run.status === 'PAID' || run.status === 'CANCELLED'}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-medium shadow-sm"
+                    >
+                      <CreditCard className="w-3.5 h-3.5" />
+                      Record Payment
+                    </button>
+                  )}
+
+                  {run.status !== 'CANCELLED' && (
+                    <button
+                      onClick={() => {
+                        setRunToCancel(run);
+                        setShowCancelModal(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-medium"
+                    >
+                      <Ban className="w-3.5 h-3.5" />
+                      Cancel Run
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Table of Payslips */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-100/70 text-slate-600 font-semibold border-b border-slate-100">
+                    <tr>
+                      <th className="py-3 px-4">Employee</th>
+                      <th className="py-3 px-3">Comp Type</th>
+                      <th className="py-3 px-3 text-right">Base Earned</th>
+                      <th className="py-3 px-3 text-right">Absence Ded.</th>
+                      <th className="py-3 px-3 text-right">Late/Early</th>
+                      <th className="py-3 px-3 text-right">Overtime</th>
+                      <th className="py-3 px-3 text-right">Allow./Bonus</th>
+                      <th className="py-3 px-3 text-right">Other Ded./Adv.</th>
+                      <th className="py-3 px-3 text-right font-bold">Net Payable</th>
+                      <th className="py-3 px-3 text-right text-emerald-600">Paid</th>
+                      <th className="py-3 px-3 text-right text-amber-600">Outstanding</th>
+                      <th className="py-3 px-3 text-center">Status</th>
+                      <th className="py-3 px-4 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {run.payslips
+                      .filter((p) => {
+                        if (staffFilter !== 'ALL' && p.staffId !== staffFilter) return false;
+                        if (compTypeFilter !== 'ALL' && p.compensationType !== compTypeFilter) return false;
+                        return true;
+                      })
+                      .map((ps) => (
+                        <tr key={ps.id} className="hover:bg-slate-50/50 transition-colors">
+                          <td className="py-3 px-4">
+                            <div className="font-semibold text-slate-900">{ps.staffName}</div>
+                            <div className="text-[11px] text-slate-400">{ps.employeeCode} • {ps.designation}</div>
+                          </td>
+                          <td className="py-3 px-3">
+                            <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px] font-medium">
+                              {ps.compensationType.replace(/_/g, ' ')}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 text-right text-slate-700 font-medium">
+                            Rs. {ps.baseEarnings.toLocaleString()}
+                          </td>
+                          <td className="py-3 px-3 text-right text-rose-600">
+                            {ps.absenceDeductions > 0 ? `-Rs. ${ps.absenceDeductions.toLocaleString()}` : '0'}
+                          </td>
+                          <td className="py-3 px-3 text-right text-rose-600">
+                            {money(ps.attendancePenaltyDeductions, '-')}
+                          </td>
+                          <td className="py-3 px-3 text-right text-indigo-600">
+                            {ps.approvedOvertimeAmount > 0 ? `+Rs. ${ps.approvedOvertimeAmount.toLocaleString()}` : '0'}
+                            {ps.approvedOvertimeMinutes > 0 && (
+                              <div className="text-[10px] text-slate-400">{ps.approvedOvertimeMinutes}m</div>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 text-right text-emerald-600">{money(plusExtras(ps), '+')}</td>
+                          <td className="py-3 px-3 text-right text-rose-600">{money(minusExtras(ps), '-')}</td>
+                          <td className="py-3 px-3 text-right font-bold text-slate-900">
+                            Rs. {ps.netPayable.toLocaleString()}
+                          </td>
+                          <td className="py-3 px-3 text-right font-semibold text-emerald-600">
+                            Rs. {ps.paidAmount.toLocaleString()}
+                          </td>
+                          <td className="py-3 px-3 text-right font-semibold text-amber-600">
+                            Rs. {ps.outstandingAmount.toLocaleString()}
+                          </td>
+                          <td className="py-3 px-3 text-center">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                ps.status === 'PAID'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : ps.status === 'PARTIALLY_PAID'
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : 'bg-indigo-100 text-indigo-800'
+                              }`}
+                            >
+                              {ps.status}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              <button
+                                onClick={() => {
+                                  setSelectedPayslip(ps);
+                                  setShowDetailsModal(true);
+                                }}
+                                title="View Calculation Details"
+                                className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-slate-100 rounded-lg"
+                              >
+                                <Eye className="w-4 h-4" />
+                              </button>
+
+                              <button
+                                onClick={() => {
+                                  setSelectedPayslip(ps);
+                                  setShowPrintModal(true);
+                                }}
+                                title="Print Payslip"
+                                className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg"
+                              >
+                                <Printer className="w-4 h-4" />
+                              </button>
+
+                              {ps.outstandingAmount > 0 && run.status !== 'CANCELLED' && run.status !== 'DRAFT' && (
+                                <button
+                                  onClick={() => openPaymentModal(run, ps)}
+                                  title="Pay Outstanding"
+                                  className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg"
+                                >
+                                  <CreditCard className="w-4 h-4" />
+                                </button>
+                              )}
+
+                              {(ps.payments || []).length > 0 && (
+                                <button
+                                  onClick={() => {
+                                    setSelectedPayslip(ps);
+                                    setPaymentTargetRun(run);
+                                    setShowHistoryModal(true);
+                                  }}
+                                  title="Payment History & Reversals"
+                                  className="p-1.5 text-slate-500 hover:text-amber-600 hover:bg-slate-100 rounded-lg"
+                                >
+                                  <History className="w-4 h-4" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 1: PREVIEW & FINALIZATION MODAL                                     */}
+      {/* ========================================================================= */}
+      {showPreviewModal && activeDraft && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden">
+            {/* Modal Header */}
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl">
+                  <Calendar className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900">
+                    Payroll Preview: {activeDraft.month} ({activeDraft.branchName})
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Draft calculations based on finalized canonical attendance and approved overtime. Money does not move.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowPreviewModal(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 rounded-xl"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-6 flex-1 text-xs">
+              {/* Blocking issues banner */}
+              {activeDraft.payslips.some((p) => !p.canFinalize) && (
+                <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <h4 className="font-bold text-rose-900">Finalization Blocked by Actionable Exceptions</h4>
+                    <p className="text-rose-700">
+                      One or more employees have unresolved attendance issues (missing punches or unrecorded days) or negative net
+                      salary entitlement. Resolve attendance records or adjust policies before finalizing.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Table */}
+              <div className="border border-slate-200 rounded-2xl overflow-hidden">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
+                    <tr>
+                      <th className="py-2.5 px-3">Employee</th>
+                      <th className="py-2.5 px-3">Type</th>
+                      <th className="py-2.5 px-2 text-center">Days (P/L/A)</th>
+                      <th className="py-2.5 px-3 text-right">Base Earnings</th>
+                      <th className="py-2.5 px-3 text-right">Absence Ded.</th>
+                      <th className="py-2.5 px-3 text-right">Penalties</th>
+                      <th className="py-2.5 px-3 text-right">Overtime</th>
+                      <th className="py-2.5 px-3 text-right">Allow./Bonus</th>
+                      <th className="py-2.5 px-3 text-right">Other Ded./Adv.</th>
+                      <th className="py-2.5 px-3 text-right font-bold">Net Payable</th>
+                      <th className="py-2.5 px-3 text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {activeDraft.payslips.map((p) => (
+                      <tr
+                        key={p.staffId}
+                        className={!p.canFinalize ? 'bg-rose-50/50' : 'hover:bg-slate-50 transition-colors'}
+                      >
+                        <td className="py-2.5 px-3">
+                          <div className="font-semibold text-slate-900">{p.staffName}</div>
+                          <div className="text-[10px] text-slate-400">{p.employeeCode}</div>
+                          {!p.canFinalize && (
+                            <div className="text-[10px] text-rose-600 font-medium mt-0.5">⚠️ {p.blockReason}</div>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded text-[10px]">
+                            {p.compensationType.replace(/_/g, ' ')}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-2 text-center font-mono">
+                          {p.presentDays}/{p.paidLeaveDays}/{p.absentDays}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-medium">Rs. {p.baseEarnings.toLocaleString()}</td>
+                        <td className="py-2.5 px-3 text-right text-rose-600">
+                          {p.absenceDeductions > 0 ? `-Rs. ${p.absenceDeductions.toLocaleString()}` : '0'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-rose-600">
+                          {money(p.attendancePenaltyDeductions, '-')}
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-indigo-600">
+                          {p.approvedOvertimeAmount > 0 ? `+Rs. ${p.approvedOvertimeAmount.toLocaleString()}` : '0'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-emerald-600">{money(plusExtras(p), '+')}</td>
+                        <td className="py-2.5 px-3 text-right text-rose-600">{money(minusExtras(p), '-')}</td>
+                        <td className="py-2.5 px-3 text-right font-bold text-slate-900">
+                          Rs. {p.netPayable.toLocaleString()}
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          {p.canFinalize ? (
+                            <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded text-[10px] font-semibold">
+                              Ready
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 bg-rose-100 text-rose-800 rounded text-[10px] font-semibold">
+                              Blocked
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Total Summary */}
+              <div className="flex justify-end">
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 w-72 space-y-1.5">
+                  <div className="flex justify-between text-slate-600">
+                    <span>Total Employees:</span>
+                    <span className="font-semibold text-slate-900">{activeDraft.employeeCount}</span>
+                  </div>
+                  <div className="flex justify-between text-slate-600">
+                    <span>Total Gross Salary:</span>
+                    <span className="font-semibold text-slate-900">
+                      Rs.{' '}
+                      {activeDraft.payslips
+                        .reduce((sum, p) => sum + p.grossPayable, 0)
+                        .toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-slate-600">
+                    <span>Total Deductions:</span>
+                    <span className="font-semibold text-rose-600">
+                      -Rs.{' '}
+                      {activeDraft.payslips
+                        .reduce((sum, p) => sum + p.totalDeductions, 0)
+                        .toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="border-t border-slate-200 pt-1.5 flex justify-between font-bold text-sm text-slate-900">
+                    <span>Total Net Payable:</span>
+                    <span className="text-indigo-600">Rs. {activeDraft.totalPayable.toLocaleString()}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-6 border-t border-slate-100 bg-slate-50 flex items-center justify-between">
+              <p className="text-xs text-slate-500">
+                Finalizing freezes attendance snapshots, overtime IDs, and marks payable. Money is paid separately.
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowPreviewModal(false)}
+                  className="px-4 py-2 border border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl text-xs font-medium"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={handleFinalizePayroll}
+                  disabled={actionLoading || activeDraft.payslips.some((p) => !p.canFinalize)}
+                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold shadow-sm flex items-center gap-2"
+                >
+                  <Lock className="w-4 h-4" />
+                  Finalize & Lock Payroll Run
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 2: DETAILED CALCULATION BREAKDOWN MODAL                             */}
+      {/* ========================================================================= */}
+      {showDetailsModal && selectedPayslip && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-2xl overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Payslip Calculation: {selectedPayslip.staffName}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  {selectedPayslip.payslipNumber} • Month: {selectedPayslip.month} • {selectedPayslip.compensationType}
+                </p>
+              </div>
+              <button onClick={() => setShowDetailsModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs overflow-y-auto max-h-[75vh]">
+              {/* Formula & Policy banner */}
+              <div className="bg-indigo-50/60 p-4 rounded-xl border border-indigo-100 space-y-2">
+                <span className="font-semibold text-indigo-900 text-sm">Policy & Formula Applied:</span>
+                <p className="font-mono text-indigo-800 bg-white/80 p-2 rounded border border-indigo-200">
+                  {selectedPayslip.calculationDetails.formula}
+                </p>
+                <div className="grid grid-cols-2 gap-2 text-indigo-900">
+                  <div>Divisor Used: /{selectedPayslip.calculationDetails.divisorUsed}</div>
+                  <div>Daily Rate: Rs. {(selectedPayslip.calculationDetails.dailyRateUsed || 0).toFixed(2)}</div>
+                  {selectedPayslip.calculationDetails.prorationApplied && (
+                    <div className="col-span-2 text-amber-700 font-medium">
+                      ⚠️ {selectedPayslip.calculationDetails.prorationFormula || 'Proration applied (joined/left mid-month)'}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Attendance metrics */}
+              <div className="border border-slate-100 rounded-xl p-4 space-y-2">
+                <h4 className="font-semibold text-slate-800 text-sm">Attendance Summary</h4>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="p-2 bg-slate-50 rounded-lg">
+                    <span className="text-slate-400 block text-[11px]">Present Days</span>
+                    <span className="text-sm font-bold text-slate-800">{selectedPayslip.presentDays}</span>
+                  </div>
+                  <div className="p-2 bg-slate-50 rounded-lg">
+                    <span className="text-slate-400 block text-[11px]">Paid Leave</span>
+                    <span className="text-sm font-bold text-emerald-600">{selectedPayslip.paidLeaveDays}</span>
+                  </div>
+                  <div className="p-2 bg-slate-50 rounded-lg">
+                    <span className="text-slate-400 block text-[11px]">Absent Days</span>
+                    <span className="text-sm font-bold text-rose-600">{selectedPayslip.absentDays}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Overtime consumption */}
+              <div className="border border-slate-100 rounded-xl p-4 space-y-2">
+                <h4 className="font-semibold text-slate-800 text-sm">Overtime Snapshot</h4>
+                <div className="flex justify-between items-center bg-slate-50 p-2.5 rounded-lg">
+                  <div>
+                    <span className="font-medium text-slate-800">
+                      {selectedPayslip.approvedOvertimeMinutes} Minutes Approved
+                    </span>
+                    <span className="block text-[11px] text-slate-400">
+                      Rate: Rs. {selectedPayslip.approvedOvertimeHourlyRate}/hr
+                    </span>
+                  </div>
+                  <span className="text-sm font-bold text-indigo-600">
+                    +Rs. {selectedPayslip.approvedOvertimeAmount.toLocaleString()}
+                  </span>
+                </div>
+                {selectedPayslip.consumedOvertimeIds.length > 0 && (
+                  <p className="text-[10px] text-slate-400">
+                    Consumed Overtime IDs: {selectedPayslip.consumedOvertimeIds.join(', ')}
+                  </p>
+                )}
+              </div>
+
+              {/* Allowances, adjustments & advance recovery */}
+              {(plusExtras(selectedPayslip) > 0 || minusExtras(selectedPayslip) > 0) && (
+                <div className="border border-slate-100 rounded-xl p-4 space-y-1.5">
+                  <h4 className="font-semibold text-slate-800 text-sm">Allowances, Adjustments & Advances</h4>
+                  {(selectedPayslip.holidayEarnings ?? 0) > 0 && (
+                    <div className="flex justify-between">
+                      <span>Holiday / weekly-off pay ({(selectedPayslip.paidHolidayDays ?? 0) + (selectedPayslip.paidWeeklyOffDays ?? 0)} days)</span>
+                      <span className="text-emerald-600 font-semibold">+Rs. {selectedPayslip.holidayEarnings!.toLocaleString()}</span>
+                    </div>
+                  )}
+                  {(selectedPayslip.allowanceLines ?? []).map((a) => (
+                    <div key={a.id} className="flex justify-between">
+                      <span>{a.name} <span className="text-slate-400">(monthly)</span></span>
+                      <span className="text-emerald-600 font-semibold">+Rs. {a.amount.toLocaleString()}</span>
+                    </div>
+                  ))}
+                  {(selectedPayslip.adjustments ?? []).map((a) => (
+                    <div key={a.id} className="flex justify-between">
+                      <span>{a.title} <span className="text-slate-400">({a.type.toLowerCase()})</span></span>
+                      <span className={`font-semibold ${a.type === 'DEDUCTION' ? 'text-rose-600' : 'text-emerald-600'}`}>
+                        {a.type === 'DEDUCTION' ? '-' : '+'}Rs. {a.amount.toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                  {(selectedPayslip.advanceRecoveries ?? []).map((r) => (
+                    <div key={r.advanceId} className="flex justify-between">
+                      <span>Advance recovery {r.advanceNumber} <span className="text-slate-400">(balance after: Rs. {r.balanceAfter.toLocaleString()})</span></span>
+                      <span className="text-rose-600 font-semibold">-Rs. {r.amount.toLocaleString()}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Net Payout Summary */}
+              <div className="bg-slate-50 p-4 rounded-xl space-y-2">
+                <div className="flex justify-between text-slate-700">
+                  <span>Gross Payable (Base + Leave + Overtime + Allowances):</span>
+                  <span className="font-semibold">Rs. {selectedPayslip.grossPayable.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between text-rose-600">
+                  <span>Total Deductions (Absence + Late/Early + Other + Advance):</span>
+                  <span className="font-semibold">-Rs. {selectedPayslip.totalDeductions.toLocaleString()}</span>
+                </div>
+                <div className="border-t border-slate-200 pt-2 flex justify-between text-sm font-bold text-slate-900">
+                  <span>Net Salary Payable:</span>
+                  <span className="text-indigo-600">Rs. {selectedPayslip.netPayable.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end">
+              <button
+                onClick={() => setShowDetailsModal(false)}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-semibold"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 3: RECORD PAYMENT MODAL                                             */}
+      {/* ========================================================================= */}
+      {showPaymentModal && paymentTargetPayslip && paymentTargetRun && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl">
+                  <CreditCard className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Disburse Salary Payment</h3>
+                  <p className="text-xs text-slate-500">
+                    Pay {paymentTargetPayslip.staffName} ({paymentTargetPayslip.employeeCode})
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setShowPaymentModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleRecordPayment} className="p-6 space-y-4 text-xs">
+              <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl flex justify-between items-center text-amber-900">
+                <span>Outstanding Salary Balance:</span>
+                <span className="text-sm font-bold">
+                  Rs. {paymentTargetPayslip.outstandingAmount.toLocaleString()}
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-slate-600 font-medium mb-1">Disbursement Method</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setPaymentForm({ ...paymentForm, method: 'CASH' })}
+                    className={`p-3 rounded-xl border text-center font-medium transition-all ${
+                      paymentForm.method === 'CASH'
+                        ? 'border-indigo-600 bg-indigo-50/50 text-indigo-700 ring-2 ring-indigo-500'
+                        : 'border-slate-200 bg-slate-50 text-slate-600'
+                    }`}
+                  >
+                    💵 Cash (Open Drawer)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentForm({ ...paymentForm, method: 'ONLINE' })}
+                    className={`p-3 rounded-xl border text-center font-medium transition-all ${
+                      paymentForm.method === 'ONLINE'
+                        ? 'border-indigo-600 bg-indigo-50/50 text-indigo-700 ring-2 ring-indigo-500'
+                        : 'border-slate-200 bg-slate-50 text-slate-600'
+                    }`}
+                  >
+                    🏦 Bank / Online Account
+                  </button>
+                </div>
+              </div>
+
+              {/* Source balance verification */}
+              {paymentForm.method === 'CASH' ? (
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                  <div className="flex justify-between text-slate-600 mb-1">
+                    <span>Custodian Drawer:</span>
+                    <span className="font-semibold text-slate-800">
+                      {activeUserOpenDrawer ? `${user.name} (OPEN)` : 'No Open Drawer!'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-slate-600">
+                    <span>Available Cash in Drawer:</span>
+                    <span
+                      className={`font-bold ${
+                        (activeUserOpenDrawer?.expectedInDrawer || 0) < paymentForm.amount
+                          ? 'text-rose-600'
+                          : 'text-emerald-600'
+                      }`}
+                    >
+                      Rs. {(activeUserOpenDrawer?.expectedInDrawer || 0).toLocaleString()}
+                    </span>
+                  </div>
+                  {!activeUserOpenDrawer && (
+                    <p className="text-[11px] text-rose-600 mt-2">
+                      ⚠️ Cash payout cannot proceed without an active OPEN drawer registered to your user.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-slate-600 font-medium mb-1">Select Bank / Online Account</label>
+                  <select
+                    value={paymentForm.onlineAccountId}
+                    onChange={(e) => setPaymentForm({ ...paymentForm, onlineAccountId: e.target.value })}
+                    className="w-full border-slate-200 rounded-xl px-3 py-2 text-xs bg-slate-50"
+                  >
+                    {onlineAccounts.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.bankName} - {b.accountName} (Bal: Rs. {b.currentBalance.toLocaleString()})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-slate-600 font-medium mb-1">Payment Amount (Rs.)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max={paymentTargetPayslip.outstandingAmount}
+                  value={paymentForm.amount}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, amount: Number(e.target.value) })}
+                  className="w-full border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold focus:ring-2 focus:ring-indigo-500"
+                  required
+                />
+                <span className="text-[11px] text-slate-400">
+                  Partial payments are permitted up to Rs. {paymentTargetPayslip.outstandingAmount.toLocaleString()}
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-slate-600 font-medium mb-1">Reference / Voucher Note</label>
+                <input
+                  type="text"
+                  value={paymentForm.reference}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, reference: e.target.value })}
+                  placeholder="e.g. Sept salary payout voucher #12"
+                  className="w-full border-slate-200 rounded-xl px-3 py-2 text-xs"
+                />
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowPaymentModal(false)}
+                  className="px-4 py-2 border border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    actionLoading ||
+                    (paymentForm.method === 'CASH' &&
+                      (!activeUserOpenDrawer || activeUserOpenDrawer.expectedInDrawer < paymentForm.amount))
+                  }
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl font-semibold shadow-sm flex items-center gap-2"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  Confirm Disbursement
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 4: PAYMENT HISTORY & REVERSAL MODAL                                 */}
+      {/* ========================================================================= */}
+      {showHistoryModal && selectedPayslip && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-2xl overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Disbursement History: {selectedPayslip.staffName}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  {selectedPayslip.payslipNumber} • Net: Rs. {selectedPayslip.netPayable.toLocaleString()} • Paid: Rs.{' '}
+                  {selectedPayslip.paidAmount.toLocaleString()}
+                </p>
+              </div>
+              <button onClick={() => setShowHistoryModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs overflow-y-auto max-h-[70vh]">
+              {selectedPayslip.payments.length === 0 ? (
+                <p className="text-slate-500 text-center py-4">No disbursements recorded yet.</p>
+              ) : (
+                <div className="space-y-3">
+                  {selectedPayslip.payments.map((pmt) => (
+                    <div
+                      key={pmt.id}
+                      className={`p-4 rounded-xl border flex items-center justify-between ${
+                        pmt.status === 'REVERSED'
+                          ? 'bg-rose-50/50 border-rose-100 opacity-75'
+                          : 'bg-white border-slate-200 shadow-sm'
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-slate-900">Rs. {pmt.amount.toLocaleString()}</span>
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                              pmt.status === 'REVERSED'
+                                ? 'bg-rose-100 text-rose-800'
+                                : 'bg-emerald-100 text-emerald-800'
+                            }`}
+                          >
+                            {pmt.status}
+                          </span>
+                          <span className="text-slate-400">via {pmt.method}</span>
+                        </div>
+                        <p className="text-slate-500 text-[11px]">
+                          Payer: {pmt.paidByName} | Ref: {pmt.paymentNumber} ({new Date(pmt.paidAt).toLocaleString()})
+                        </p>
+                        {pmt.status === 'REVERSED' && (
+                          <p className="text-rose-600 text-[11px] font-medium">
+                            Reversed by {pmt.reversedByName} on {new Date(pmt.reversedAt || '').toLocaleString()}:{' '}
+                            {pmt.reversalReason}
+                          </p>
+                        )}
+                      </div>
+
+                      {pmt.status === 'COMPLETED' && (
+                        <button
+                          onClick={() => {
+                            setPaymentToReverse({
+                              id: pmt.id,
+                              amount: pmt.amount,
+                              staffName: selectedPayslip.staffName,
+                            });
+                          }}
+                          className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-medium flex items-center gap-1.5"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          Reverse
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Sub-form for reversal reason */}
+              {paymentToReverse && (
+                <div className="mt-4 p-4 bg-rose-50 border border-rose-200 rounded-2xl space-y-3">
+                  <h4 className="font-bold text-rose-900 text-sm">
+                    Confirm Reversal of Rs. {paymentToReverse.amount.toLocaleString()}
+                  </h4>
+                  <p className="text-rose-700 text-xs">
+                    Reversal will restore funds back to the original cash drawer or bank account, increment outstanding
+                    balance, and maintain an immutable audit trail.
+                  </p>
+                  <div>
+                    <label className="block text-rose-900 font-medium mb-1">Reason for Reversal *</label>
+                    <input
+                      type="text"
+                      value={reverseReason}
+                      onChange={(e) => setReverseReason(e.target.value)}
+                      placeholder="e.g. Duplicate voucher entered in error"
+                      className="w-full border-rose-300 rounded-xl px-3 py-2 text-xs"
+                      required
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => setPaymentToReverse(null)}
+                      className="px-3 py-1.5 border border-rose-300 text-rose-800 rounded-lg"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleReversePayment}
+                      disabled={actionLoading || !reverseReason.trim()}
+                      className="px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-lg shadow-sm"
+                    >
+                      Confirm Reversal
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end">
+              <button
+                onClick={() => setShowHistoryModal(false)}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-semibold"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 5: CANCEL PAYROLL RUN MODAL                                         */}
+      {/* ========================================================================= */}
+      {showCancelModal && runToCancel && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-md overflow-hidden flex flex-col p-6 space-y-4 text-xs">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-rose-50 text-rose-600 rounded-xl">
+                <Ban className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Cancel Payroll Run</h3>
+                <p className="text-slate-500">{runToCancel.payrollNumber}</p>
+              </div>
+            </div>
+
+            <p className="text-slate-600">
+              Cancelling releases all consumed attendance references and overtime locks so they can be re-evaluated. Runs
+              with active payments must have payments reversed first.
+            </p>
+
+            <div>
+              <label className="block text-slate-700 font-medium mb-1">Cancellation Reason *</label>
+              <textarea
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="e.g. Roster corrections required for August attendance"
+                rows={3}
+                className="w-full border-slate-200 rounded-xl p-3 text-xs focus:ring-2 focus:ring-rose-500"
+                required
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => {
+                  setShowCancelModal(false);
+                  setRunToCancel(null);
+                }}
+                className="px-4 py-2 border border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl font-medium"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleCancelRun}
+                disabled={actionLoading || !cancelReason.trim()}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl font-semibold shadow-sm"
+              >
+                Confirm Cancellation
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 6: PAYROLL POLICY CONFIGURATION MODAL                                */}
+      {/* ========================================================================= */}
+      {showPolicyModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl">
+                  <Settings className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Payroll Calculation Policy</h3>
+                  <p className="text-xs text-slate-500">Configure divisors, paid leave, and proration rules</p>
+                </div>
+              </div>
+              <button onClick={() => setShowPolicyModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSavePolicy} className="p-6 space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">
+                  Monthly Absence / Unpaid Leave Divisor
+                </label>
+                <select
+                  value={String(policyForm.monthlyAbsenceDivisor || 30)}
+                  onChange={(e) =>
+                    setPolicyForm({
+                      ...policyForm,
+                      monthlyAbsenceDivisor: (isNaN(Number(e.target.value))
+                        ? e.target.value
+                        : Number(e.target.value)) as any,
+                    })
+                  }
+                  className="w-full border-slate-200 rounded-xl px-3 py-2 bg-slate-50"
+                >
+                  <option value="30">30 Days Divisor (Standard Salon Rule)</option>
+                  <option value="26">26 Days Divisor (Working Days Only)</option>
+                  <option value="CALENDAR_DAYS">Actual Calendar Days in Month (28/29/30/31)</option>
+                  <option value="WORKING_DAYS">Actual Scheduled Working Days in Month</option>
+                </select>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Determines daily deduction rate: (Base Salary ÷ Divisor) × Absent Days.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">
+                  Daily Staff Paid Leave Eligibility
+                </label>
+                <div className="flex items-center gap-4 mt-1">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="dailyPaidLeave"
+                      checked={policyForm.dailyStaffPaidLeaveEligibility === true}
+                      onChange={() => setPolicyForm({ ...policyForm, dailyStaffPaidLeaveEligibility: true })}
+                      className="text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <span>Eligible for Approved Paid Leave</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="dailyPaidLeave"
+                      checked={policyForm.dailyStaffPaidLeaveEligibility === false}
+                      onChange={() => setPolicyForm({ ...policyForm, dailyStaffPaidLeaveEligibility: false })}
+                      className="text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <span>Present Days Only</span>
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">Mid-Month Proration Method</label>
+                <select
+                  value={policyForm.prorationMethod || 'CALENDAR_DAYS'}
+                  onChange={(e) => setPolicyForm({ ...policyForm, prorationMethod: e.target.value as any })}
+                  className="w-full border-slate-200 rounded-xl px-3 py-2 bg-slate-50"
+                >
+                  <option value="CALENDAR_DAYS">Prorate by Calendar Days (Employed Days ÷ Month Days)</option>
+                  <option value="WORKING_DAYS">Prorate by Working Days (Scheduled Days ÷ Total Working Days)</option>
+                  <option value="FIXED_26">Fixed 26-Day Divisor Proration</option>
+                </select>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Applied when an employee joins or exits mid-month or changes compensation tier.
+                </p>
+              </div>
+
+              <div className="space-y-2 border-t border-slate-100 pt-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={policyForm.nonWorkedWeeklyOffPaid ?? false}
+                    onChange={(e) => setPolicyForm({ ...policyForm, nonWorkedWeeklyOffPaid: e.target.checked })}
+                    className="rounded text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>Pay non-worked weekly offs for daily-rate employees</span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={policyForm.nonWorkedHolidayPaid ?? true}
+                    onChange={(e) => setPolicyForm({ ...policyForm, nonWorkedHolidayPaid: e.target.checked })}
+                    className="rounded text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>Pay gazetted holidays for all employees</span>
+                </label>
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowPolicyModal(false)}
+                  className="px-4 py-2 border border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={actionLoading}
+                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold shadow-sm"
+                >
+                  Save Policy Configuration
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 7: PRINT PAYSLIP MODAL                                              */}
+      {/* ========================================================================= */}
+      {showPrintModal && selectedPayslip && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-xl overflow-hidden flex flex-col">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <span className="font-bold text-slate-800 text-sm">Official Employee Payslip</span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => window.print()}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-lg flex items-center gap-1.5"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  Print Now
+                </button>
+                <button onClick={() => setShowPrintModal(false)} className="text-slate-400 hover:text-slate-600">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Printable Payslip Body */}
+            <div className="p-8 space-y-6 text-xs bg-white text-slate-900" id="printable-payslip">
+              <div className="text-center pb-4 border-b border-slate-200">
+                <h2 className="text-lg font-bold tracking-tight">SALON OS MANAGEMENT</h2>
+                <p className="text-xs text-slate-500">Official Monthly Salary Slip</p>
+                <div className="mt-2 inline-block px-3 py-1 bg-slate-100 rounded-full font-semibold text-slate-700">
+                  Period: {selectedPayslip.month}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 pb-4 border-b border-slate-200">
+                <div>
+                  <span className="text-slate-400 block text-[10px] uppercase">Employee Details</span>
+                  <p className="font-bold text-sm text-slate-900">{selectedPayslip.staffName}</p>
+                  <p className="text-slate-600">{selectedPayslip.employeeCode} • {selectedPayslip.designation}</p>
+                </div>
+                <div className="text-right">
+                  <span className="text-slate-400 block text-[10px] uppercase">Payslip Reference</span>
+                  <p className="font-bold text-slate-900">{selectedPayslip.payslipNumber}</p>
+                  <p className="text-slate-600">Status: {selectedPayslip.status}</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex justify-between py-1 border-b border-slate-100">
+                  <span className="text-slate-600">Base Salary Earnings</span>
+                  <span className="font-semibold text-slate-900">Rs. {selectedPayslip.baseEarnings.toLocaleString()}</span>
+                </div>
+                {selectedPayslip.leaveEarnings > 0 && (
+                  <div className="flex justify-between py-1 border-b border-slate-100">
+                    <span className="text-slate-600">Eligible Paid Leave ({selectedPayslip.paidLeaveDays} days)</span>
+                    <span className="font-semibold text-slate-900">Rs. {selectedPayslip.leaveEarnings.toLocaleString()}</span>
+                  </div>
+                )}
+                {selectedPayslip.approvedOvertimeAmount > 0 && (
+                  <div className="flex justify-between py-1 border-b border-slate-100">
+                    <span className="text-slate-600">Approved Overtime ({selectedPayslip.approvedOvertimeMinutes} mins)</span>
+                    <span className="font-semibold text-indigo-600">+Rs. {selectedPayslip.approvedOvertimeAmount.toLocaleString()}</span>
+                  </div>
+                )}
+                {selectedPayslip.absenceDeductions > 0 && (
+                  <div className="flex justify-between py-1 border-b border-slate-100 text-rose-600">
+                    <span>Absence Deductions ({selectedPayslip.absentDays} days)</span>
+                    <span className="font-semibold">-Rs. {selectedPayslip.absenceDeductions.toLocaleString()}</span>
+                  </div>
+                )}
+                {selectedPayslip.attendancePenaltyDeductions > 0 && (
+                  <div className="flex justify-between py-1 border-b border-slate-100 text-rose-600">
+                    <span>Late & Early Attendance Penalties</span>
+                    <span className="font-semibold">-Rs. {selectedPayslip.attendancePenaltyDeductions.toLocaleString()}</span>
+                  </div>
+                )}
+                {(selectedPayslip.holidayEarnings ?? 0) > 0 && (
+                  <div className="flex justify-between py-1 border-b border-slate-100">
+                    <span className="text-slate-600">Holiday / Weekly-off Pay</span>
+                    <span className="font-semibold text-slate-900">+Rs. {selectedPayslip.holidayEarnings!.toLocaleString()}</span>
+                  </div>
+                )}
+                {(selectedPayslip.allowanceLines ?? []).map((a) => (
+                  <div key={a.id} className="flex justify-between py-1 border-b border-slate-100">
+                    <span className="text-slate-600">{a.name} Allowance</span>
+                    <span className="font-semibold text-slate-900">+Rs. {a.amount.toLocaleString()}</span>
+                  </div>
+                ))}
+                {(selectedPayslip.adjustments ?? []).map((a) => (
+                  <div key={a.id} className={`flex justify-between py-1 border-b border-slate-100 ${a.type === 'DEDUCTION' ? 'text-rose-600' : ''}`}>
+                    <span className={a.type === 'DEDUCTION' ? '' : 'text-slate-600'}>{a.title}</span>
+                    <span className="font-semibold">{a.type === 'DEDUCTION' ? '-' : '+'}Rs. {a.amount.toLocaleString()}</span>
+                  </div>
+                ))}
+                {(selectedPayslip.advanceRecoveryAmount ?? 0) > 0 && (
+                  <div className="flex justify-between py-1 border-b border-slate-100 text-rose-600">
+                    <span>Salary Advance Recovery</span>
+                    <span className="font-semibold">-Rs. {selectedPayslip.advanceRecoveryAmount!.toLocaleString()}</span>
+                  </div>
+                )}
+
+                <div className="pt-2 flex justify-between font-bold text-sm text-slate-900 border-t-2 border-slate-900">
+                  <span>Net Salary Payable</span>
+                  <span className="text-indigo-600">Rs. {selectedPayslip.netPayable.toLocaleString()}</span>
+                </div>
+
+                <div className="flex justify-between text-slate-500 pt-1">
+                  <span>Total Disbursed: Rs. {selectedPayslip.paidAmount.toLocaleString()}</span>
+                  <span>Outstanding: Rs. {selectedPayslip.outstandingAmount.toLocaleString()}</span>
+                </div>
+              </div>
+
+              <div className="pt-6 border-t border-slate-200 text-[10px] text-slate-400 text-center">
+                This payslip is system generated by SalonOS and reflects canonical attendance and locked overtime snapshots.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
