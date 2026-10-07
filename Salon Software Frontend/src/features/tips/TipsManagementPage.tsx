@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { useRouter } from '../../context/RouterContext';
 import { salonService } from '../../services';
 import {
   TipReceiptRecord,
@@ -34,6 +35,7 @@ import {
   AlertTriangle,
   Receipt,
   Eye,
+  FileText,
 } from 'lucide-react';
 import { AccessDeniedView } from '../scaffold/AccessDeniedView';
 
@@ -43,6 +45,7 @@ function formatCurrency(val: number): string {
 
 export const TipsManagementPage: React.FC = () => {
   const { user } = useAuth();
+  const { navigate } = useRouter();
 
   // Role guard: Super Admin and Branch Admin only. Accountant and Staff strictly denied.
   if (!user || (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN')) {
@@ -229,7 +232,7 @@ export const TipsManagementPage: React.FC = () => {
     return payouts.filter((p) => {
       if (startDate && p.payoutDate < startDate) return false;
       if (endDate && p.payoutDate > endDate) return false;
-      if (methodFilter !== 'ALL' && p.method !== methodFilter) return false;
+      if (methodFilter !== 'ALL' && (p.method === 'ONLINE' ? 'ONLINE_ACCOUNT' : p.method) !== methodFilter) return false;
       if (statusFilter !== 'ALL' && p.status !== statusFilter) return false;
       if (staffFilter !== 'ALL' && p.staffId !== staffFilter) return false;
       if (searchQuery.trim()) {
@@ -467,6 +470,14 @@ export const TipsManagementPage: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          {/* Tips Statement is a subview of this module, not a Reporting menu page (spec §1) */}
+          <button
+            onClick={() => navigate('/accounts/tips-statement')}
+            className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 flex items-center gap-1.5 transition-all"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            Tips Statement
+          </button>
           {/* Branch selector for Super Admin */}
           {user.role === 'SUPER_ADMIN' ? (
             <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5">

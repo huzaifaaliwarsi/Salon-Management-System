@@ -11933,7 +11933,7 @@ class MockSalonService implements SalonServiceContract {
     return { markedCount: 0, skippedCount: 0, markedNames: [], skippedNames: [] };
   }
 
-  async resetTestData(params?: { branchId?: string; wipeCatalogue?: boolean; wipeClients?: boolean; wipeStaff?: boolean; wipeSuppliers?: boolean }): Promise<{ success: boolean; message: string; branchId: string; resetAt: string }> {
+  async resetTestData(params?: { branchId?: string; wipeCatalogue?: boolean; wipeInventory?: boolean; wipeClients?: boolean; wipeStaff?: boolean; wipeSuppliers?: boolean }): Promise<{ success: boolean; message: string; branchId: string; resetAt: string }> {
     return {
       success: true,
       message: 'Mock test data reset executed successfully.',

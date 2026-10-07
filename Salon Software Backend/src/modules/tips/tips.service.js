@@ -8,7 +8,7 @@ import prisma from '../../config/prisma.js';
 import { auditLog } from '../../lib/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/AppError.js';
 import { assertBranchAccess, resolveReadBranch } from '../../lib/scope.js';
-import { dateOnly, getBusinessDate, toTimeString, ymd } from '../../lib/dates.js';
+import { dateOnly, getBusinessDate, toDateString, toTimeString, ymd } from '../../lib/dates.js';
 import { round2, toDec } from '../../lib/money.js';
 import { nextSequence } from '../../lib/sequence.js';
 import { num, opt, iso } from '../../lib/dto.js';
@@ -270,69 +270,90 @@ export const reversePayout = async (actor, { payoutId, reversalReason }) => {
 
 // ═══ STATEMENT ════════════════════════════════════════════════════════════════
 
+/** Customer tip refunds spread over the invoice's receipts in collection order (same rule as tipRefundedFor). */
+const refundTipEvents = (refunds, receipts) => {
+  const out = [];
+  for (const rf of refunds) {
+    let remaining = toDec(rf.tipReversed);
+    for (const rc of receipts.filter((x) => x.invoiceId === rf.invoiceId).sort((a, b) => a.createdAt - b.createdAt)) {
+      if (remaining.lessThanOrEqualTo(0)) break;
+      const take = remaining.lessThan(rc.collectedAmount) ? remaining : toDec(rc.collectedAmount);
+      out.push({ receipt: rc, date: ymd(rf.refundDate), amount: take });
+      remaining = remaining.minus(take);
+    }
+  }
+  return out;
+};
+
+/**
+ * Tip liability statement (spec §4.4, §13.1, §14). Every figure is a dated event, so a payout
+ * reversed in a later period stays in its own period and the reversal lands on its own date.
+ * Filters apply to every event, so opening + movement = closing = unallocated + allocated-unpaid
+ * holds for any filter. paymentSource = how the tip was collected (CASH | ONLINE_ACCOUNT).
+ * With a staff filter the liability is that staff member's: allocated − cancelled − paid + reversed.
+ */
 export const statement = async (actor, { branchId, startDate, endDate, staffId, paymentSource } = {}) => {
   managersOnly(actor);
   const b = resolveReadBranch(actor, branchId);
   const s = startDate || '2000-01-01';
   const e = endDate || '2099-12-31';
   const where = b ? { branchId: b } : {};
-  const [receipts, allocations, payouts, refunds] = await Promise.all([
+  const [allReceipts, allAllocations, allPayouts, refunds] = await Promise.all([
     prisma.tipReceipt.findMany({ where }),
     prisma.tipAllocation.findMany({ where, include: allocInclude }),
     prisma.tipPayout.findMany({ where, include: payoutInclude }),
     prisma.invoiceRefund.findMany({ where: { tipReversed: { gt: 0 }, ...(b ? { invoice: { branchId: b } } : {}) } }),
   ]);
   const d = (x) => ymd(x);
+  const cancelDay = (a) => (a.cancelledAt ? toDateString(a.cancelledAt) : null);
   const sum = (arr, f) => round2(arr.reduce((t, x) => t.plus(f(x)), toDec(0)));
+  const before = (day) => day < s;
+  const inRange = (day) => day >= s && day <= e;
+  const asOf = (day) => day <= e;
 
-  // Dated events: collections (+), customer tip refunds (−), payouts (−), payout reversals (+).
-  const collectedBefore = sum(receipts.filter((r) => d(r.collectionDate) < s), (r) => r.collectedAmount);
-  const refundedBefore = sum(refunds.filter((r) => d(r.refundDate) < s), (r) => r.tipReversed);
-  const paidBefore = sum(payouts.filter((p) => d(p.payoutDate) < s), (p) => p.amount);
-  const reversedBefore = sum(payouts.filter((p) => p.reversalDate && d(p.reversalDate) < s), (p) => p.amount);
-  const openingLiability = round2(collectedBefore.minus(refundedBefore).minus(paidBefore).plus(reversedBefore));
+  const source = paymentSource === 'ONLINE' ? 'ONLINE_ACCOUNT' : paymentSource;
+  const bySource = !source || source === 'ALL' ? () => true : (r) => r.method === source;
+  const byStaff = staffId && staffId !== 'ALL';
+  const receipts = allReceipts.filter(bySource);
+  const receiptIds = new Set(receipts.map((r) => r.id));
+  const allocations = allAllocations.filter((a) => receiptIds.has(a.receiptId) && (!byStaff || a.staffId === staffId));
+  const payouts = allPayouts.filter((p) => receiptIds.has(p.allocation.receiptId) && (!byStaff || p.staffId === staffId));
+  const refundEvents = refundTipEvents(refunds, allReceipts).filter((x) => receiptIds.has(x.receipt.id));
+  const cancelled = allocations.filter((a) => cancelDay(a));
 
-  let periodReceipts = receipts.filter((r) => d(r.collectionDate) >= s && d(r.collectionDate) <= e);
-  let periodAllocations = allocations.filter((a) => d(a.allocationDate) >= s && d(a.allocationDate) <= e);
-  let disbursed = payouts.filter((p) => d(p.payoutDate) >= s && d(p.payoutDate) <= e);
-  let reversedInPeriod = payouts.filter((p) => p.reversalDate && d(p.reversalDate) >= s && d(p.reversalDate) <= e);
-  const periodRefunds = refunds.filter((r) => d(r.refundDate) >= s && d(r.refundDate) <= e);
-  if (staffId && staffId !== 'ALL') {
-    periodReceipts = periodReceipts.filter((r) => r.directStaffId === staffId);
-    periodAllocations = periodAllocations.filter((a) => a.staffId === staffId);
-    disbursed = disbursed.filter((p) => p.staffId === staffId);
-    reversedInPeriod = reversedInPeriod.filter((p) => p.staffId === staffId);
-  }
-  if (paymentSource && paymentSource !== 'ALL') {
-    const m = paymentSource === 'ONLINE_ACCOUNT' ? 'ONLINE' : paymentSource;
-    periodReceipts = periodReceipts.filter((r) => r.method === paymentSource);
-    disbursed = disbursed.filter((p) => p.method === m);
-    reversedInPeriod = reversedInPeriod.filter((p) => p.method === m);
-  }
+  // Liability increases: tips collected (branch view) or allocated to the staff member (staff view).
+  const inflow = byStaff
+    ? (pick) => round2(sum(allocations.filter((a) => pick(d(a.allocationDate))), (a) => a.amount).minus(sum(cancelled.filter((a) => pick(cancelDay(a))), (a) => a.amount)))
+    : (pick) => round2(sum(receipts.filter((r) => pick(d(r.collectionDate))), (r) => r.collectedAmount).minus(sum(refundEvents.filter((x) => pick(x.date)), (x) => x.amount)));
+  const outflow = (pick) => round2(sum(payouts.filter((p) => pick(d(p.payoutDate))), (p) => p.amount).minus(sum(payouts.filter((p) => p.reversalDate && pick(d(p.reversalDate))), (p) => p.amount)));
 
-  const netTipsCollected = round2(sum(periodReceipts, (r) => r.collectedAmount).minus(sum(periodRefunds, (r) => r.tipReversed)));
-  const netPayouts = round2(sum(disbursed, (p) => p.amount).minus(sum(reversedInPeriod, (p) => p.amount)));
+  const openingLiability = round2(inflow(before).minus(outflow(before)));
+  const netTipsCollected = inflow(inRange);
+  const netPayouts = outflow(inRange);
   const closingLiability = round2(openingLiability.plus(netTipsCollected).minus(netPayouts));
 
   // Independent check as of the end date: unallocated + allocated-unpaid.
-  const asOf = (x) => d(x) <= e;
-  const activeAlloc = allocations.filter((a) => asOf(a.allocationDate) && !(a.cancelledAt && d(a.cancelledAt) <= e));
+  const activeAlloc = allocations.filter((a) => asOf(d(a.allocationDate)) && !(cancelDay(a) && asOf(cancelDay(a))));
   const allocatedUnpaidTips = sum(activeAlloc, (a) => {
-    const paid = a.payouts.filter((p) => asOf(p.payoutDate)).reduce((t, p) => t.plus(p.amount), toDec(0))
-      .minus(a.payouts.filter((p) => p.reversalDate && asOf(p.reversalDate)).reduce((t, p) => t.plus(p.amount), toDec(0)));
+    const paid = a.payouts.filter((p) => asOf(d(p.payoutDate))).reduce((t, p) => t.plus(p.amount), toDec(0))
+      .minus(a.payouts.filter((p) => p.reversalDate && asOf(d(p.reversalDate))).reduce((t, p) => t.plus(p.amount), toDec(0)));
     return Decimal_max0(toDec(a.amount).minus(paid));
   });
-  const refundedAsOf = sum(refunds.filter((r) => asOf(r.refundDate)), (r) => r.tipReversed);
-  const unallocatedTips = Decimal_max0(round2(
-    sum(receipts.filter((r) => asOf(r.collectionDate)), (r) => r.collectedAmount).minus(sum(activeAlloc, (a) => a.amount)).minus(refundedAsOf)
+  const unallocatedTips = byStaff ? toDec(0) : Decimal_max0(round2(
+    sum(receipts.filter((r) => asOf(d(r.collectionDate))), (r) => r.collectedAmount)
+      .minus(sum(activeAlloc, (a) => a.amount)).minus(sum(refundEvents.filter((x) => asOf(x.date)), (x) => x.amount))
   ));
 
+  const periodReceipts = receipts.filter((r) => inRange(d(r.collectionDate)) && (!byStaff || r.directStaffId === staffId));
+  const periodAllocations = allocations.filter((a) => inRange(d(a.allocationDate)));
+  const shownPayouts = payouts.filter((p) => inRange(d(p.payoutDate)) || (p.reversalDate && inRange(d(p.reversalDate))));
   const names = await branchNames();
-  const shownPayouts = [...new Map([...disbursed, ...reversedInPeriod].map((p) => [p.id, p])).values()];
   return {
     summary: {
+      liabilityBasis: byStaff ? 'STAFF_ALLOCATIONS' : 'TIP_COLLECTIONS',
       openingLiability: openingLiability.toNumber(), netTipsCollected: netTipsCollected.toNumber(), netPayouts: netPayouts.toNumber(),
       closingLiability: closingLiability.toNumber(), unallocatedTips: unallocatedTips.toNumber(), allocatedUnpaidTips: allocatedUnpaidTips.toNumber(),
+      variance: round2(closingLiability.minus(unallocatedTips).minus(allocatedUnpaidTips)).toNumber(),
       receiptsCount: periodReceipts.length, allocationsCount: periodAllocations.length, payoutsCount: shownPayouts.length,
     },
     receipts: periodReceipts.sort((x, y) => y.collectionDate - x.collectionDate).map((r) => toReceiptDTO(r, names.get(r.branchId))),

@@ -49,6 +49,7 @@ export const ResetDataModal: React.FC<ResetDataModalProps> = ({
   // Cleanup options
   const [wipeClients, setWipeClients] = useState(true);
   const [wipeSuppliers, setWipeSuppliers] = useState(true);
+  const [wipeInventory, setWipeInventory] = useState(true);
   const [wipeCatalogue, setWipeCatalogue] = useState(false);
   const [wipeStaff, setWipeStaff] = useState(false);
 
@@ -65,6 +66,7 @@ export const ResetDataModal: React.FC<ResetDataModalProps> = ({
         wipeClients,
         wipeSuppliers,
         wipeCatalogue,
+        wipeInventory,
         wipeStaff,
       });
 
@@ -170,6 +172,14 @@ export const ResetDataModal: React.FC<ResetDataModalProps> = ({
 
             <label className="flex items-center gap-2 cursor-pointer text-slate-800">
               <Checkbox
+                checked={wipeInventory}
+                onCheckedChange={(val) => setWipeInventory(!!val)}
+              />
+              <span className="font-semibold text-rose-700">Delete inventory product items & stock</span>
+            </label>
+
+            <label className="flex items-center gap-2 cursor-pointer text-slate-800">
+              <Checkbox
                 checked={wipeStaff}
                 onCheckedChange={(val) => setWipeStaff(!!val)}
               />
@@ -181,7 +191,7 @@ export const ResetDataModal: React.FC<ResetDataModalProps> = ({
                 checked={wipeCatalogue}
                 onCheckedChange={(val) => setWipeCatalogue(!!val)}
               />
-              <span className="text-rose-700">Delete service & inventory product catalogue</span>
+              <span className="text-rose-700">Delete service catalogue & treatment packages</span>
             </label>
           </div>
 

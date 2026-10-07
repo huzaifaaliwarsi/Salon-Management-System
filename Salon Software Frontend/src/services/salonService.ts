@@ -728,6 +728,7 @@ export interface SalonServiceContract {
   resetTestData(params?: {
     branchId?: string;
     wipeCatalogue?: boolean;
+    wipeInventory?: boolean;
     wipeClients?: boolean;
     wipeStaff?: boolean;
     wipeSuppliers?: boolean;

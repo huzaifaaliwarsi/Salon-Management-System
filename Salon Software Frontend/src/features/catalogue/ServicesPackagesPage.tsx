@@ -180,7 +180,9 @@ export const ServicesPackagesPage: React.FC = () => {
   });
 
   // Current branch entity
-  const currentBranch = allBranches.find((b) => b.id === selectedBranchId);
+  const currentBranch = allBranches.find((b) => b.id === selectedBranchId) || allBranches[0];
+  const branchTaxRate = currentBranch?.taxEnabled ? (currentBranch.taxRate ?? 0) : 0;
+  const branchTaxPercent = (branchTaxRate * 100).toFixed(0);
 
   // Fetch all data for branch
   const loadBranchCatalogue = async () => {
@@ -212,12 +214,14 @@ export const ServicesPackagesPage: React.FC = () => {
     loadBranchCatalogue();
   }, [selectedBranchId]);
 
-  // Keep branch in sync if activeBranchId changes for Super Admin
+  // Keep branch in sync if activeBranchId changes for Super Admin or when branches load
   useEffect(() => {
     if (isSuperAdmin && activeBranchId !== 'ALL' && activeBranchId !== selectedBranchId) {
       setSelectedBranchId(activeBranchId);
+    } else if (!selectedBranchId && allBranches.length > 0) {
+      setSelectedBranchId(allBranches[0].id);
     }
-  }, [activeBranchId, isSuperAdmin]);
+  }, [activeBranchId, isSuperAdmin, selectedBranchId, allBranches]);
 
   // Filtered Services
   const filteredServices = useMemo(() => {
@@ -519,10 +523,9 @@ export const ServicesPackagesPage: React.FC = () => {
         </Badge>
       );
     }
-    const defaultRate = currentBranch?.taxRate || 0.16;
     return (
       <Badge variant="primary" className="font-mono text-[10px]">
-        Branch Default ({(defaultRate * 100).toFixed(0)}%)
+        Branch Default ({branchTaxPercent}%)
       </Badge>
     );
   };
@@ -1095,7 +1098,7 @@ export const ServicesPackagesPage: React.FC = () => {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="BRANCH_DEFAULT" className="text-xs">
-                    Branch Default ({( (currentBranch?.taxRate || 0.16) * 100).toFixed(0)}%)
+                    Branch Default ({branchTaxPercent}%)
                   </SelectItem>
                   <SelectItem value="SPECIFIC_RULE" className="text-xs">
                     Specific Branch Tax Rule
@@ -1243,7 +1246,7 @@ export const ServicesPackagesPage: React.FC = () => {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="BRANCH_DEFAULT" className="text-xs">
-                      Branch Default ({( (currentBranch?.taxRate || 0.16) * 100).toFixed(0)}%)
+                      Branch Default ({branchTaxPercent}%)
                     </SelectItem>
                     <SelectItem value="SPECIFIC_RULE" className="text-xs">
                       Specific Branch Tax Rule

@@ -5,7 +5,7 @@ This document confirms the completed implementation, architecture, and verificat
 1. **Tip Collection & Distribution** (`/accounts/tips-management`, Operational)
 2. **Staff Performance Report** (`/reports/staff-performance`, Management Reporting)
 3. **Staff Personal Reports Portal** (`/my-reports`, Staff Self-Service)
-4. **Tips Financial Statement** (`/reports/tips-statement`, Read-Only Balance Sheet & Liability Reconciliation)
+4. **Tips Financial Statement** (`/accounts/tips-statement`, subview of Tips Management — not a Reporting menu page per spec §1)
 
 ---
 
@@ -118,3 +118,19 @@ All 8 test suites in the workspace run and pass cleanly:
 - **Local Dev Server**: `http://localhost:3000`
 - **Persistent Storage**: Verified intact with backward-compatible schema migration (version `isysware_salon_store_v3`).
 - **Data Integrity**: Zero loss of demo invoices, staff profiles, cash drawers, or payment accounts.
+
+---
+
+## Spec compliance pass (2026-10-07)
+
+Checked against `SalonOS Reporting Inventory Financial Flow Specification.pdf` v1.0 (§1, §4.4, §7.2, §11.3, §12.1, §13, §14, §15.3).
+
+| Gap | Fix |
+|---|---|
+| Full refund kept the tip (spec §12.1: full refund returns the tip) | A refund that closes the invoice now returns the unallocated tip like a void; blocked with `TIPS_ALLOCATED` while tips are allocated to staff. Partial refunds keep the tip. |
+| Statement staff / payment-source filters broke `opening + movement = closing` | Every dated event is filtered the same way. Payment source = how the tip was collected. Staff filter shows that staff's liability (allocated − cancelled − paid + reversed). New `liabilityBasis` and `variance` fields. |
+| `paymentSource=ONLINE` never matched receipts (`ONLINE_ACCOUNT`) | Normalized in the API; Tips Management payout filter normalized too. |
+| Staff Performance dropped a payout once it was reversed later (spec §4.4 cross-date) | Paid tips = payouts dated in period − reversals dated in period. |
+| Tips Statement was an item in the Reporting & Analytics menu (spec §1: only 11 pages) | Moved to `/accounts/tips-statement`, opened from Tips Management; old `/reports/tips-statement` links still work. |
+
+**Tests:** backend 170/170 (new `17-tips-spec.test.js`: Sep 30 payout / Oct 1 reversal, filter reconciliation, full refund with unallocated and allocated tips, Accountant/Staff 403). Frontend `tsc` clean.

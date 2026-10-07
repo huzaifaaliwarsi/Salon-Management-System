@@ -2118,6 +2118,9 @@ export interface StaffPerformanceRecord {
 }
 
 export interface TipsStatementSummary {
+  /** TIP_COLLECTIONS = branch liability; STAFF_ALLOCATIONS = one staff member's allocated-unpaid liability. */
+  liabilityBasis?: 'TIP_COLLECTIONS' | 'STAFF_ALLOCATIONS';
+  variance?: number;
   openingLiability: number;
   netTipsCollected: number;
   netPayouts: number;

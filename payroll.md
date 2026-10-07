@@ -196,7 +196,8 @@ Finalize is blocked while any attendance exception exists or any payslip net < 0
 | **Monthly commission run** — `POST /commission/preview { month }` + month picker on the Commission page | ✅ P3 |
 | **Monthly Earnings Summary** (salary + commission + pending commission + advance balance) — `GET /payroll/monthly-summary` | ✅ P3 |
 | `/reports/staff-salary` (§10.2) and `/reports/staff-commission` (§10.3) APIs | ✅ P4 |
-| Payroll page: tabs (Runs · Monthly Summary · Allowances & Adjustments · Salary Advances), new payslip columns, details, print, CSV | ✅ P5 |
+| Payroll page: tabs (Runs · Monthly Summary · Allowances & Adjustments), new payslip columns, details, print, CSV | ✅ P5 |
+| **Staff Loans** page (`/accounts/staff-loans`, 2026-10-07) — salary advances moved out of the Payroll tab: issue (cash = own open drawer, online = branch account), KPIs (active / given / recovered / outstanding), reverse before recovery | ✅ |
 | UI bug fixed: late/early penalty was shown twice (`lateEarlyDeductions + attendancePenaltyDeductions`) | ✅ |
 | Staff Salary (`/reports/staff-salary`) and Staff Commission (`/reports/staff-commission`) **report pages** — filter row, KPI strip, dense table, totals, Excel (CSV) + Print; read-only | ✅ |
 | Staff portal payslip: allowances / adjustments / advance lines; base shows amount actually earned (prorated) | ✅ |

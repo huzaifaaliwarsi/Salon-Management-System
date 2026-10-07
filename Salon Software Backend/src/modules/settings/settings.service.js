@@ -296,6 +296,7 @@ export const resetTestData = async (input = {}, actor) => {
   const {
     branchId: requestedBranchId,
     wipeCatalogue = false,
+    wipeInventory = false,
     wipeClients = true,
     wipeStaff = false,
     wipeSuppliers = true,
@@ -311,11 +312,11 @@ export const resetTestData = async (input = {}, actor) => {
   if (targetBranchId && targetBranchId !== 'ALL') {
     await prisma.refundLine.deleteMany({ where: { refund: { invoice: { branchId: targetBranchId } } } });
     await prisma.invoiceRefund.deleteMany({ where: { invoice: { branchId: targetBranchId } } });
-    await prisma.invoiceLineBatch.deleteMany({ where: { invoiceLine: { invoice: { branchId: targetBranchId } } } });
-    await prisma.invoiceLineComponent.deleteMany({ where: { invoiceLine: { invoice: { branchId: targetBranchId } } } });
+    await prisma.invoiceLineBatch.deleteMany({ where: { line: { invoice: { branchId: targetBranchId } } } });
+    await prisma.invoiceLineComponent.deleteMany({ where: { line: { invoice: { branchId: targetBranchId } } } });
     await prisma.invoiceLine.deleteMany({ where: { invoice: { branchId: targetBranchId } } });
-    await prisma.invoicePayment.deleteMany({ where: { invoice: { branchId: targetBranchId } } });
-    await prisma.commissionEvent.deleteMany({ where: { invoice: { branchId: targetBranchId } } });
+    await prisma.invoicePayment.deleteMany({ where: { branchId: targetBranchId } });
+    await prisma.commissionEvent.deleteMany({ where: { branchId: targetBranchId } });
     await prisma.invoice.deleteMany({ where: { branchId: targetBranchId } });
   } else {
     await prisma.refundLine.deleteMany({});
@@ -346,15 +347,29 @@ export const resetTestData = async (input = {}, actor) => {
   await prisma.tipAllocation.deleteMany({ where: bFilter });
   await prisma.tipReceipt.deleteMany({ where: bFilter });
   await prisma.commissionPayment.deleteMany({ where: bFilter });
-  await prisma.commissionStatement.deleteMany({ where: bFilter });
+  if (targetBranchId && targetBranchId !== 'ALL') {
+    await prisma.commissionStatement.deleteMany({ where: { run: { branchId: targetBranchId } } });
+  } else {
+    await prisma.commissionStatement.deleteMany({});
+  }
   await prisma.commissionRun.deleteMany({ where: bFilter });
-  await prisma.payslip.deleteMany({ where: bFilter });
+
+  if (targetBranchId && targetBranchId !== 'ALL') {
+    await prisma.payslip.deleteMany({ where: { run: { branchId: targetBranchId } } });
+  } else {
+    await prisma.payslip.deleteMany({});
+  }
   await prisma.payrollPayment.deleteMany({ where: bFilter });
   await prisma.payrollRun.deleteMany({ where: bFilter });
 
   // 4. Attendance & Overtime
-  await prisma.attendanceCorrection.deleteMany({ where: bFilter });
-  await prisma.attendancePunch.deleteMany({ where: bFilter });
+  if (targetBranchId && targetBranchId !== 'ALL') {
+    await prisma.attendanceCorrection.deleteMany({ where: { record: { branchId: targetBranchId } } });
+    await prisma.attendancePunch.deleteMany({ where: { record: { branchId: targetBranchId } } });
+  } else {
+    await prisma.attendanceCorrection.deleteMany({});
+    await prisma.attendancePunch.deleteMany({});
+  }
   await prisma.attendanceRecord.deleteMany({ where: bFilter });
   await prisma.leaveRecord.deleteMany({ where: bFilter });
   await prisma.overtimeRecord.deleteMany({ where: bFilter });
@@ -406,7 +421,14 @@ export const resetTestData = async (input = {}, actor) => {
   // 7. Audit events, Idempotency keys, Sequences
   await prisma.auditEvent.deleteMany({ where: bFilter });
   await prisma.idempotencyKey.deleteMany({});
-  await prisma.sequence.deleteMany({ where: bFilter });
+  if (targetBranchId && targetBranchId !== 'ALL') {
+    const branchRow = await prisma.branch.findUnique({ where: { id: targetBranchId } });
+    if (branchRow) {
+      await prisma.sequence.deleteMany({ where: { branchCode: branchRow.code } });
+    }
+  } else {
+    await prisma.sequence.deleteMany({});
+  }
 
   // 8. Clients
   if (wipeClients) {
@@ -415,11 +437,15 @@ export const resetTestData = async (input = {}, actor) => {
 
   // 9. Staff (Profiles only; users/credentials are never deleted!)
   if (wipeStaff) {
-    await prisma.staffCompensationHistory.deleteMany({ where: bFilter });
+    if (targetBranchId && targetBranchId !== 'ALL') {
+      await prisma.staffCompensationHistory.deleteMany({ where: { staff: { branchId: targetBranchId } } });
+    } else {
+      await prisma.staffCompensationHistory.deleteMany({});
+    }
     await prisma.staff.deleteMany({ where: bFilter });
   }
 
-  // 10. Catalogue
+  // 10. Catalogue & Inventory Items
   if (wipeCatalogue) {
     if (targetBranchId && targetBranchId !== 'ALL') {
       await prisma.packageComponent.deleteMany({ where: { package: { branchId: targetBranchId } } });
@@ -431,6 +457,41 @@ export const resetTestData = async (input = {}, actor) => {
       await prisma.package.deleteMany({});
       await prisma.service.deleteMany({});
       await prisma.serviceCategory.deleteMany({});
+    }
+  }
+
+  if (wipeCatalogue || wipeInventory) {
+    if (targetBranchId && targetBranchId !== 'ALL') {
+      // Find all inventory items that were associated with this branch or only this branch
+      const items = await prisma.inventoryItem.findMany({
+        include: {
+          batches: { where: { branchId: { not: targetBranchId } } },
+          movements: { where: { branchId: { not: targetBranchId } } },
+        },
+      });
+
+      for (const item of items) {
+        const isAssociated =
+          item.branchAvailability.includes(targetBranchId) ||
+          item.branchAvailability.includes('ALL') ||
+          item.branchAvailability.length === 0;
+
+        if (isAssociated) {
+          // If no other branch has batches or movements for this item, delete it completely
+          if (item.batches.length === 0 && item.movements.length === 0) {
+            await prisma.inventoryItem.delete({ where: { id: item.id } }).catch(() => {});
+          } else {
+            // Remove this branch from availability so it disappears from this branch's catalogue
+            const updatedAvail = item.branchAvailability.filter((b) => b !== targetBranchId && b !== 'ALL');
+            await prisma.inventoryItem.update({
+              where: { id: item.id },
+              data: { branchAvailability: updatedAvail },
+            }).catch(() => {});
+          }
+        }
+      }
+    } else {
+      // All branches: wipe all inventory items
       await prisma.inventoryItem.deleteMany({});
     }
   }

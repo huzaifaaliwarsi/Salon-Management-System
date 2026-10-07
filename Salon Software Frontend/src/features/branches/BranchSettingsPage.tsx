@@ -78,10 +78,11 @@ import {
   Trash2,
   Database,
   AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 
 export const BranchSettingsPage: React.FC = () => {
-  const { user, activeBranchId, allBranches } = useAuth();
+  const { user, activeBranchId, allBranches, refreshBranches } = useAuth();
   const { pathname } = useRouter();
 
   // Role guard: Only SUPER_ADMIN and ADMIN
@@ -101,6 +102,12 @@ export const BranchSettingsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'PAYMENT_ACCOUNTS' | 'TAX_SETTINGS' | 'DATA_RESET'>(
     isResetPath ? 'DATA_RESET' : 'PAYMENT_ACCOUNTS'
   );
+
+  // Simple Branch Tax settings state
+  const [branchTaxEnabled, setBranchTaxEnabled] = useState<boolean>(true);
+  const [branchTaxRateInput, setBranchTaxRateInput] = useState<string>('13');
+  const [branchTaxName, setBranchTaxName] = useState<string>('Sales Tax (SST)');
+  const [isSavingTax, setIsSavingTax] = useState<boolean>(false);
 
   useEffect(() => {
     if (isResetPath) {
@@ -197,6 +204,14 @@ export const BranchSettingsPage: React.FC = () => {
       setCurrentBranch(branch);
       setPaymentAccounts(accounts);
       setTaxRules(rules);
+      if (branch) {
+        setBranchTaxEnabled(!!branch.taxEnabled);
+        setBranchTaxRateInput(((branch.taxRate ?? 0) * 100).toFixed(0));
+      }
+      const defaultRule = rules.find((r) => r.isBranchDefault) || rules[0];
+      if (defaultRule) {
+        setBranchTaxName(defaultRule.name);
+      }
       if (rules.length > 0 && !previewSpecificRuleId) {
         setPreviewSpecificRuleId(rules[0].id);
       }
@@ -212,12 +227,14 @@ export const BranchSettingsPage: React.FC = () => {
     loadBranchSettings();
   }, [selectedBranchId]);
 
-  // Keep branch in sync if activeBranchId changes for Super Admin
+  // Keep branch in sync if activeBranchId changes for Super Admin or when branches load
   useEffect(() => {
     if (isSuperAdmin && activeBranchId !== 'ALL' && activeBranchId !== selectedBranchId) {
       setSelectedBranchId(activeBranchId);
+    } else if (!selectedBranchId && allBranches.length > 0) {
+      setSelectedBranchId(allBranches[0].id);
     }
-  }, [activeBranchId, isSuperAdmin]);
+  }, [activeBranchId, isSuperAdmin, selectedBranchId, allBranches]);
 
   // Filtered payment accounts
   const filteredAccounts = useMemo(() => {
@@ -404,6 +421,7 @@ export const BranchSettingsPage: React.FC = () => {
     try {
       const updatedBranch = await salonService.setBranchDefaultTaxRule(selectedBranchId, ruleId, user);
       setCurrentBranch(updatedBranch);
+      if (refreshBranches) await refreshBranches();
       const msg = ruleId
         ? `Branch default tax rate updated to ${(updatedBranch.taxRate * 100).toFixed(1)}%.`
         : 'Branch sales tax has been disabled.';
@@ -414,6 +432,71 @@ export const BranchSettingsPage: React.FC = () => {
       const errMsg = err.message || 'Failed to update branch default tax rule.';
       setErrorMessage(errMsg);
       toast.error(errMsg);
+    }
+  };
+
+  // Handler: Save Simple Branch Tax Rate
+  const handleSaveSimpleBranchTax = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingTax(true);
+    setErrorMessage(null);
+    try {
+      const parsedRate = parseFloat(branchTaxRateInput);
+      if (branchTaxEnabled && (isNaN(parsedRate) || parsedRate < 0 || parsedRate > 100)) {
+        throw new Error('Please enter a valid tax percentage between 0% and 100%.');
+      }
+
+      const rateDecimal = branchTaxEnabled ? parsedRate / 100 : 0;
+      const ruleName = branchTaxName.trim() || 'Sales Tax';
+
+      let defaultRule = taxRules.find((r) => r.isBranchDefault) || taxRules[0];
+
+      if (defaultRule) {
+        await salonService.updateTaxRule(
+          defaultRule.id,
+          {
+            name: ruleName,
+            rate: rateDecimal,
+            isActive: branchTaxEnabled,
+            isBranchDefault: branchTaxEnabled,
+          },
+          user
+        );
+        if (branchTaxEnabled) {
+          await salonService.setBranchDefaultTaxRule(selectedBranchId, defaultRule.id, user);
+        } else {
+          await salonService.setBranchDefaultTaxRule(selectedBranchId, null, user);
+        }
+      } else if (branchTaxEnabled) {
+        const created = await salonService.createTaxRule(
+          selectedBranchId,
+          {
+            name: ruleName,
+            rate: rateDecimal,
+            isActive: true,
+            isBranchDefault: true,
+          },
+          user
+        );
+        await salonService.setBranchDefaultTaxRule(selectedBranchId, created.id, user);
+      } else {
+        await salonService.setBranchDefaultTaxRule(selectedBranchId, null, user);
+      }
+
+      if (refreshBranches) {
+        await refreshBranches();
+      }
+      await loadBranchSettings();
+
+      const displayRate = branchTaxEnabled ? `${parsedRate}%` : 'Disabled (0%)';
+      toast.success(`Branch tax updated to ${displayRate}!`);
+      setSuccessMessage(`Branch tax updated to ${displayRate}. This rate is now active across all services and POS billing.`);
+    } catch (err: any) {
+      const msg = err.message || 'Failed to update branch tax.';
+      setErrorMessage(msg);
+      toast.error(msg);
+    } finally {
+      setIsSavingTax(false);
     }
   };
 
@@ -832,335 +915,128 @@ export const BranchSettingsPage: React.FC = () => {
           </div>
         )}
 
-        {/* --- TAB 2: TAX SETTINGS & LIVE PREVIEW --- */}
+        {/* --- TAB 2: SIMPLE BRANCH TAX SETTINGS --- */}
         {activeTab === 'TAX_SETTINGS' && (
-          <div className="space-y-6 mt-4">
-            {/* Top Branch Default Card */}
-            <Card padding="md" className="bg-white border-slate-200 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="space-y-6 mt-4 max-w-3xl">
+            <Card padding="lg" className="bg-white border-slate-200 shadow-sm space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-3">
                 <div>
-                  <h3 className="font-semibold text-sm text-slate-900 flex items-center gap-2">
-                    <Percent className="w-4 h-4 text-[#2254E1]" />
-                    Branch Default Sales Tax Rule
+                  <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+                    <Percent className="w-5 h-5 text-[#2254E1]" />
+                    Branch Sales Tax Settings
                   </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Controls whether sales tax is enabled for {currentBranch?.name}, and sets the fallback tax percentage for services.
+                  <p className="text-xs text-slate-500 mt-1">
+                    Set the sales tax rate for <strong>{currentBranch?.name || 'this branch'}</strong>. This rate is dynamically applied across all salon services, packages, and POS bill checkouts.
                   </p>
                 </div>
-
-                <div className="flex items-center gap-2.5">
-                  <Select
-                    value={currentBranch?.defaultTaxRuleId || 'DISABLED'}
-                    onValueChange={(val) => handleSetDefaultTaxRule(val === 'DISABLED' ? null : val)}
-                  >
-                    <SelectTrigger className="w-64 h-9 text-xs">
-                      <SelectValue placeholder="Select Default Rule" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="DISABLED" className="text-xs text-rose-600 font-semibold">
-                        Sales Tax Disabled (0%)
-                      </SelectItem>
-                      {taxRules
-                        .filter((r) => r.isActive)
-                        .map((r) => (
-                          <SelectItem key={r.id} value={r.id} className="text-xs">
-                            {r.name} ({(r.rate * 100).toFixed(1)}%)
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-4 text-xs pt-1 border-t border-slate-100">
-                <span className="text-slate-500">Current Default Rate:</span>
-                <span className="font-mono font-semibold text-slate-900 text-sm">
-                  {currentBranch?.taxEnabled ? `${((currentBranch?.taxRate || 0) * 100).toFixed(1)}%` : 'Disabled (0%)'}
-                </span>
-                <span className="text-slate-300">|</span>
-                <span className="text-slate-500">Pricing Mode:</span>
-                <Badge variant="primary">Tax-Exclusive (Net + Tax = Bill Amount)</Badge>
-              </div>
-            </Card>
-
-            {/* Configured Tax Rules Table */}
-            <Card padding="none" className="overflow-hidden">
-              <div className="p-3.5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold text-slate-900">Branch Tax Rules Catalogue</h3>
-                    <Badge variant="secondary" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200">
-                      Illustrative Demo Values
-                    </Badge>
-                  </div>
-                  <p className="text-xs text-slate-500">Custom rules selectable on standalone services and bundles. Configure official provincial tax rates before live billing.</p>
-                </div>
-                <Badge variant="neutral">{taxRules.length} Rules Defined</Badge>
-              </div>
-
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="bg-slate-50/75">
-                      <TableHead className="text-xs font-semibold">Rule Title</TableHead>
-                      <TableHead className="text-xs font-semibold">Configured Rate</TableHead>
-                      <TableHead className="text-xs font-semibold">Description</TableHead>
-                      <TableHead className="text-xs font-semibold">Default Designation</TableHead>
-                      <TableHead className="text-xs font-semibold">Status</TableHead>
-                      <TableHead className="w-12 text-center text-xs font-semibold">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {taxRules.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={6} className="py-8 text-center text-slate-400">
-                          No custom tax rules defined for this branch yet.
-                        </TableCell>
-                      </TableRow>
-                    ) : (
-                      taxRules.map((r) => (
-                        <TableRow key={r.id} className="hover:bg-slate-50/50 transition-colors">
-                          <TableCell className="font-semibold text-xs text-slate-900">
-                            {r.name}
-                          </TableCell>
-                          <TableCell className="font-mono font-semibold text-xs text-[#2254E1]">
-                            {(r.rate * 100).toFixed(1)}%
-                          </TableCell>
-                          <TableCell className="text-xs text-slate-500 max-w-xs truncate">
-                            {r.description || 'No description entered'}
-                          </TableCell>
-                          <TableCell>
-                            {r.isBranchDefault ? (
-                              <Badge variant="primary">Branch Default</Badge>
-                            ) : (
-                              <span className="text-xs text-slate-400">Optional Rule</span>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            {r.isActive ? (
-                              <Badge variant="success" dot>Active</Badge>
-                            ) : (
-                              <Badge variant="neutral">Inactive</Badge>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-center">
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <button className="p-1 rounded hover:bg-slate-100 text-slate-500 cursor-pointer">
-                                  <MoreVertical className="w-4 h-4" />
-                                </button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end" className="w-48">
-                                {!r.isBranchDefault && r.isActive && (
-                                  <DropdownMenuItem
-                                    onClick={() => handleSetDefaultTaxRule(r.id)}
-                                    className="text-xs cursor-pointer gap-2"
-                                  >
-                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                                    Make Branch Default
-                                  </DropdownMenuItem>
-                                )}
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    setSelectedTaxRule(r);
-                                    setTaxRuleFormData({
-                                      name: r.name,
-                                      rate: roundCurrency(r.rate * 100),
-                                      description: r.description || '',
-                                      isBranchDefault: !!r.isBranchDefault,
-                                      isActive: r.isActive,
-                                    });
-                                    setIsEditTaxRuleModalOpen(true);
-                                  }}
-                                  className="text-xs cursor-pointer gap-2"
-                                >
-                                  <Edit className="w-3.5 h-3.5 text-[#2254E1]" />
-                                  Edit Tax Rule
-                                </DropdownMenuItem>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    setSelectedTaxRule(r);
-                                    setIsTaxRuleStatusAlertOpen(true);
-                                  }}
-                                  className={`text-xs cursor-pointer gap-2 ${
-                                    r.isActive ? 'text-rose-600' : 'text-emerald-600'
-                                  }`}
-                                >
-                                  {r.isActive ? (
-                                    <>
-                                      <PowerOff className="w-3.5 h-3.5" />
-                                      Deactivate Rule
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Power className="w-3.5 h-3.5" />
-                                      Activate Rule
-                                    </>
-                                  )}
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
-            </Card>
-
-            {/* LIVE TAX CALCULATION PREVIEW */}
-            <Card padding="md" className="bg-white border-slate-200 space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <div className="p-1.5 rounded-lg bg-blue-100 text-[#2254E1]">
-                    <Calculator className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-900">Interactive Tax Calculation Preview</h3>
+                  <Badge variant={currentBranch?.taxEnabled ? 'primary' : 'neutral'} className="text-xs font-mono py-1 px-2.5">
+                    Current Rate: {currentBranch?.taxEnabled ? `${((currentBranch?.taxRate || 0) * 100).toFixed(0)}%` : 'Disabled (0%)'}
+                  </Badge>
+                </div>
+              </div>
+
+              <form onSubmit={handleSaveSimpleBranchTax} className="space-y-5">
+                {/* Enable / Disable Toggle */}
+                <div className="flex items-center justify-between p-4 rounded-xl bg-slate-50/80 border border-slate-200/80">
+                  <div className="space-y-0.5">
+                    <label className="text-sm font-semibold text-slate-800 cursor-pointer" htmlFor="tax-toggle">
+                      Enable Sales Tax on Billing
+                    </label>
                     <p className="text-xs text-slate-500">
-                      Non-posting simulator demonstrating tax-exclusive formula across treatments, discounts, and gratuity.
+                      When enabled, tax is automatically calculated on POS invoices and services for this branch.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <input
+                      id="tax-toggle"
+                      type="checkbox"
+                      checked={branchTaxEnabled}
+                      onChange={(e) => setBranchTaxEnabled(e.target.checked)}
+                      className="w-5 h-5 text-[#2254E1] rounded border-slate-300 focus:ring-[#2254E1] cursor-pointer"
+                    />
+                    <span className="text-xs font-semibold text-slate-700">
+                      {branchTaxEnabled ? 'Enabled' : 'Disabled'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Tax Rate & Tax Name Input Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1 text-xs">
+                      Branch Tax Rate (%) *
+                    </label>
+                    <div className="relative">
+                      <Input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        value={branchTaxRateInput}
+                        onChange={(e) => setBranchTaxRateInput(e.target.value)}
+                        disabled={!branchTaxEnabled}
+                        placeholder="e.g. 20"
+                        required={branchTaxEnabled}
+                        className="h-10 text-sm font-semibold tabular-nums pr-8 disabled:bg-slate-100 disabled:text-slate-400"
+                      />
+                      <span className="absolute right-3 top-2.5 text-slate-400 font-bold text-sm pointer-events-none">
+                        %
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Enter percentage (e.g. 20 for 20% SST / GST).
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1 text-xs">
+                      Tax Label / Name
+                    </label>
+                    <Input
+                      type="text"
+                      value={branchTaxName}
+                      onChange={(e) => setBranchTaxName(e.target.value)}
+                      disabled={!branchTaxEnabled}
+                      placeholder="e.g. Sindh Sales Tax (SST)"
+                      className="h-10 text-xs disabled:bg-slate-100 disabled:text-slate-400"
+                    />
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Appears on customer invoices and receipts.
                     </p>
                   </div>
                 </div>
-                <Badge variant="primary">Pure Function Verification</Badge>
-              </div>
 
-              {/* Inputs */}
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-xs">
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Test Gross Price (PKR)</label>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="100"
-                    value={previewGrossPrice}
-                    onChange={(e) => setPreviewGrossPrice(Math.max(0, Number(e.target.value)))}
-                    className="h-9 text-xs font-semibold tabular-nums"
-                  />
+                {/* Information Banner */}
+                <div className="p-3.5 rounded-xl bg-blue-50/70 border border-blue-200 text-xs text-slate-700 flex items-start gap-2.5">
+                  <Info className="w-4 h-4 text-[#2254E1] shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="text-slate-900">Dynamic Synchronization:</strong> The tax rate configured here (<strong>{branchTaxEnabled ? `${branchTaxRateInput || 0}%` : '0%'}</strong>) is automatically used everywhere — in catalogue services, package builders, and POS sales invoices.
+                  </div>
                 </div>
 
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Discount Given (PKR)</label>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="50"
-                    value={previewDiscount}
-                    onChange={(e) => setPreviewDiscount(Math.max(0, Number(e.target.value)))}
-                    className="h-9 text-xs font-semibold tabular-nums"
-                  />
-                </div>
-
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Tax Treatment</label>
-                  <Select
-                    value={previewTaxTreatment}
-                    onValueChange={(val) => setPreviewTaxTreatment(val as any)}
+                {/* Save Button */}
+                <div className="pt-2 flex justify-end">
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    disabled={isSavingTax}
+                    className="flex items-center gap-2 px-6 h-10 text-xs font-semibold"
                   >
-                    <SelectTrigger className="h-9 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="BRANCH_DEFAULT" className="text-xs">
-                        Branch Default ({currentBranch?.taxEnabled ? `${((currentBranch?.taxRate || 0) * 100).toFixed(1)}%` : 'Disabled (0%)'})
-                      </SelectItem>
-                      <SelectItem value="SPECIFIC_RULE" className="text-xs">
-                        Specific Tax Rule
-                      </SelectItem>
-                      <SelectItem value="EXEMPT" className="text-xs">
-                        Exempt (0%)
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
+                    {isSavingTax ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        Saving Tax Rate...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-4 h-4" />
+                        Save Branch Tax Settings
+                      </>
+                    )}
+                  </Button>
                 </div>
-
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Direct Gratuity / Tip (PKR)</label>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="50"
-                    value={previewTip}
-                    onChange={(e) => setPreviewTip(Math.max(0, Number(e.target.value)))}
-                    className="h-9 text-xs font-semibold tabular-nums"
-                  />
-                </div>
-              </div>
-
-              {previewTaxTreatment === 'SPECIFIC_RULE' && (
-                <div className="max-w-xs text-xs">
-                  <label className="font-semibold text-slate-700 block mb-1">Select Specific Rule</label>
-                  <Select
-                    value={previewSpecificRuleId}
-                    onValueChange={(val) => setPreviewSpecificRuleId(val)}
-                  >
-                    <SelectTrigger className="h-8 text-xs">
-                      <SelectValue placeholder="Select Rule" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {taxRules.map((r) => (
-                        <SelectItem key={r.id} value={r.id} className="text-xs">
-                          {r.name} ({(r.rate * 100).toFixed(1)}%)
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
-              {/* Formula Output Breakdown */}
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/90 grid grid-cols-2 sm:grid-cols-6 gap-3 text-xs">
-                <div>
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wider block">Gross Sales</span>
-                  <span className="font-mono font-semibold text-slate-800 text-sm">
-                    {formatCurrency(liveTaxPreview.grossPrice)}
-                  </span>
-                </div>
-
-                <div>
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wider block">Discount</span>
-                  <span className="font-mono font-semibold text-rose-600 text-sm">
-                    -{formatCurrency(liveTaxPreview.discount)}
-                  </span>
-                </div>
-
-                <div>
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wider block">Net Service Sales</span>
-                  <span className="font-mono font-semibold text-slate-900 text-sm">
-                    {formatCurrency(liveTaxPreview.netSales)}
-                  </span>
-                </div>
-
-                <div>
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wider block">
-                    Tax ({liveTaxPreview.effectiveTaxPercentage}%)
-                  </span>
-                  <span className="font-mono font-semibold text-[#2254E1] text-sm">
-                    +{formatCurrency(liveTaxPreview.taxAmount)}
-                  </span>
-                </div>
-
-                <div>
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wider block">Client Gratuity</span>
-                  <span className="font-mono font-semibold text-purple-700 text-sm">
-                    +{formatCurrency(liveTaxPreview.tipAmount)}
-                  </span>
-                  <span className="text-[9px] text-purple-600 block">(Excluded from tax)</span>
-                </div>
-
-                <div className="bg-white p-2 rounded-lg border border-slate-200">
-                  <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-bold">Total Bill</span>
-                  <span className="font-mono font-bold text-slate-900 text-base">
-                    {formatCurrency(liveTaxPreview.billTotal)}
-                  </span>
-                </div>
-              </div>
-
-              <p className="text-[11px] text-slate-400 italic">
-                * Note: Tax percentages in iSysware SalonOS are user-configured demonstration settings. Tips remain strictly outside net sales and tax calculations.
-              </p>
+              </form>
             </Card>
           </div>
         )}

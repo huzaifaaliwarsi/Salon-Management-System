@@ -46,7 +46,6 @@ const VIEW_TABS: { id: 'RUNS' | PayrollExtrasView; label: string }[] = [
   { id: 'RUNS', label: 'Payroll Runs' },
   { id: 'SUMMARY', label: 'Monthly Summary (Salary + Commission)' },
   { id: 'INPUTS', label: 'Allowances & Adjustments' },
-  { id: 'ADVANCES', label: 'Salary Advances' },
 ];
 
 export const PayrollPage: React.FC = () => {

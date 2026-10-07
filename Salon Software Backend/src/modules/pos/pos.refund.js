@@ -63,9 +63,15 @@ export const refundInvoice = async (input, actor) => {
       : (input.lines ?? []).map((r) => ({ ...r, quantity: toDec(r.quantity) }));
     if (!requested.length) throw badRequest('NOTHING_TO_REFUND', 'Select at least one line and quantity to refund.');
 
+    // A void or a refund that closes the invoice also returns the tip (spec §12.1), so the tip
+    // must still be unallocated — allocated tips belong to staff until those allocations are cancelled.
+    const closesInvoice = isVoid || invoice.lines.every((l) => {
+      const done = toDec(already.get(l.id) ?? 0).plus(requested.filter((r) => r.lineId === l.id).reduce((s, r) => s.plus(r.quantity), toDec(0)));
+      return done.greaterThanOrEqualTo(l.quantity);
+    });
     const tipReceipts = await tx.tipReceipt.findMany({ where: { invoiceId: invoice.id } });
-    if (isVoid && tipReceipts.some((t) => toDec(t.allocatedAmount).greaterThan(0))) {
-      throw conflict('TIPS_ALLOCATED', 'This invoice has tips already allocated to staff. Cancel those tip allocations before voiding.');
+    if (closesInvoice && tipReceipts.some((t) => toDec(t.allocatedAmount).greaterThan(0))) {
+      throw conflict('TIPS_ALLOCATED', `This invoice has tips already allocated to staff. Cancel those tip allocations before ${isVoid ? 'voiding' : 'a full refund'}.`);
     }
 
     const refundNumber = await nextSequence(tx, branch.code, isVoid ? 'VOID' : 'RFD');
@@ -143,7 +149,7 @@ export const refundInvoice = async (input, actor) => {
     const newEffective = effectiveBill(invoice, netReversed, taxReversed);
     const held = billMoneyHeld(invoice);
     const billRefund = round2(held.greaterThan(newEffective) ? held.minus(newEffective) : toDec(0));
-    const tipRefund = isVoid ? round2(tipReceipts.reduce((s, t) => s.plus(t.unallocatedAmount), toDec(0))) : toDec(0);
+    const tipRefund = closesInvoice ? round2(tipReceipts.reduce((s, t) => s.plus(t.unallocatedAmount), toDec(0))) : toDec(0);
     const cashOut = round2(billRefund.plus(tipRefund));
     const prevDue = toDec(invoice.amountDue);
     const newDue = round2(Decimal_max0(newEffective.minus(held.minus(billRefund))));
@@ -165,11 +171,7 @@ export const refundInvoice = async (input, actor) => {
       for (const t of tipReceipts) await tx.tipReceipt.update({ where: { id: t.id }, data: { unallocatedAmount: 0 } });
     }
 
-    const allRefunded = invoice.lines.every((l) => {
-      const done = toDec(already.get(l.id) ?? 0).plus(requested.filter((r) => r.lineId === l.id).reduce((s, r) => s.plus(r.quantity), toDec(0)));
-      return done.greaterThanOrEqualTo(l.quantity);
-    });
-    const lifecycle = isVoid ? 'VOIDED' : allRefunded ? 'REFUNDED' : 'PARTIALLY_REFUNDED';
+    const lifecycle = isVoid ? 'VOIDED' : closesInvoice ? 'REFUNDED' : 'PARTIALLY_REFUNDED';
     const paidNow = held.minus(billRefund);
     const status = newDue.isZero() ? 'PAID' : paidNow.greaterThan(0) ? 'PARTIAL' : 'UNPAID';
 

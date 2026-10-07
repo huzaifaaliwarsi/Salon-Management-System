@@ -131,7 +131,8 @@ const computePerformance = async (staffList, startDate, endDate, filters = {}) =
       include: { payments: true },
     }),
     prisma.tipAllocation.findMany({ where: { staffId: { in: ids }, allocationDate: period, status: { not: 'CANCELLED' } } }),
-    prisma.tipPayout.findMany({ where: { staffId: { in: ids }, payoutDate: period, status: 'COMPLETED' } }),
+    // Dated events (spec §4.4): a payout stays in its own period; a later reversal lands on the reversal date.
+    prisma.tipPayout.findMany({ where: { staffId: { in: ids }, OR: [{ payoutDate: period }, { reversalDate: period }] } }),
     prisma.attendanceRecord.findMany({ where: { staffId: { in: ids }, workDate: period } }),
     prisma.overtimeRecord.findMany({ where: { staffId: { in: ids }, workDate: period, status: 'APPROVED' } }),
   ]);
@@ -207,7 +208,8 @@ const computePerformance = async (staffList, startDate, endDate, filters = {}) =
       .filter((p) => p.status === 'COMPLETED')
       .reduce((s, p) => s.plus(p.amount), toDec(0));
     const allocatedTips = of(allocations, st.id).reduce((s, a) => s.plus(a.amount), toDec(0));
-    const paidTips = of(payouts, st.id).reduce((s, p) => s.plus(p.amount), toDec(0));
+    const inPeriod = (x) => x && ymd(x) >= startDate && ymd(x) <= endDate;
+    const paidTips = of(payouts, st.id).reduce((s, p) => s.plus(inPeriod(p.payoutDate) ? p.amount : 0).minus(inPeriod(p.reversalDate) ? p.amount : 0), toDec(0));
     const att = of(attendance, st.id);
     const ot = of(overtime, st.id);
     const outstanding = allocatedTips.minus(paidTips);

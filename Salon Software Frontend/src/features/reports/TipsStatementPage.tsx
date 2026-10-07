@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { useRouter } from '../../context/RouterContext';
 import { salonService } from '../../services';
 import {
   TipReceiptRecord,
@@ -34,6 +35,7 @@ import {
   Sparkles,
   RefreshCw,
   FileText,
+  ArrowLeft,
 } from 'lucide-react';
 import { AccessDeniedView } from '../scaffold/AccessDeniedView';
 
@@ -43,10 +45,11 @@ function formatCurrency(val: number): string {
 
 export const TipsStatementPage: React.FC = () => {
   const { user } = useAuth();
+  const { navigate } = useRouter();
 
   // Role guard: Super Admin and Branch Admin only. Accountant and Staff denied.
   if (!user || (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN')) {
-    return <AccessDeniedView attemptedPath="/reports/tips-statement" />;
+    return <AccessDeniedView attemptedPath="/accounts/tips-statement" />;
   }
 
   const isSuperAdmin = user.role === 'SUPER_ADMIN';
@@ -277,6 +280,13 @@ export const TipsStatementPage: React.FC = () => {
 
         <div className="flex items-center gap-3">
           <button
+            onClick={() => navigate('/accounts/tips-management')}
+            className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center gap-1.5 transition-all"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Tips Management
+          </button>
+          <button
             onClick={fetchStatement}
             className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center gap-1.5 transition-all"
           >
@@ -424,7 +434,9 @@ export const TipsStatementPage: React.FC = () => {
 
           {/* 2. Net Tips Collected */}
           <div className="bg-emerald-950/40 p-4 rounded-xl border border-emerald-500/30">
-            <span className="text-[11px] text-emerald-300 block uppercase font-medium">Net Tips Collected</span>
+            <span className="text-[11px] text-emerald-300 block uppercase font-medium">
+              {summary.liabilityBasis === 'STAFF_ALLOCATIONS' ? 'Net Tips Allocated' : 'Net Tips Collected'}
+            </span>
             <span className="text-xl font-bold text-emerald-400 mt-1 block">
               +{formatCurrency(summary.netTipsCollected)}
             </span>

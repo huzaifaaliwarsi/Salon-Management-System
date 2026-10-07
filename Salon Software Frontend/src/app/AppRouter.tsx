@@ -23,6 +23,7 @@ import { AccountSettlementPage } from '../features/custody/AccountSettlementPage
 import { StaffAttendancePage } from '../features/attendance/StaffAttendancePage';
 import { ManualOvertimePage } from '../features/overtime/ManualOvertimePage';
 import { PayrollPage } from '../features/payroll/PayrollPage';
+import { StaffLoansPage } from '../features/payroll/StaffLoansPage';
 import { StaffCommissionPage } from '../features/commission/StaffCommissionPage';
 import { StaffPersonalAttendancePage } from '../features/portal/StaffPersonalAttendancePage';
 import { StaffPersonalReportsPage } from '../features/portal/StaffPersonalReportsPage';
@@ -182,6 +183,9 @@ export const AppRouter: React.FC = () => {
     if (pathname === '/accounts/payroll') {
       return <PayrollPage />;
     }
+    if (pathname === '/accounts/staff-loans') {
+      return <StaffLoansPage />;
+    }
     if (pathname === '/reports/staff-salary') {
       return <StaffSalaryReportPage />;
     }
@@ -211,7 +215,7 @@ export const AppRouter: React.FC = () => {
     }
 
     // 14. Tips Statement Report (Dedicated Reporting)
-    if (pathname === '/reports/tips-statement' || pathname === '/reports/tips') {
+    if (pathname === '/accounts/tips-statement' || pathname === '/reports/tips-statement' || pathname === '/reports/tips') {
       return <TipsStatementPage />;
     }
 

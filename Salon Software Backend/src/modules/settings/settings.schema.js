@@ -87,6 +87,7 @@ export const systemDateSchema = z.object({
 export const resetTestDataSchema = z.object({
   branchId: z.string().optional(),
   wipeCatalogue: z.boolean().optional(),
+  wipeInventory: z.boolean().optional(),
   wipeClients: z.boolean().optional(),
   wipeStaff: z.boolean().optional(),
   wipeSuppliers: z.boolean().optional(),

@@ -156,6 +156,14 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
         description: 'Base pay calculation with verified attendance & manual overtime',
       },
       {
+        id: 'staff-loans',
+        label: 'Staff Loans',
+        href: '/accounts/staff-loans',
+        iconName: 'Wallet',
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN'], // Accountant excluded (same as payroll)
+        description: 'Salary advances paid from drawer/account, recovered through payroll',
+      },
+      {
         id: 'commission',
         label: 'Staff Commission',
         href: '/accounts/commission',
@@ -263,13 +271,6 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
         label: 'Staff Performance',
         href: '/reports/staff-performance',
         iconName: 'TrendingUp',
-        allowedRoles: ['SUPER_ADMIN', 'ADMIN'], // Accountant excluded
-      },
-      {
-        id: 'rep-tips-statement',
-        label: 'Tips Statement',
-        href: '/reports/tips-statement',
-        iconName: 'Sparkles',
         allowedRoles: ['SUPER_ADMIN', 'ADMIN'], // Accountant excluded
       },
       {
