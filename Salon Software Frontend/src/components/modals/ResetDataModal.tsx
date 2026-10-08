@@ -143,7 +143,7 @@ export const ResetDataModal: React.FC<ResetDataModalProps> = ({
               What Will Be Cleared
             </span>
             <p className="text-[11px] leading-relaxed text-amber-900">
-              Sales invoices, POS bills, appointments, attendance punches, cash drawer movements, expenses, and supplier ledgers will be wiped. Bill numbering sequences start fresh from #1.
+              Sales invoices, POS bills, appointments, attendance punches, staff loans & advances, payroll runs & payslips, cash drawer movements, expenses, and supplier ledgers will be wiped. Bill numbering sequences start fresh from #1.
             </p>
             <div className="pt-1 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />

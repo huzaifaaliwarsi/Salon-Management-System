@@ -18,15 +18,22 @@ const router = Router();
 router.get('/payslips/me', authenticate, authorize('STAFF'), send((req) => s.personalPayslips(req.user)));
 
 router.use(authenticate, authorize('SUPER_ADMIN', 'ADMIN'));
-router.get('/runs', validate(z.object({ branchId: z.string().optional(), month: month.optional() }), 'query'), send((req) => s.listRuns(req.user, req.query)));
-router.post('/preview', validate(z.object({ branchId: z.string().optional(), month, staffId: z.string().optional() })), send((req) => s.generatePreview(req.user, req.body), 201));
+router.post('/preview', validate(z.object({
+  branchId: z.string().optional(),
+  month: month.optional(),
+  staffId: z.string().optional(),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'startDate must be YYYY-MM-DD').optional(),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'endDate must be YYYY-MM-DD').optional(),
+  runType: z.enum(['MONTHLY', 'DAILY', 'CUSTOM_RANGE']).optional(),
+  compensationType: z.string().optional(),
+})), send((req) => s.generatePreview(req.user, req.body), 201));
 router.post('/runs/:id/finalize', send((req) => s.finalizeRun(req.user, req.params.id)));
 router.post('/runs/:id/cancel', validate(reason), send((req) => s.cancelRun(req.user, req.params.id, req.body.reason)));
 router.post('/payments', idempotency, validate(z.object({
   payrollRunId: z.string().min(1), payslipId: z.string().min(1), amount: z.number().positive('Payment amount must be greater than zero.'),
   method: z.enum(['CASH', 'ONLINE']), onlineAccountId: z.string().optional(), cashDrawerId: z.string().optional(),
   reference: z.string().optional(), notes: z.string().optional(),
-})), send((req) => s.recordPayment(req.user, req.body), 201));
+})), send((req) => s.recordPayment(req.user, { ...req.body, idempotencyKey: req.idempotencyKey }), 201));
 router.post('/payments/:id/reverse', validate(reason), send((req) => s.reversePayment(req.user, req.params.id, req.body.reason)));
 
 router.get('/monthly-summary', validate(z.object({ branchId: z.string().optional(), month }), 'query'), send((req) => s.monthlySummary(req.user, req.query)));

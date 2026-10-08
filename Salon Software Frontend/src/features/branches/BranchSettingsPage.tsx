@@ -1403,7 +1403,7 @@ export const BranchSettingsPage: React.FC = () => {
                 Permanent Action
               </span>
               <p className="text-[11px] leading-relaxed">
-                Sales bills, appointments, attendance, cash custody, purchases, and supplier khata will be deleted. Admin logins and branch setup will remain safe.
+                Sales bills, appointments, attendance, staff loans & advances, payroll runs, cash custody, purchases, and supplier khata will be deleted. Admin logins and branch setup will remain safe.
               </p>
             </div>
 

@@ -360,7 +360,9 @@ export const PayrollPage: React.FC = () => {
       'Advance Recovery',
       'Gross Payable',
       'Total Deductions',
-      'Net Payable',
+      'Net Salary',
+      'Commission',
+      'Combined Net Payable',
       'Paid Amount',
       'Outstanding',
       'Status',
@@ -383,6 +385,8 @@ export const PayrollPage: React.FC = () => {
       p.advanceRecoveryAmount ?? 0,
       p.grossPayable,
       p.totalDeductions,
+      p.salaryNetPayable ?? p.netPayable,
+      p.commissionPayable ?? 0,
       p.netPayable,
       p.paidAmount,
       p.outstandingAmount,
@@ -1082,6 +1086,32 @@ export const PayrollPage: React.FC = () => {
                 </div>
               </div>
 
+              {/* Base Salary & Proration Breakdown */}
+              <div className="border border-slate-100 rounded-xl p-4 space-y-2">
+                <h4 className="font-semibold text-slate-800 text-sm">Base Salary & Proration</h4>
+                <div className="space-y-1.5 text-xs">
+                  <div className="flex justify-between text-slate-700">
+                    <span>Contractual Base Salary:</span>
+                    <span className="font-semibold text-slate-900">Rs. {(selectedPayslip.effectiveBaseSalary ?? selectedPayslip.baseEarnings).toLocaleString()}</span>
+                  </div>
+                  {selectedPayslip.calculationDetails?.prorationApplied && (
+                    <div className="flex justify-between text-amber-700 bg-amber-50/70 p-2 rounded-lg">
+                      <div>
+                        <span className="font-medium">Proration Adjustment:</span>
+                        <span className="block text-[11px] text-amber-600">{selectedPayslip.calculationDetails.prorationFormula}</span>
+                      </div>
+                      <span className="font-semibold">
+                        -Rs. {Math.max(0, (selectedPayslip.effectiveBaseSalary || 0) - selectedPayslip.baseEarnings).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between bg-slate-50 p-2 rounded-lg font-medium text-slate-800">
+                    <span>Earned Base Salary:</span>
+                    <span className="font-bold text-slate-900">Rs. {selectedPayslip.baseEarnings.toLocaleString()}</span>
+                  </div>
+                </div>
+              </div>
+
               {/* Attendance metrics */}
               <div className="border border-slate-100 rounded-xl p-4 space-y-2">
                 <h4 className="font-semibold text-slate-800 text-sm">Attendance Summary</h4>
@@ -1127,7 +1157,7 @@ export const PayrollPage: React.FC = () => {
               {/* Allowances, adjustments & advance recovery */}
               {(plusExtras(selectedPayslip) > 0 || minusExtras(selectedPayslip) > 0) && (
                 <div className="border border-slate-100 rounded-xl p-4 space-y-1.5">
-                  <h4 className="font-semibold text-slate-800 text-sm">Allowances, Adjustments & Advances</h4>
+                  <h4 className="font-semibold text-slate-800 text-sm">Allowances, Adjustments & Loan Recoveries</h4>
                   {(selectedPayslip.holidayEarnings ?? 0) > 0 && (
                     <div className="flex justify-between">
                       <span>Holiday / weekly-off pay ({(selectedPayslip.paidHolidayDays ?? 0) + (selectedPayslip.paidWeeklyOffDays ?? 0)} days)</span>
@@ -1136,7 +1166,7 @@ export const PayrollPage: React.FC = () => {
                   )}
                   {(selectedPayslip.allowanceLines ?? []).map((a) => (
                     <div key={a.id} className="flex justify-between">
-                      <span>{a.name} <span className="text-slate-400">(monthly)</span></span>
+                      <span>{a.name} <span className="text-slate-400">(monthly allowance)</span></span>
                       <span className="text-emerald-600 font-semibold">+Rs. {a.amount.toLocaleString()}</span>
                     </div>
                   ))}
@@ -1149,9 +1179,14 @@ export const PayrollPage: React.FC = () => {
                     </div>
                   ))}
                   {(selectedPayslip.advanceRecoveries ?? []).map((r) => (
-                    <div key={r.advanceId} className="flex justify-between">
-                      <span>Advance recovery {r.advanceNumber} <span className="text-slate-400">(balance after: Rs. {r.balanceAfter.toLocaleString()})</span></span>
-                      <span className="text-rose-600 font-semibold">-Rs. {r.amount.toLocaleString()}</span>
+                    <div key={r.advanceId} className="flex justify-between py-1 border-t border-slate-100 text-rose-600">
+                      <span>
+                        Loan Recovery: <strong>{r.advanceNumber}</strong>{' '}
+                        <span className="text-slate-500 font-normal">
+                          ({selectedPayslip.status === 'DRAFT' ? 'Projected balance after' : 'Remaining balance'}: Rs. {r.balanceAfter.toLocaleString()})
+                        </span>
+                      </span>
+                      <span className="font-semibold">-Rs. {r.amount.toLocaleString()}</span>
                     </div>
                   ))}
                 </div>
@@ -1160,15 +1195,23 @@ export const PayrollPage: React.FC = () => {
               {/* Net Payout Summary */}
               <div className="bg-slate-50 p-4 rounded-xl space-y-2">
                 <div className="flex justify-between text-slate-700">
-                  <span>Gross Payable (Base + Leave + Overtime + Allowances):</span>
+                  <span>Gross Earnings (Base + Leave + Overtime + Allowances):</span>
                   <span className="font-semibold">Rs. {selectedPayslip.grossPayable.toLocaleString()}</span>
                 </div>
                 <div className="flex justify-between text-rose-600">
-                  <span>Total Deductions (Absence + Late/Early + Other + Advance):</span>
+                  <span>Total Deductions (Absence + Late/Early + Other + Loans):</span>
                   <span className="font-semibold">-Rs. {selectedPayslip.totalDeductions.toLocaleString()}</span>
                 </div>
                 <div className="border-t border-slate-200 pt-2 flex justify-between text-sm font-bold text-slate-900">
                   <span>Net Salary Payable:</span>
+                  <span>Rs. {(selectedPayslip.salaryNetPayable ?? selectedPayslip.netPayable).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between text-emerald-700">
+                  <span>{selectedPayslip.status === 'DRAFT' ? 'Eligible Commission (preview):' : 'Finalized Commission:'}</span>
+                  <span>+Rs. {(selectedPayslip.commissionPayable ?? 0).toLocaleString()}</span>
+                </div>
+                <div className="border-t border-slate-200 pt-2 flex justify-between text-sm font-bold text-slate-900">
+                  <span>Combined Net Payable:</span>
                   <span className="text-indigo-600">Rs. {selectedPayslip.netPayable.toLocaleString()}</span>
                 </div>
               </div>
@@ -1710,25 +1753,71 @@ export const PayrollPage: React.FC = () => {
               </div>
 
               <div className="space-y-2">
+                {/* 1. Base Salary & Proration */}
                 <div className="flex justify-between py-1 border-b border-slate-100">
-                  <span className="text-slate-600">Base Salary Earnings</span>
-                  <span className="font-semibold text-slate-900">Rs. {selectedPayslip.baseEarnings.toLocaleString()}</span>
+                  <span className="text-slate-600">Contractual Base Salary</span>
+                  <span className="font-semibold text-slate-900">Rs. {(selectedPayslip.effectiveBaseSalary ?? selectedPayslip.baseEarnings).toLocaleString()}</span>
                 </div>
+                {selectedPayslip.calculationDetails?.prorationApplied && (
+                  <div className="flex justify-between py-1 border-b border-slate-100 text-amber-700 bg-amber-50/50 px-1 rounded">
+                    <span>
+                      Proration Adjustment
+                      <span className="block text-[10px] text-amber-600 font-normal">
+                        {selectedPayslip.calculationDetails.prorationFormula}
+                      </span>
+                    </span>
+                    <span className="font-semibold">
+                      -Rs. {Math.max(0, (selectedPayslip.effectiveBaseSalary || 0) - selectedPayslip.baseEarnings).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+                <div className="flex justify-between py-1 border-b border-slate-100 bg-slate-50/60 px-1 rounded">
+                  <span className="text-slate-700 font-medium">Earned Base Salary</span>
+                  <span className="font-bold text-slate-900">Rs. {selectedPayslip.baseEarnings.toLocaleString()}</span>
+                </div>
+
+                {/* 2. Other Earnings & Overtime */}
                 {selectedPayslip.leaveEarnings > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-100">
                     <span className="text-slate-600">Eligible Paid Leave ({selectedPayslip.paidLeaveDays} days)</span>
                     <span className="font-semibold text-slate-900">Rs. {selectedPayslip.leaveEarnings.toLocaleString()}</span>
                   </div>
                 )}
+                {(selectedPayslip.holidayEarnings ?? 0) > 0 && (
+                  <div className="flex justify-between py-1 border-b border-slate-100">
+                    <span className="text-slate-600">Holiday / Weekly-off Pay</span>
+                    <span className="font-semibold text-slate-900">+Rs. {selectedPayslip.holidayEarnings!.toLocaleString()}</span>
+                  </div>
+                )}
                 {selectedPayslip.approvedOvertimeAmount > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-600">Approved Overtime ({selectedPayslip.approvedOvertimeMinutes} mins)</span>
+                    <span className="text-slate-600">Approved Overtime ({selectedPayslip.approvedOvertimeMinutes} mins @ Rs. {selectedPayslip.approvedOvertimeHourlyRate}/hr)</span>
                     <span className="font-semibold text-indigo-600">+Rs. {selectedPayslip.approvedOvertimeAmount.toLocaleString()}</span>
                   </div>
                 )}
+                {(selectedPayslip.allowanceLines ?? []).map((a) => (
+                  <div key={a.id} className="flex justify-between py-1 border-b border-slate-100">
+                    <span className="text-slate-600">{a.name} Allowance</span>
+                    <span className="font-semibold text-slate-900">+Rs. {a.amount.toLocaleString()}</span>
+                  </div>
+                ))}
+                {(selectedPayslip.adjustments ?? []).filter((a) => a.type !== 'DEDUCTION').map((a) => (
+                  <div key={a.id} className="flex justify-between py-1 border-b border-slate-100 text-emerald-600">
+                    <span>{a.title} ({a.type.toLowerCase()})</span>
+                    <span className="font-semibold">+Rs. {a.amount.toLocaleString()}</span>
+                  </div>
+                ))}
+
+                {/* Gross Earnings Subtotal */}
+                <div className="flex justify-between py-1.5 border-b-2 border-slate-200 bg-slate-100/70 px-2 rounded font-semibold text-slate-900">
+                  <span>Gross Earnings</span>
+                  <span>Rs. {selectedPayslip.grossPayable.toLocaleString()}</span>
+                </div>
+
+                {/* 3. Itemized Deductions */}
                 {selectedPayslip.absenceDeductions > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-100 text-rose-600">
-                    <span>Absence Deductions ({selectedPayslip.absentDays} days)</span>
+                    <span>Absence Deductions ({selectedPayslip.absentDays + (selectedPayslip.unpaidLeaveDays || 0)} days)</span>
                     <span className="font-semibold">-Rs. {selectedPayslip.absenceDeductions.toLocaleString()}</span>
                   </div>
                 )}
@@ -1738,33 +1827,43 @@ export const PayrollPage: React.FC = () => {
                     <span className="font-semibold">-Rs. {selectedPayslip.attendancePenaltyDeductions.toLocaleString()}</span>
                   </div>
                 )}
-                {(selectedPayslip.holidayEarnings ?? 0) > 0 && (
-                  <div className="flex justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-600">Holiday / Weekly-off Pay</span>
-                    <span className="font-semibold text-slate-900">+Rs. {selectedPayslip.holidayEarnings!.toLocaleString()}</span>
-                  </div>
-                )}
-                {(selectedPayslip.allowanceLines ?? []).map((a) => (
-                  <div key={a.id} className="flex justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-600">{a.name} Allowance</span>
-                    <span className="font-semibold text-slate-900">+Rs. {a.amount.toLocaleString()}</span>
+                {(selectedPayslip.adjustments ?? []).filter((a) => a.type === 'DEDUCTION').map((a) => (
+                  <div key={a.id} className="flex justify-between py-1 border-b border-slate-100 text-rose-600">
+                    <span>{a.title} (deduction)</span>
+                    <span className="font-semibold">-Rs. {a.amount.toLocaleString()}</span>
                   </div>
                 ))}
-                {(selectedPayslip.adjustments ?? []).map((a) => (
-                  <div key={a.id} className={`flex justify-between py-1 border-b border-slate-100 ${a.type === 'DEDUCTION' ? 'text-rose-600' : ''}`}>
-                    <span className={a.type === 'DEDUCTION' ? '' : 'text-slate-600'}>{a.title}</span>
-                    <span className="font-semibold">{a.type === 'DEDUCTION' ? '-' : '+'}Rs. {a.amount.toLocaleString()}</span>
-                  </div>
-                ))}
-                {(selectedPayslip.advanceRecoveryAmount ?? 0) > 0 && (
-                  <div className="flex justify-between py-1 border-b border-slate-100 text-rose-600">
-                    <span>Salary Advance Recovery</span>
-                    <span className="font-semibold">-Rs. {selectedPayslip.advanceRecoveryAmount!.toLocaleString()}</span>
-                  </div>
-                )}
 
+                {/* Loan Recoveries (Itemized separately) */}
+                {(selectedPayslip.advanceRecoveries ?? []).map((r) => (
+                  <div key={r.advanceId} className="flex justify-between py-1 border-b border-slate-100 text-rose-600">
+                    <span>
+                      Loan Recovery ({r.advanceNumber}){' '}
+                      <span className="text-[10px] text-slate-500 font-normal">
+                        ({selectedPayslip.status === 'DRAFT' ? 'Projected balance' : 'Remaining balance'}: Rs. {r.balanceAfter.toLocaleString()})
+                      </span>
+                    </span>
+                    <span className="font-semibold">-Rs. {r.amount.toLocaleString()}</span>
+                  </div>
+                ))}
+
+                {/* Total Deductions Subtotal */}
+                <div className="flex justify-between py-1.5 border-b border-slate-200 text-rose-600 font-semibold px-2">
+                  <span>Total Deductions</span>
+                  <span>-Rs. {selectedPayslip.totalDeductions.toLocaleString()}</span>
+                </div>
+
+                {/* 4. Net Salary Payable */}
                 <div className="pt-2 flex justify-between font-bold text-sm text-slate-900 border-t-2 border-slate-900">
                   <span>Net Salary Payable</span>
+                  <span>Rs. {(selectedPayslip.salaryNetPayable ?? selectedPayslip.netPayable).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-100 text-emerald-700">
+                  <span>{selectedPayslip.status === 'DRAFT' ? 'Eligible Commission (preview)' : 'Finalized Commission'}</span>
+                  <span>+Rs. {(selectedPayslip.commissionPayable ?? 0).toLocaleString()}</span>
+                </div>
+                <div className="pt-2 flex justify-between font-bold text-sm text-slate-900 border-t-2 border-slate-900">
+                  <span>Combined Net Payable</span>
                   <span className="text-indigo-600">Rs. {selectedPayslip.netPayable.toLocaleString()}</span>
                 </div>
 

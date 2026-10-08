@@ -14,6 +14,7 @@ import { postStockMovement } from '../../lib/stock.js';
 import { getActiveDrawer, postCashMovement, postAccountMovement } from '../cash/cash.service.js';
 import { invoiceInclude } from './pos.service.js';
 import { toInvoiceDTO } from './pos.mapper.js';
+import { lockCommissionBranch } from '../commission/payrollCommission.js';
 
 const refundInclude = { ...invoiceInclude, refunds: { include: { lines: true } } };
 
@@ -49,6 +50,7 @@ export const refundInvoice = async (input, actor) => {
     const invoice = await tx.invoice.findUnique({ where: { id: input.invoiceId }, include: refundInclude });
     if (!invoice) throw badRequest('INVOICE_NOT_FOUND', `Invoice '${input.invoiceId}' not found.`);
     assertBranchAccess(actor, invoice.branchId, 'Access Denied: Cannot refund invoices of another branch.');
+    await lockCommissionBranch(tx, invoice.branchId);
     if (['VOIDED', 'REFUNDED'].includes(invoice.lifecycle)) throw conflict('INVOICE_CLOSED', `Invoice '${invoice.invoiceNumber}' is already ${invoice.lifecycle.toLowerCase()}.`);
 
     const branch = await tx.branch.findUnique({ where: { id: invoice.branchId } });

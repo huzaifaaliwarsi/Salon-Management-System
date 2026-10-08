@@ -14,35 +14,80 @@ function getCalendarDaysInMonth(yearMonth) {
 const sum = (rows, f = (r) => r.amount) => roundCurrency(rows.reduce((s, r) => s + (Number(f(r)) || 0), 0));
 const fmt = (n) => Number(n || 0).toLocaleString();
 
+function getDatesInRange(startStr, endStr) {
+  const dates = [];
+  const [sy, sm, sd] = startStr.split('-').map(Number);
+  const [ey, em, ed] = endStr.split('-').map(Number);
+  const curr = new Date(Date.UTC(sy, sm - 1, sd));
+  const end = new Date(Date.UTC(ey, em - 1, ed));
+  while (curr <= end) {
+    dates.push(curr.toISOString().slice(0, 10));
+    curr.setUTCDate(curr.getUTCDate() + 1);
+  }
+  return dates;
+}
+
 /**
  * @param staff        StaffMember DTO (pay terms already resolved for the month; may carry `exitDate`)
  * @param month        'YYYY-MM'
  * @param policy       PayrollPolicy DTO
  * @param attendanceRecords / overtimeRecords / branchHolidays  frontend DTO shapes
  * @param extras       { allowances: [{id,name,amount}], adjustments: [{id,type,title,amount}],
- *                       advances: [{id,advanceNumber,balance,recoveryPerMonth}] }
+ *                       advances: [{id,advanceNumber,balance,recoveryPerMonth,recoveredThisMonth}] }
+ * @param options      { startDate, endDate, runType, alreadyFinalizedDates, alreadyFinalizedOvertimeIds }
  */
-function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overtimeRecords, branchHolidays = [], extras = {}) {
+function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overtimeRecords, branchHolidays = [], extras = {}, options = {}) {
   const totalCalendarDays = getCalendarDaysInMonth(month);
   const startDateStr = `${month}-01`;
   const endDateStr = `${month}-${String(totalCalendarDays).padStart(2, "0")}`;
   const exitDate = staff.exitDate || null;
   const employed = (d) => !(staff.joiningDate && staff.joiningDate > d) && !(exitDate && exitDate < d);
 
-  const dates = Array.from({ length: totalCalendarDays }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`);
-  // Full-month schedule (ignores joining date) — the base for divisor WORKING_DAYS and proration.
-  const fullMonthStaff = { ...staff, joiningDate: undefined };
-  const workingDaysInMonth = dates.filter((d) => isWorkingDay(d, fullMonthStaff, branchHolidays).isWorking).length;
+  const isMonthly = staff.compensationType === "MONTHLY_SALARY" || staff.compensationType === "MONTHLY_PLUS_COMMISSION";
+  const isDaily = staff.compensationType === "DAILY_SALARY" || staff.compensationType === "DAILY_PLUS_COMMISSION";
 
-  const empAttendance = attendanceRecords.filter((a) => a.staffId === staff.id && a.date.startsWith(month));
+  // Period range:
+  const periodStartDate = options.startDate || startDateStr;
+  const periodEndDate = options.endDate || endDateStr;
+  const isPeriodRun = isDaily && (periodStartDate !== startDateStr || periodEndDate !== endDateStr);
+  const runType = options.runType || (periodStartDate === periodEndDate ? 'DAILY' : isPeriodRun ? 'CUSTOM_RANGE' : 'MONTHLY');
+
+  // Dates for working days in month (used for policy divisors and base references)
+  const allMonthDates = Array.from({ length: totalCalendarDays }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`);
+  const fullMonthStaff = { ...staff, joiningDate: undefined };
+  const workingDaysInMonth = allMonthDates.filter((d) => isWorkingDay(d, fullMonthStaff, branchHolidays).isWorking).length;
+
+  // The actual dates evaluated for attendance:
+  // For Daily staff in a period run (single day or date range): ONLY evaluate dates in [periodStartDate, periodEndDate]!
+  // Future dates outside this range are NOT evaluated, so they do NOT trigger unrecorded attendance exceptions.
+  const datesToEvaluate = isDaily && isPeriodRun
+    ? getDatesInRange(periodStartDate, periodEndDate)
+    : allMonthDates;
+
+  // Filter attendance for this employee within the evaluation scope
+  const empAttendance = attendanceRecords.filter((a) => {
+    if (a.staffId !== staff.id) return false;
+    if (isDaily && isPeriodRun) {
+      return a.date >= periodStartDate && a.date <= periodEndDate;
+    }
+    return a.date.startsWith(month);
+  });
+
   let presentDays = 0, paidLeaveDays = 0, unpaidLeaveDays = 0, absentDays = 0, missingPunchDays = 0, unrecordedDays = 0;
   let paidHolidayDays = 0, paidWeeklyOffDays = 0;
   const exceptionDetails = [];
   const consumedAttendanceDates = [];
   let attendancePenaltyDeductions = 0;
 
-  for (const dateStr of dates) {
+  for (const dateStr of datesToEvaluate) {
     if (!employed(dateStr)) continue;
+
+    // Check if this date was ALREADY finalized in another payroll run
+    if (options.alreadyFinalizedDates?.has(dateStr)) {
+      exceptionDetails.push(`Attendance on ${dateStr} has already been paid in an earlier finalized payroll run.`);
+      continue;
+    }
+
     const check = isWorkingDay(dateStr, staff, branchHolidays);
     const att = empAttendance.find((a) => a.date === dateStr);
     if (check.isWorking) {
@@ -71,15 +116,25 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
         presentDays++;
         attendancePenaltyDeductions += att.calculationSnapshot?.totalDeductionAmount || 0;
       }
-    } else if (check.reason?.startsWith("Holiday")) paidHolidayDays++;
-    else if (check.reason?.startsWith("Weekly off")) paidWeeklyOffDays++;
+    } else if (check.reason?.startsWith("Holiday")) {
+      if (policy.nonWorkedHolidayPaid) paidHolidayDays++;
+    } else if (check.reason?.startsWith("Weekly off")) {
+      if (policy.nonWorkedWeeklyOffPaid) paidWeeklyOffDays++;
+    }
   }
   attendancePenaltyDeductions = roundCurrency(attendancePenaltyDeductions);
 
-  // ── Overtime (approved, not yet locked by a finalized run) ──
-  const empOvertime = overtimeRecords.filter(
-    (ot) => ot.staffId === staff.id && ot.date.startsWith(month) && ot.status === "APPROVED" && !ot.payrollId
-  );
+  // ── Overtime (approved, not yet locked by a finalized run, within period) ──
+  const empOvertime = overtimeRecords.filter((ot) => {
+    if (ot.staffId !== staff.id) return false;
+    if (ot.status !== "APPROVED" || ot.payrollId || ot.payrollRunId) return false;
+    if (options.alreadyFinalizedOvertimeIds?.has(ot.id)) return false;
+    if (isDaily && isPeriodRun) {
+      return ot.date >= periodStartDate && ot.date <= periodEndDate;
+    }
+    return ot.date.startsWith(month);
+  });
+
   const hourlyRateSnapshot = staff.overtimeHourlyRate ?? 0;
   let approvedOvertimeMinutes = 0, approvedOvertimeAmount = 0;
   const consumedOvertimeIds = [];
@@ -101,8 +156,6 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
   else divisorUsed = totalCalendarDays;
 
   // ── Basic pay ──
-  const isMonthly = staff.compensationType === "MONTHLY_SALARY" || staff.compensationType === "MONTHLY_PLUS_COMMISSION";
-  const isDaily = staff.compensationType === "DAILY_SALARY" || staff.compensationType === "DAILY_PLUS_COMMISSION";
   let isProrated = false, prorationFormula = "";
   let baseEarnings = 0, leaveEarnings = 0, holidayEarnings = 0, absenceDeductions = 0;
   const joinedMidMonth = !!staff.joiningDate && staff.joiningDate > startDateStr && staff.joiningDate <= endDateStr;
@@ -112,7 +165,7 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
     const fullMonthlyBase = staff.baseSalary || 0;
     if (joinedMidMonth || leftMidMonth) {
       isProrated = true;
-      const span = dates.filter(employed);
+      const span = allMonthDates.filter(employed);
       if (policy.prorationMethod === "WORKING_DAYS") {
         const workedSpan = span.filter((d) => isWorkingDay(d, staff, branchHolidays).isWorking).length;
         baseEarnings = roundCurrency(fullMonthlyBase * (workingDaysInMonth > 0 ? workedSpan / workingDaysInMonth : 1));
@@ -136,7 +189,17 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
   if (!isDaily) { paidHolidayDays = 0; paidWeeklyOffDays = 0; }
 
   // ── Allowances, one-off adjustments ──
-  const allowanceLines = (extras.allowances || []).map((a) => ({ id: a.id, name: a.name, amount: roundCurrency(Number(a.amount)) }));
+  const daysInPeriod = datesToEvaluate.length;
+  const isDailyRun = runType === 'DAILY' || (periodStartDate === periodEndDate);
+
+  const allowanceLines = (extras.allowances || []).map((a) => {
+    let amt = roundCurrency(Number(a.amount));
+    if (isDaily && isPeriodRun) {
+      amt = roundCurrency((amt / (divisorUsed || 30)) * daysInPeriod);
+    }
+    return { id: a.id, name: a.name, amount: amt };
+  });
+
   const adjustments = (extras.adjustments || []).map((a) => ({ id: a.id, type: a.type, title: a.title, amount: roundCurrency(Number(a.amount)) }));
   const recurringAllowances = sum(allowanceLines);
   const oneOffAllowances = sum(adjustments.filter((a) => a.type === "ALLOWANCE"));
@@ -147,14 +210,34 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
   const grossPayable = roundCurrency(baseEarnings + leaveEarnings + holidayEarnings + approvedOvertimeAmount + allowancesTotal);
   const preAdvanceDeductions = roundCurrency(absenceDeductions + attendancePenaltyDeductions + otherDeductions);
 
-  // ── Advance recovery: planned installment, never more than the balance or the remaining net ──
+  // ── Advance recovery: planned installment, capped by monthly balance and already-recovered amounts ──
   let room = Math.max(0, roundCurrency(grossPayable - preAdvanceDeductions));
   const advanceRecoveries = [];
   for (const adv of extras.advances || []) {
-    const planned = Math.min(Number(adv.recoveryPerMonth), Number(adv.balance));
+    const recoveredThisMonth = Number(adv.recoveredThisMonth || 0);
+    const maxMonthlyAllowance = Math.max(0, Number(adv.recoveryPerMonth) - recoveredThisMonth);
+    if (maxMonthlyAllowance <= 0) continue; // Already fully recovered for this month!
+
+    let planned;
+    if (isDailyRun) {
+      const dailyInstallment = roundCurrency(Number(adv.recoveryPerMonth) / (divisorUsed || 30));
+      planned = Math.min(dailyInstallment, maxMonthlyAllowance, Number(adv.balance));
+    } else if (isPeriodRun) {
+      const rangeInstallment = roundCurrency((Number(adv.recoveryPerMonth) / (divisorUsed || 30)) * daysInPeriod);
+      planned = Math.min(rangeInstallment, maxMonthlyAllowance, Number(adv.balance));
+    } else {
+      planned = Math.min(maxMonthlyAllowance, Number(adv.balance));
+    }
+
     const amt = roundCurrency(Math.min(planned, room));
     if (amt > 0) {
-      advanceRecoveries.push({ advanceId: adv.id, advanceNumber: adv.advanceNumber, amount: amt, balanceBefore: Number(adv.balance), balanceAfter: roundCurrency(Number(adv.balance) - amt) });
+      advanceRecoveries.push({
+        advanceId: adv.id,
+        advanceNumber: adv.advanceNumber,
+        amount: amt,
+        balanceBefore: Number(adv.balance),
+        balanceAfter: roundCurrency(Number(adv.balance) - amt),
+      });
       room = roundCurrency(room - amt);
     }
   }
@@ -194,6 +277,10 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
       designation: staff.designation || staff.roleTitle,
       branchId: staff.branchId,
       month,
+      startDate: periodStartDate,
+      endDate: periodEndDate,
+      runType,
+      daysInPeriod,
       compensationType: staff.compensationType,
       effectiveBaseSalary: staff.baseSalary || 0,
       effectiveDailyRate: staff.dailySalaryRate || 0,
@@ -242,7 +329,10 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
         divisorUsed,
         prorationApplied: isProrated,
         prorationFormula: isProrated ? prorationFormula : void 0,
-        dailyRateUsed: roundCurrency((staff.baseSalary || 0) / divisorUsed),
+        dailyRateUsed: isDaily ? (staff.dailySalaryRate || 0) : roundCurrency((staff.baseSalary || 0) / divisorUsed),
+        periodType: runType,
+        startDate: periodStartDate,
+        endDate: periodEndDate,
         policyNotes: `Policy Divisor: /${divisorUsed}. Daily Leave Eligible: ${policy.dailyStaffPaidLeaveEligibility}. Holiday Paid (daily): ${!!policy.nonWorkedHolidayPaid}. Weekly Off Paid (daily): ${!!policy.nonWorkedWeeklyOffPaid}. Proration: ${policy.prorationMethod}.`
       }
     }
@@ -263,5 +353,6 @@ function resolveTermsAt(staff, history, onDate) {
 export {
   evaluateEmployeePayroll,
   getCalendarDaysInMonth,
+  getDatesInRange,
   resolveTermsAt
 };

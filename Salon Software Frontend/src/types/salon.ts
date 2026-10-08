@@ -1510,6 +1510,8 @@ export interface PayrollPayment {
   staffName: string;
   branchId: string;
   amount: number;
+  salaryAmount?: number;
+  commissionAmount?: number;
   method: 'CASH' | 'ONLINE';
   cashDrawerId?: string;
   onlineAccountId?: string;
@@ -1590,6 +1592,10 @@ export interface PayslipRecord {
   grossPayable: number;
   totalDeductions: number;
   netPayable: number;
+  salaryNetPayable?: number;
+  salaryPaidAmount?: number;
+  commissionPayable?: number;
+  combinedNetPayable?: number;
   paidAmount: number;
   outstandingAmount: number;
   status: PayrollRunStatus;
@@ -1885,6 +1891,7 @@ export interface CommissionStatementRecord {
   id: string;
   commissionRunId: string;
   statementNumber: string; // CS-LHE-2026-0001
+  payrollPayslipId?: string;
   staffId: string;
   staffName: string;
   employeeCode: string;
@@ -2131,5 +2138,4 @@ export interface TipsStatementSummary {
   allocationsCount: number;
   payoutsCount: number;
 }
-
 

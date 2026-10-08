@@ -342,7 +342,7 @@ export const resetTestData = async (input = {}, actor) => {
     await prisma.appointment.deleteMany({});
   }
 
-  // 3. Tips, Commission, Payroll
+  // 3. Tips, Commission, Payroll & Staff Loans
   await prisma.tipPayout.deleteMany({ where: bFilter });
   await prisma.tipAllocation.deleteMany({ where: bFilter });
   await prisma.tipReceipt.deleteMany({ where: bFilter });
@@ -354,12 +354,24 @@ export const resetTestData = async (input = {}, actor) => {
   }
   await prisma.commissionRun.deleteMany({ where: bFilter });
 
+  // 3a. Staff Loans / Advances & Recoveries (recoveries must be deleted before advances)
+  if (targetBranchId && targetBranchId !== 'ALL') {
+    await prisma.advanceRecovery.deleteMany({ where: { advance: { branchId: targetBranchId } } });
+  } else {
+    await prisma.advanceRecovery.deleteMany({});
+  }
+  await prisma.salaryAdvance.deleteMany({ where: bFilter });
+
+  // 3b. One-off Payroll Adjustments
+  await prisma.payrollAdjustment.deleteMany({ where: bFilter });
+
+  // 3c. Payroll Payments, Payslips & Runs (Payments MUST be deleted before Payslips due to FK constraint)
+  await prisma.payrollPayment.deleteMany({ where: bFilter });
   if (targetBranchId && targetBranchId !== 'ALL') {
     await prisma.payslip.deleteMany({ where: { run: { branchId: targetBranchId } } });
   } else {
     await prisma.payslip.deleteMany({});
   }
-  await prisma.payrollPayment.deleteMany({ where: bFilter });
   await prisma.payrollRun.deleteMany({ where: bFilter });
 
   // 4. Attendance & Overtime
@@ -424,7 +436,14 @@ export const resetTestData = async (input = {}, actor) => {
   if (targetBranchId && targetBranchId !== 'ALL') {
     const branchRow = await prisma.branch.findUnique({ where: { id: targetBranchId } });
     if (branchRow) {
-      await prisma.sequence.deleteMany({ where: { branchCode: branchRow.code } });
+      await prisma.sequence.deleteMany({
+        where: {
+          OR: [
+            { branchCode: branchRow.code },
+            { branchCode: { startsWith: `${branchRow.code}:` } },
+          ],
+        },
+      });
     }
   } else {
     await prisma.sequence.deleteMany({});
@@ -442,6 +461,7 @@ export const resetTestData = async (input = {}, actor) => {
     } else {
       await prisma.staffCompensationHistory.deleteMany({});
     }
+    await prisma.staffAllowance.deleteMany({ where: bFilter });
     await prisma.staff.deleteMany({ where: bFilter });
   }
 

@@ -35,7 +35,7 @@ router.post('/payments', idempotency, validate(z.object({
   commissionRunId: z.string().min(1), statementId: z.string().min(1), amount: z.number().positive('Payment amount must be greater than zero.'),
   method: z.enum(['CASH', 'ONLINE']), onlineAccountId: z.string().optional(), cashDrawerId: z.string().optional(),
   reference: z.string().optional(), notes: z.string().optional(),
-})), send((req) => s.recordPayment(req.user, req.body), 201));
+})), send((req) => s.recordPayment(req.user, { ...req.body, idempotencyKey: req.idempotencyKey }), 201));
 router.post('/payments/:id/reverse', validate(reason), send((req) => s.reversePayment(req.user, req.params.id, req.body.reason)));
 
 export default router;

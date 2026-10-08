@@ -229,7 +229,11 @@ export const StaffCommissionPage: React.FC = () => {
   // Open Payment Modal
   const openPaymentModal = (run: CommissionRun, st?: CommissionStatementRecord) => {
     setPaymentTargetRun(run);
-    const targetStatement = st || run.statements.find((s) => s.outstandingAmount > 0) || run.statements[0];
+    const targetStatement = st || run.statements.find((s) => s.outstandingAmount > 0 && !s.payrollPayslipId);
+    if (!targetStatement || targetStatement.payrollPayslipId) {
+      toast.error('Commission included in payroll must be paid through its payslip.');
+      return;
+    }
     setPaymentTargetStatement(targetStatement);
     setPaymentForm({
       amount: targetStatement ? targetStatement.outstandingAmount : 0,
@@ -761,7 +765,8 @@ export const StaffCommissionPage: React.FC = () => {
                                 <Printer className="w-4 h-4" />
                               </button>
 
-                              {st.outstandingAmount > 0 && run.status !== 'CANCELLED' && (
+                              {st.payrollPayslipId && <span className="text-[10px] text-indigo-600">Included in Payroll</span>}
+                              {st.outstandingAmount > 0 && !st.payrollPayslipId && run.status !== 'CANCELLED' && (
                                 <button
                                   onClick={() => openPaymentModal(run, st)}
                                   title="Pay Commission"
@@ -1205,7 +1210,7 @@ export const StaffCommissionPage: React.FC = () => {
                         )}
                       </div>
 
-                      {pmt.status === 'COMPLETED' && (
+                      {pmt.status === 'COMPLETED' && !selectedStatement.payrollPayslipId && (
                         <button
                           onClick={() => {
                             setPaymentToReverse({

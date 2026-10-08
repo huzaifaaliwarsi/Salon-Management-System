@@ -11,13 +11,14 @@ import { getBusinessDate, dateOnly, ymd } from '../../lib/dates.js';
 import { round2, toDec } from '../../lib/money.js';
 import { nextSequence, nextPeriodSequence } from '../../lib/sequence.js';
 import { num, opt, iso } from '../../lib/dto.js';
-import { evaluateEmployeePayroll, getCalendarDaysInMonth, resolveTermsAt } from '../../lib/calculations/payrollCalculations.js';
+import { evaluateEmployeePayroll, getCalendarDaysInMonth, getDatesInRange, resolveTermsAt } from '../../lib/calculations/payrollCalculations.js';
 import { advanceBalance, loadPayrollExtras, lockPayrollExtras, releasePayrollExtras } from './payroll.extras.service.js';
 import { payoutMoney, reverseMoney } from '../cash/cash.service.js';
 import { getPayrollPolicy } from '../settings/settings.service.js';
 import { toStaffDTO } from '../staff/staff.mapper.js';
 import { toAttendanceDTO } from '../attendance/attendance.service.js';
 import { toOvertimeDTO } from '../attendance/overtime.service.js';
+import { lockCommissionBranch, combinedContract, payrollCommission, assertCommissionAvailable, completedAmount } from '../commission/payrollCommission.js';
 
 const runInclude = { payslips: { include: { payments: true } } };
 const noAccountant = (actor) => {
@@ -27,7 +28,7 @@ const noAccountant = (actor) => {
 
 export const toPaymentDTO = (p) => ({
   id: p.id, paymentNumber: p.paymentNumber, payrollRunId: p.runId, payslipId: p.payslipId, staffId: p.staffId, staffName: p.staffName,
-  branchId: p.branchId, amount: num(p.amount), method: p.method, cashDrawerId: opt(p.cashDrawerId), onlineAccountId: opt(p.onlineAccountId),
+  branchId: p.branchId, amount: round2(toDec(p.amount).plus(p.commissionAmount ?? 0)).toNumber(), salaryAmount: num(p.amount), commissionAmount: num(p.commissionAmount ?? 0), method: p.method, cashDrawerId: opt(p.cashDrawerId), onlineAccountId: opt(p.onlineAccountId),
   onlineAccountName: opt(p.onlineAccountName), paidAt: iso(p.paidAt), paidByUserId: p.paidByUserId, paidByName: p.paidByName,
   reference: p.reference, notes: opt(p.notes), status: p.status, reversedAt: iso(p.reversedAt), reversedByUserId: opt(p.reversedByUserId),
   reversedByName: opt(p.reversedByName), reversalReason: opt(p.reversalReason),
@@ -36,13 +37,16 @@ export const toPaymentDTO = (p) => ({
 /** Payslip DTO: frozen calculation snapshot + live payment state. */
 const toPayslipDTO = (ps, run) => {
   const completed = (ps.payments ?? []).filter((p) => p.status === 'COMPLETED');
-  const paid = round2(completed.reduce((s, p) => s.plus(p.amount), toDec(0)));
-  const net = toDec(ps.netPayable);
+  const salaryPaid = completedAmount(completed);
+  const paid = round2(completed.reduce((s, p) => s.plus(p.amount).plus(p.commissionAmount ?? 0), toDec(0)));
+  const commission = toDec(ps.snapshot.commissionPayable ?? 0);
+  const net = toDec(ps.netPayable).plus(commission);
   const outstanding = round2(net.minus(paid));
   const status = run.status === 'DRAFT' || run.status === 'CANCELLED' ? run.status
     : outstanding.lessThanOrEqualTo(0) && net.greaterThan(0) ? 'PAID' : paid.greaterThan(0) ? 'PARTIALLY_PAID' : 'FINALIZED';
   return {
     ...ps.snapshot, id: ps.id, payrollRunId: ps.runId, payslipNumber: ps.payslipNumber, netPayable: net.toNumber(),
+    salaryNetPayable: num(ps.netPayable), salaryPaidAmount: salaryPaid.toNumber(), commissionPayable: commission.toNumber(), combinedNetPayable: net.toNumber(),
     paidAmount: paid.toNumber(), outstandingAmount: outstanding.toNumber(), status,
     payments: (ps.payments ?? []).sort((a, b) => a.paidAt - b.paidAt).map(toPaymentDTO),
   };
@@ -59,6 +63,10 @@ export const toRunDTO = (run, branchName) => {
     id: run.id, payrollNumber: run.payrollNumber, branchId: run.branchId, branchName, month: run.month, status,
     totalPayable: totalPayable.toNumber(), totalPaid: totalPaid.toNumber(), totalOutstanding: outstanding.toNumber(),
     employeeCount: payslips.length, payslips, policySnapshot: run.policySnapshot, generatedAt: iso(run.generatedAt),
+    startDate: run.policySnapshot?.startDate,
+    endDate: run.policySnapshot?.endDate,
+    runType: run.policySnapshot?.runType || 'MONTHLY',
+    compensationTypeFilter: run.policySnapshot?.compensationTypeFilter,
     generatedByUserId: run.generatedByUserId, generatedByName: run.generatedByName, finalizedAt: iso(run.finalizedAt),
     finalizedByUserId: opt(run.finalizedByUserId), finalizedByName: opt(run.finalizedByName), cancelledAt: iso(run.cancelledAt),
     cancelledByUserId: opt(run.cancelledByUserId), cancelledByName: opt(run.cancelledByName), cancellationReason: opt(run.cancellationReason),
@@ -73,25 +81,71 @@ const runDTO = async (tx, id) => {
 };
 
 /**
- * Evaluate everyone employed in the branch during the month with the shared engine: active staff who
- * joined on/before month end, plus staff who left during the month (exitDate ≥ month start). Pay terms
- * are the ones in force on the last employed day of the month (StaffCompensationHistory).
+ * Evaluate staff employed in the branch during the period with the shared engine: active staff who
+ * joined on/before period end, plus staff who left during the period (exitDate ≥ period start).
+ * Pay terms are the ones in force on the last employed day of the period (StaffCompensationHistory).
  */
-const evaluateBranchMonth = async (tx, actor, branchId, month, staffId) => {
-  const monthEnd = `${month}-${String(getCalendarDaysInMonth(month)).padStart(2, '0')}`;
-  const from = dateOnly(`${month}-01`);
-  const to = dateOnly(monthEnd);
+const evaluateBranchMonth = async (tx, actor, branchId, month, staffId, options = {}) => {
+  const totalDays = getCalendarDaysInMonth(month);
+  const defaultStart = `${month}-01`;
+  const defaultEnd = `${month}-${String(totalDays).padStart(2, '0')}`;
+  const startDate = options.startDate || defaultStart;
+  const endDate = options.endDate || (options.runType === 'DAILY' ? startDate : defaultEnd);
+  const runType = options.runType || (startDate === endDate ? 'DAILY' : (startDate !== defaultStart || endDate !== defaultEnd) ? 'CUSTOM_RANGE' : 'MONTHLY');
+  const compensationType = options.compensationType;
+
+  const from = dateOnly(startDate);
+  const to = dateOnly(endDate);
   const policy = await getPayrollPolicy({ ...actor, role: 'SUPER_ADMIN' }, branchId);
+
+  // Load existing finalized runs to prevent duplicate salary or overtime on overlapping dates
+  const finalizedRuns = await tx.payrollRun.findMany({
+    where: {
+      branchId,
+      status: { notIn: ['DRAFT', 'CANCELLED'] },
+      ...(options.excludeRunId ? { id: { not: options.excludeRunId } } : {}),
+      month,
+    },
+    include: { payslips: true },
+  });
+
+  const alreadyFinalizedByStaff = new Map();
+  for (const fr of finalizedRuns) {
+    for (const ps of fr.payslips) {
+      if (!alreadyFinalizedByStaff.has(ps.staffId)) {
+        alreadyFinalizedByStaff.set(ps.staffId, new Set());
+      }
+      const set = alreadyFinalizedByStaff.get(ps.staffId);
+      const consumed = ps.snapshot?.consumedAttendanceDates;
+      if (Array.isArray(consumed) && consumed.length > 0) {
+        consumed.forEach((d) => set.add(d));
+      } else if (ps.snapshot?.startDate && ps.snapshot?.endDate) {
+        getDatesInRange(ps.snapshot.startDate, ps.snapshot.endDate).forEach((d) => set.add(d));
+      } else {
+        const dCount = getCalendarDaysInMonth(fr.month);
+        getDatesInRange(`${fr.month}-01`, `${fr.month}-${String(dCount).padStart(2, '0')}`).forEach((d) => set.add(d));
+      }
+    }
+  }
+
   const staffRows = await tx.staff.findMany({
     where: {
-      branchId, joiningDate: { lte: to }, ...(staffId ? { id: staffId } : {}),
+      branchId,
+      joiningDate: { lte: to },
+      ...(staffId ? { id: staffId } : {}),
       OR: [{ isActive: true }, { exitDate: { gte: from } }],
     },
     include: { compensationHistory: true },
     orderBy: { employeeCode: 'asc' },
   });
-  const attendanceRows = await tx.attendanceRecord.findMany({ where: { branchId, workDate: { gte: from, lte: to } }, include: { punches: true, corrections: true } });
-  const otRows = await tx.overtimeRecord.findMany({ where: { branchId, workDate: { gte: from, lte: to }, status: 'APPROVED', payrollRunId: null } });
+
+  const attendanceRows = await tx.attendanceRecord.findMany({
+    where: { branchId, workDate: { gte: from, lte: to } },
+    include: { punches: true, corrections: true },
+  });
+  const otRows = await tx.overtimeRecord.findMany({
+    where: { branchId, workDate: { gte: from, lte: to }, status: 'APPROVED', payrollRunId: null },
+  });
   const holidays = (await tx.branchHoliday.findMany({ where: { branchId: { in: ['ALL', branchId] } } }))
     .map((h) => ({ id: h.id, branchId: h.branchId, date: h.date.toISOString().slice(0, 10), title: h.title }));
   const extras = await loadPayrollExtras(tx, branchId, month, staffRows.map((s) => s.id));
@@ -99,17 +153,56 @@ const evaluateBranchMonth = async (tx, actor, branchId, month, staffId) => {
   const byId = new Map(staffRows.map((s) => [s.id, s]));
   const attendance = attendanceRows.map((a) => toAttendanceDTO(a, byId.get(a.staffId)));
   const overtime = otRows.map((o) => toOvertimeDTO(o, byId.get(o.staffId)));
+
+  const results = [];
+  for (const s of staffRows) {
+    const dto = toStaffDTO(s);
+    const lastDay = dto.exitDate && dto.exitDate < endDate ? dto.exitDate : endDate;
+    const history = s.compensationHistory.map((h) => ({ effectiveDate: ymd(h.effectiveDate), snapshot: h.snapshot }));
+    const terms = resolveTermsAt(dto, history, lastDay);
+
+    const isDaily = ['DAILY_SALARY', 'DAILY_PLUS_COMMISSION'].includes(terms.compensationType);
+    const isMonthly = ['MONTHLY_SALARY', 'MONTHLY_PLUS_COMMISSION', 'COMMISSION_ONLY'].includes(terms.compensationType);
+
+    if (compensationType && compensationType !== 'ALL') {
+      if (terms.compensationType !== compensationType) continue;
+    } else if (runType === 'DAILY' || runType === 'CUSTOM_RANGE') {
+      if (!isDaily) continue;
+    } else if (runType === 'MONTHLY') {
+      if (!isMonthly) continue;
+    }
+
+    const staffFinalizedDates = alreadyFinalizedByStaff.get(s.id) || new Set();
+    const evalResult = evaluateEmployeePayroll(
+      terms,
+      month,
+      policy,
+      attendance,
+      overtime,
+      holidays,
+      extras.get(s.id),
+      {
+        startDate,
+        endDate,
+        runType,
+        alreadyFinalizedDates: staffFinalizedDates,
+      }
+    );
+
+    results.push({ staff: s, ...evalResult });
+  }
+
   return {
     policy,
-    results: staffRows.map((s) => {
-      const dto = toStaffDTO(s);
-      const lastDay = dto.exitDate && dto.exitDate < monthEnd ? dto.exitDate : monthEnd;
-      const history = s.compensationHistory.map((h) => ({ effectiveDate: ymd(h.effectiveDate), snapshot: h.snapshot }));
-      const terms = resolveTermsAt(dto, history, lastDay);
-      return { staff: s, ...evaluateEmployeePayroll(terms, month, policy, attendance, overtime, holidays, extras.get(s.id)) };
-    }),
+    results,
+    alreadyFinalizedByStaff,
+    startDate,
+    endDate,
+    runType,
+    compensationType,
   };
 };
+
 // ── Queries ──────────────────────────────────────────────────────────────────
 
 export const listRuns = async (actor, { branchId, month } = {}) => {
@@ -124,19 +217,51 @@ export const listRuns = async (actor, { branchId, month } = {}) => {
 
 // ── Preview / finalize / cancel ──────────────────────────────────────────────
 
-export const generatePreview = async (actor, { branchId: requested, month, staffId }) => {
+export const generatePreview = async (actor, { branchId: requested, month: reqMonth, staffId, startDate, endDate, runType, compensationType }) => {
   noAccountant(actor);
   const branchId = resolveWriteBranch(actor, requested, 'Access Denied: Cannot generate payroll for another branch.');
   return prisma.$transaction(async (tx) => {
-    const { policy, results } = await evaluateBranchMonth(tx, actor, branchId, month, staffId);
+    await lockCommissionBranch(tx, branchId);
+    const month = reqMonth || (startDate ? startDate.slice(0, 7) : new Date().toISOString().slice(0, 7));
+    const totalDays = getCalendarDaysInMonth(month);
+    const defaultStart = `${month}-01`;
+    const defaultEnd = `${month}-${String(totalDays).padStart(2, '0')}`;
+
+    let effStartDate = startDate || defaultStart;
+    let effEndDate = endDate || (runType === 'DAILY' ? effStartDate : defaultEnd);
+    let effRunType = runType;
+    if (!effRunType) {
+      if (effStartDate === effEndDate) effRunType = 'DAILY';
+      else if (effStartDate !== defaultStart || effEndDate !== defaultEnd) effRunType = 'CUSTOM_RANGE';
+      else effRunType = 'MONTHLY';
+    }
+
+    const { policy, results } = await evaluateBranchMonth(tx, actor, branchId, month, staffId, {
+      startDate: effStartDate,
+      endDate: effEndDate,
+      runType: effRunType,
+      compensationType,
+    });
+
+    const commissions = await payrollCommission(tx, actor, branchId, month, results.filter((r) => combinedContract(r.payslip.compensationType)).map((r) => r.staff.id), false, { startDate: effStartDate, endDate: effEndDate });
     // One DRAFT per branch+month: a new preview replaces the previous one.
     await tx.payrollRun.deleteMany({ where: { branchId, month, status: 'DRAFT' } });
     const run = await tx.payrollRun.create({
       data: {
-        branchId, month, status: 'DRAFT', policySnapshot: policy, generatedByUserId: actor.id, generatedByName: actor.name,
+        branchId, month, status: 'DRAFT',
+        policySnapshot: {
+          ...policy,
+          startDate: effStartDate,
+          endDate: effEndDate,
+          runType: effRunType,
+          compensationTypeFilter: compensationType || 'ALL',
+          staffIdFilter: staffId || null,
+        },
+        generatedByUserId: actor.id,
+        generatedByName: actor.name,
         payslips: {
           create: results.map((r) => ({
-            staffId: r.staff.id, snapshot: { ...r.payslip, canFinalize: r.canFinalize, blockReason: r.blockReason },
+            staffId: r.staff.id, snapshot: { ...r.payslip, commissionPayable: commissions.get(r.staff.id)?.amount ?? 0, canFinalize: r.canFinalize, blockReason: r.blockReason },
             netPayable: round2(r.payslip.netPayable), grossPayable: round2(r.payslip.grossPayable),
           })),
         },
@@ -149,28 +274,79 @@ export const generatePreview = async (actor, { branchId: requested, month, staff
 export const finalizeRun = async (actor, runId) => {
   noAccountant(actor);
   return prisma.$transaction(async (tx) => {
+    const header = await tx.payrollRun.findUnique({ where: { id: runId } });
+    if (!header) throw notFound('PAYROLL_NOT_FOUND', 'Payroll run not found.');
+    await lockCommissionBranch(tx, header.branchId);
     await tx.$executeRaw`SELECT 1 FROM "PayrollRun" WHERE id = ${runId} FOR UPDATE`;
     const draft = await tx.payrollRun.findUnique({ where: { id: runId } });
     if (!draft) throw notFound('PAYROLL_NOT_FOUND', `Payroll run '${runId}' not found. Please generate a preview first.`);
     assertBranchAccess(actor, draft.branchId, 'Access Denied: Cannot finalize payroll for another branch.');
     if (draft.status !== 'DRAFT') throw conflict('NOT_DRAFT', `Payroll run is already in status '${draft.status}' and cannot be finalized.`);
-    const existing = await tx.payrollRun.findFirst({ where: { branchId: draft.branchId, month: draft.month, status: { notIn: ['DRAFT', 'CANCELLED'] } } });
-    if (existing) throw conflict('ALREADY_FINALIZED', `A finalized payroll run already exists for ${draft.month} in this branch (${existing.payrollNumber}).`);
 
-    // Re-evaluate at finalization so the frozen snapshot reflects the latest approved data.
-    const { policy, results } = await evaluateBranchMonth(tx, actor, draft.branchId, draft.month);
+    const draftRunType = draft.policySnapshot?.runType || 'MONTHLY';
+    const existingRuns = await tx.payrollRun.findMany({
+      where: {
+        branchId: draft.branchId,
+        month: draft.month,
+        id: { not: runId },
+        status: { notIn: ['DRAFT', 'CANCELLED'] },
+      },
+    });
+
+    if (draftRunType === 'MONTHLY') {
+      const existingMonthly = existingRuns.find((r) => !r.policySnapshot?.runType || r.policySnapshot?.runType === 'MONTHLY');
+      if (existingMonthly) {
+        throw conflict('ALREADY_FINALIZED', `A finalized monthly payroll run already exists for ${draft.month} in this branch (${existingMonthly.payrollNumber}).`);
+      }
+    }
+
+    // Re-evaluate at finalization so the frozen snapshot reflects the latest approved data and period options.
+    const { policy, results, alreadyFinalizedByStaff } = await evaluateBranchMonth(
+      tx,
+      actor,
+      draft.branchId,
+      draft.month,
+      draft.policySnapshot?.staffIdFilter || undefined,
+      {
+        startDate: draft.policySnapshot?.startDate,
+        endDate: draft.policySnapshot?.endDate,
+        runType: draft.policySnapshot?.runType,
+        compensationType: draft.policySnapshot?.compensationTypeFilter,
+        excludeRunId: runId,
+      }
+    );
+
     const blocked = results.find((r) => !r.canFinalize);
     if (blocked) throw conflict('PAYROLL_BLOCKED', `Cannot finalize payroll: ${blocked.blockReason}`);
+
+    // Verify duplicate attendance prevention across finalized runs
+    for (const r of results) {
+      const alreadyDates = alreadyFinalizedByStaff?.get(r.staff.id);
+      if (alreadyDates) {
+        for (const d of r.payslip.consumedAttendanceDates || []) {
+          if (alreadyDates.has(d)) {
+            throw conflict('DUPLICATE_PAYROLL', `Staff member ${r.staff.name} already has finalized payroll covering date ${d}.`);
+          }
+        }
+      }
+    }
+
+    const commissions = await payrollCommission(tx, actor, draft.branchId, draft.month, results.filter((r) => combinedContract(r.payslip.compensationType)).map((r) => r.staff.id), true, draft.policySnapshot);
 
     const branch = await tx.branch.findUnique({ where: { id: draft.branchId } });
     await tx.payslip.deleteMany({ where: { runId } });
     for (const r of results) {
-      await tx.payslip.create({
+      const commission = commissions.get(r.staff.id) ?? { amount: 0, statements: [] };
+      const payslip = await tx.payslip.create({
         data: {
           runId, staffId: r.staff.id, payslipNumber: await nextPeriodSequence(tx, branch.code, 'PS', draft.month),
-          snapshot: { ...r.payslip, canFinalize: true, blockReason: undefined }, netPayable: round2(r.payslip.netPayable), grossPayable: round2(r.payslip.grossPayable),
+          snapshot: { ...r.payslip, commissionPayable: commission.amount, commissionLinks: commission.statements, canFinalize: true, blockReason: undefined }, netPayable: round2(r.payslip.netPayable), grossPayable: round2(r.payslip.grossPayable),
         },
       });
+      if (commission.statements.length) {
+        const linked = await tx.commissionStatement.updateMany({ where: { id: { in: commission.statements.map((s) => s.id) }, payrollPayslipId: null }, data: { payrollPayslipId: payslip.id } });
+        if (linked.count !== commission.statements.length) throw conflict('COMMISSION_ALREADY_LINKED', 'Commission is already linked to another payroll.');
+      }
       // Lock the overtime consumed by this payslip so it can never be paid twice.
       if (r.payslip.consumedOvertimeIds?.length) {
         await tx.overtimeRecord.updateMany({ where: { id: { in: r.payslip.consumedOvertimeIds } }, data: { payrollRunId: runId } });
@@ -181,8 +357,19 @@ export const finalizeRun = async (actor, runId) => {
     await tx.payrollRun.update({
       where: { id: runId },
       data: {
-        status: 'FINALIZED', payrollNumber: await nextPeriodSequence(tx, branch.code, 'PAY', draft.month), policySnapshot: policy,
-        finalizedAt: new Date(), finalizedByUserId: actor.id, finalizedByName: actor.name,
+        status: 'FINALIZED',
+        payrollNumber: await nextPeriodSequence(tx, branch.code, 'PAY', draft.month),
+        policySnapshot: {
+          ...policy,
+          startDate: draft.policySnapshot?.startDate,
+          endDate: draft.policySnapshot?.endDate,
+          runType: draft.policySnapshot?.runType,
+          compensationTypeFilter: draft.policySnapshot?.compensationTypeFilter,
+          staffIdFilter: draft.policySnapshot?.staffIdFilter,
+        },
+        finalizedAt: new Date(),
+        finalizedByUserId: actor.id,
+        finalizedByName: actor.name,
       },
     });
     await auditLog(tx, { userId: actor.id, userName: actor.name, action: 'PAYROLL_FINALIZED', entity: 'PayrollRun', entityId: runId, branchId: draft.branchId, after: { month: draft.month } });
@@ -193,7 +380,10 @@ export const finalizeRun = async (actor, runId) => {
 export const cancelRun = async (actor, runId, reason) => {
   noAccountant(actor);
   return prisma.$transaction(async (tx) => {
-    const run = await tx.payrollRun.findUnique({ where: { id: runId }, include: { payments: true } });
+    const header = await tx.payrollRun.findUnique({ where: { id: runId } });
+    if (!header) throw notFound('PAYROLL_NOT_FOUND', 'Payroll run not found.');
+    await lockCommissionBranch(tx, header.branchId);
+    const run = await tx.payrollRun.findUnique({ where: { id: runId }, include: { payments: true, payslips: true } });
     if (!run) throw notFound('PAYROLL_NOT_FOUND', `Payroll run '${runId}' not found.`);
     assertBranchAccess(actor, run.branchId, 'Access Denied: Cannot cancel payroll run for another branch.');
     if (run.status === 'CANCELLED') throw conflict('ALREADY_CANCELLED', 'This payroll run is already cancelled.');
@@ -202,6 +392,12 @@ export const cancelRun = async (actor, runId, reason) => {
     }
     await tx.overtimeRecord.updateMany({ where: { payrollRunId: runId }, data: { payrollRunId: null } });
     await releasePayrollExtras(tx, runId);
+    const createdIds = run.payslips.flatMap((ps) => ps.snapshot.commissionLinks ?? []).filter((s) => s.createdByPayroll).map((s) => s.id);
+    const created = await tx.commissionStatement.findMany({ where: { id: { in: createdIds } }, select: { runId: true } });
+    const commissionRunIds = [...new Set(created.map((s) => s.runId))];
+    await tx.commissionStatement.updateMany({ where: { payrollPayslipId: { in: run.payslips.map((ps) => ps.id) } }, data: { payrollPayslipId: null } });
+    await tx.commissionEvent.updateMany({ where: { consumedByRunId: { in: commissionRunIds } }, data: { consumedByRunId: null } });
+    await tx.commissionRun.updateMany({ where: { id: { in: commissionRunIds } }, data: { status: 'CANCELLED', cancelledAt: new Date(), cancelledByUserId: actor.id, cancelledByName: actor.name, cancellationReason: reason } });
     await tx.payrollRun.update({
       where: { id: runId },
       data: { status: 'CANCELLED', cancellationReason: reason, cancelledAt: new Date(), cancelledByUserId: actor.id, cancelledByName: actor.name },
@@ -216,6 +412,14 @@ export const cancelRun = async (actor, runId, reason) => {
 export const recordPayment = async (actor, input) => {
   noAccountant(actor);
   return prisma.$transaction(async (tx) => {
+    const header = await tx.payrollRun.findUnique({ where: { id: input.payrollRunId } });
+    if (!header) throw notFound('PAYROLL_NOT_FOUND', 'Payroll run not found.');
+    await lockCommissionBranch(tx, header.branchId);
+    const requestKey = input.idempotencyKey ? `${actor.id}:payroll:${input.idempotencyKey}` : null;
+    if (requestKey) {
+      const replay = await tx.payrollPayment.findUnique({ where: { requestKey } });
+      if (replay) return { payrollRun: await runDTO(tx, replay.runId), payment: toPaymentDTO(replay) };
+    }
     await tx.$executeRaw`SELECT 1 FROM "Payslip" WHERE id = ${input.payslipId} FOR UPDATE`;
     const run = await tx.payrollRun.findUnique({ where: { id: input.payrollRunId }, include: runInclude });
     if (!run) throw notFound('PAYROLL_NOT_FOUND', `Payroll run '${input.payrollRunId}' not found.`);
@@ -225,38 +429,71 @@ export const recordPayment = async (actor, input) => {
     if (!ps) throw notFound('PAYSLIP_NOT_FOUND', `Payslip '${input.payslipId}' not found in this payroll run.`);
     const slip = toPayslipDTO(ps, run);
     const amount = round2(input.amount);
+    if (amount.lessThanOrEqualTo(0)) throw badRequest('INVALID_AMOUNT', 'Payment must be greater than zero.');
     if (amount.greaterThan(slip.outstandingAmount)) {
       throw badRequest('OVERPAYMENT', `Payment amount (${amount}) exceeds outstanding payslip balance (${slip.outstandingAmount}).`);
     }
     const branch = await tx.branch.findUnique({ where: { id: run.branchId } });
     const paymentNumber = await nextSequence(tx, branch.code, 'PAYMT', Number((await getBusinessDate(tx)).slice(0, 4)));
-    const source = await payoutMoney(tx, actor, {
-      branchId: run.branchId, method: input.method, onlineAccountId: input.onlineAccountId, amount, type: 'PAYROLL_PAYOUT',
+    // Salary first for partial payments. Both ledgers retain their own amounts and movements.
+    const salaryOutstanding = toDec(ps.netPayable).minus(completedAmount(ps.payments));
+    const salaryAmount = amount.lessThan(salaryOutstanding) ? amount : salaryOutstanding;
+    const commissionAmount = round2(amount.minus(salaryAmount));
+    if (commissionAmount.greaterThan(0)) await assertCommissionAvailable(tx, run.branchId, ps.staffId, commissionAmount);
+    const source = salaryAmount.greaterThan(0) ? await payoutMoney(tx, actor, {
+      branchId: run.branchId, method: input.method, onlineAccountId: input.onlineAccountId, amount: salaryAmount, type: 'PAYROLL_PAYOUT',
       sourceModule: 'PAYROLL', sourceId: ps.id, reference: paymentNumber, description: `Salary ${run.month} — ${slip.staffName}`,
-    });
+    }) : {};
     const payment = await tx.payrollPayment.create({
       data: {
-        paymentNumber, runId: run.id, payslipId: ps.id, staffId: ps.staffId, staffName: slip.staffName, branchId: run.branchId, amount,
+        paymentNumber, runId: run.id, payslipId: ps.id, staffId: ps.staffId, staffName: slip.staffName, branchId: run.branchId, amount: salaryAmount, commissionAmount, requestKey,
         method: input.method, ...source, reference: input.reference || '', notes: input.notes || null, paidByUserId: actor.id, paidByName: actor.name,
       },
     });
+    let remainder = commissionAmount;
+    const linked = await tx.commissionStatement.findMany({ where: { payrollPayslipId: ps.id }, include: { payments: true, run: true }, orderBy: { id: 'asc' } });
+    for (const st of linked) {
+      if (remainder.lessThanOrEqualTo(0)) break;
+      if (st.run.status !== 'FINALIZED') throw conflict('COMMISSION_NOT_PAYABLE', 'Linked commission is not finalized.');
+      const outstanding = round2(toDec(st.netPayable).minus(completedAmount(st.payments)));
+      const part = remainder.lessThan(outstanding) ? remainder : outstanding;
+      if (part.lessThanOrEqualTo(0)) continue;
+      const commissionNumber = await nextSequence(tx, branch.code, 'COMPAY', Number((await getBusinessDate(tx)).slice(0, 4)));
+      const commissionSource = await payoutMoney(tx, actor, { branchId: run.branchId, method: input.method, onlineAccountId: input.onlineAccountId, amount: part,
+        type: 'COMMISSION_PAYOUT', sourceModule: 'COMMISSION', sourceId: st.id, reference: commissionNumber, description: `Commission with payroll ${paymentNumber} — ${slip.staffName}` });
+      await tx.commissionPayment.create({ data: { paymentNumber: commissionNumber, runId: st.runId, statementId: st.id, staffId: ps.staffId, staffName: slip.staffName,
+        branchId: run.branchId, amount: part, payrollPaymentId: payment.id, method: input.method, ...commissionSource,
+        reference: input.reference || '', notes: input.notes || null, paidByUserId: actor.id, paidByName: actor.name } });
+      if (!salaryAmount.greaterThan(0)) await tx.payrollPayment.update({ where: { id: payment.id }, data: commissionSource });
+      remainder = round2(remainder.minus(part));
+    }
+    if (remainder.greaterThan(0)) throw conflict('COMMISSION_BALANCE_CHANGED', 'Linked commission balance changed. Regenerate payroll.');
     await auditLog(tx, { userId: actor.id, userName: actor.name, action: 'PAYROLL_PAID', entity: 'PayrollPayment', entityId: payment.id, branchId: run.branchId, after: { amount: amount.toNumber(), method: input.method } });
-    return { payrollRun: await runDTO(tx, run.id), payment: toPaymentDTO(payment) };
+    return { payrollRun: await runDTO(tx, run.id), payment: toPaymentDTO(await tx.payrollPayment.findUnique({ where: { id: payment.id } })) };
   });
 };
 
 export const reversePayment = async (actor, paymentId, reason) => {
   noAccountant(actor);
   return prisma.$transaction(async (tx) => {
+    const header = await tx.payrollPayment.findUnique({ where: { id: paymentId } });
+    if (!header) throw notFound('PAYMENT_NOT_FOUND', 'Payroll payment not found.');
+    await lockCommissionBranch(tx, header.branchId);
     await tx.$executeRaw`SELECT 1 FROM "PayrollPayment" WHERE id = ${paymentId} FOR UPDATE`;
     const p = await tx.payrollPayment.findUnique({ where: { id: paymentId } });
     if (!p) throw notFound('PAYMENT_NOT_FOUND', `Payroll payment '${paymentId}' not found.`);
     assertBranchAccess(actor, p.branchId, 'Access Denied: Cannot reverse payments of another branch.');
     if (p.status === 'REVERSED') throw conflict('ALREADY_REVERSED', 'This payroll payment is already reversed.');
-    await reverseMoney(tx, actor, {
+    if (toDec(p.amount).greaterThan(0)) await reverseMoney(tx, actor, {
       branchId: p.branchId, method: p.method, onlineAccountId: p.onlineAccountId, amount: p.amount, sourceModule: 'PAYROLL',
       sourceId: p.id, reference: p.paymentNumber, description: `Reversal of salary payment ${p.paymentNumber}: ${reason}`,
     });
+    const commissionPayments = await tx.commissionPayment.findMany({ where: { payrollPaymentId: p.id, status: 'COMPLETED' } });
+    for (const cp of commissionPayments) {
+      await reverseMoney(tx, actor, { branchId: cp.branchId, method: cp.method, onlineAccountId: cp.onlineAccountId, amount: cp.amount, sourceModule: 'COMMISSION',
+        sourceId: cp.id, reference: cp.paymentNumber, description: `Reversal with payroll ${p.paymentNumber}: ${reason}` });
+      await tx.commissionPayment.update({ where: { id: cp.id }, data: { status: 'REVERSED', reversalReason: reason, reversedAt: new Date(), reversedByUserId: actor.id, reversedByName: actor.name } });
+    }
     const updated = await tx.payrollPayment.update({
       where: { id: paymentId },
       data: { status: 'REVERSED', reversalReason: reason, reversedAt: new Date(), reversedByUserId: actor.id, reversedByName: actor.name },
@@ -292,7 +529,7 @@ export const monthlySummary = async (actor, { branchId: requested, month }) => {
   const to = dateOnly(`${month}-${String(getCalendarDaysInMonth(month)).padStart(2, '0')}`);
   const runs = await prisma.payrollRun.findMany({ where: { branchId, month, status: { not: 'CANCELLED' } }, include: runInclude });
   const run = runs.find((r) => r.status !== 'DRAFT') ?? runs.find((r) => r.status === 'DRAFT');
-  const slips = run ? toRunDTO(run).payslips : [];
+  const slips = runs.flatMap((r) => toRunDTO(r).payslips);
   const comRuns = await prisma.commissionRun.findMany({
     where: { branchId, status: { notIn: ['DRAFT', 'CANCELLED'] }, startDate: { gte: from }, endDate: { lte: to } },
     include: { statements: { include: { payments: true } } },
@@ -305,21 +542,22 @@ export const monthlySummary = async (actor, { branchId: requested, month }) => {
   const staff = await prisma.staff.findMany({ where: { branchId, joiningDate: { lte: to }, OR: [{ isActive: true }, { exitDate: { gte: from } }] }, orderBy: { employeeCode: 'asc' } });
 
   const rows = staff.map((s) => {
-    const slip = slips.find((p) => p.staffId === s.id);
+    const mine = slips.filter((p) => p.staffId === s.id);
+    const salarySlips = mine.filter((p) => p.status !== 'DRAFT');
     const stmts = comRuns.flatMap((r) => r.statements).filter((st) => st.staffId === s.id);
     const comNet = round2(stmts.reduce((x, st) => x.plus(st.netPayable), toDec(0)));
     const comPaid = round2(stmts.flatMap((st) => st.payments).filter((p) => p.status === 'COMPLETED').reduce((x, p) => x.plus(p.amount), toDec(0)));
     const ev = (type) => toDec(pending.find((p) => p.staffId === s.id && p.type === type)?._sum.amount ?? 0);
     const comPending = Decimal_max0(round2(ev('EARN').minus(ev('REVERSAL'))));
     // A DRAFT payslip is only an estimate: shown as salaryEstimate, never as earned/outstanding liability.
-    const isDraft = slip?.status === 'DRAFT';
-    const salaryEstimate = isDraft ? toDec(slip.netPayable) : toDec(0);
-    const salaryNet = isDraft ? toDec(0) : toDec(slip?.netPayable ?? 0);
-    const salaryPaid = toDec(slip?.paidAmount ?? 0);
+    const salaryEstimate = round2(mine.filter((p) => p.status === 'DRAFT').reduce((x, p) => x.plus(p.salaryNetPayable), toDec(0)));
+    const salaryNet = round2(salarySlips.reduce((x, p) => x.plus(p.salaryNetPayable), toDec(0)));
+    const salaryPaid = round2(salarySlips.reduce((x, p) => x.plus(p.salaryPaidAmount), toDec(0)));
+    const salaryStatus = salarySlips.length ? (salaryNet.greaterThan(0) && salaryPaid.greaterThanOrEqualTo(salaryNet) ? 'PAID' : salaryPaid.greaterThan(0) ? 'PARTIALLY_PAID' : 'FINALIZED') : mine.length ? 'DRAFT' : 'NOT_GENERATED';
     const advBal = round2(advances.filter((a) => a.staffId === s.id).reduce((x, a) => x.plus(advanceBalance(a)), toDec(0)));
     return {
       staffId: s.id, staffName: s.name, employeeCode: s.employeeCode, designation: s.designation, compensationType: s.compensationType,
-      salaryStatus: slip ? slip.status : 'NOT_GENERATED', salaryEstimate: salaryEstimate.toNumber(), salaryNet: salaryNet.toNumber(), salaryPaid: salaryPaid.toNumber(),
+      salaryStatus, salaryEstimate: salaryEstimate.toNumber(), salaryNet: salaryNet.toNumber(), salaryPaid: salaryPaid.toNumber(),
       salaryOutstanding: round2(salaryNet.minus(salaryPaid)).toNumber(),
       commissionNet: comNet.toNumber(), commissionPaid: comPaid.toNumber(), commissionOutstanding: round2(comNet.minus(comPaid)).toNumber(),
       commissionPending: comPending.toNumber(),

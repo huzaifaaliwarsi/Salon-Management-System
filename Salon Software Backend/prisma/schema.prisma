@@ -1721,6 +1721,7 @@ model Payslip {
 
   run      PayrollRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
   payments PayrollPayment[]
+  commissionStatements CommissionStatement[]
 
   @@unique([runId, staffId])
   @@index([staffId])
@@ -1736,6 +1737,8 @@ model PayrollPayment {
   staffName         String
   branchId          String
   amount            Decimal   @db.Decimal(14, 2)
+  commissionAmount  Decimal   @default(0) @db.Decimal(14, 2)
+  requestKey        String?   @unique
   method            String    // CASH | ONLINE
   cashDrawerId      String?
   onlineAccountId   String?
@@ -1753,6 +1756,7 @@ model PayrollPayment {
 
   run     PayrollRun @relation(fields: [runId], references: [id])
   payslip Payslip    @relation(fields: [payslipId], references: [id])
+  commissionPayments CommissionPayment[]
 
   @@index([runId])
   @@index([staffId])
@@ -1884,6 +1888,8 @@ model CommissionStatement {
   staffId         String
   snapshot        Json    // CommissionStatementRecord calculation (frontend shape incl. line items)
   netPayable      Decimal @db.Decimal(14, 2)
+  payrollPayslipId String?
+  payrollPayslip Payslip? @relation(fields: [payrollPayslipId], references: [id])
 
   run      CommissionRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
   payments CommissionPayment[]
@@ -1902,6 +1908,8 @@ model CommissionPayment {
   staffName         String
   branchId          String
   amount            Decimal   @db.Decimal(14, 2)
+  payrollPaymentId  String?
+  requestKey        String?   @unique
   method            String
   cashDrawerId      String?
   onlineAccountId   String?
@@ -1919,6 +1927,7 @@ model CommissionPayment {
 
   run       CommissionRun       @relation(fields: [runId], references: [id])
   statement CommissionStatement @relation(fields: [statementId], references: [id])
+  payrollPayment PayrollPayment? @relation(fields: [payrollPaymentId], references: [id])
 
   @@index([runId])
   @@index([staffId])
@@ -2034,4 +2043,3 @@ model TipPayout {
   @@index([branchId, payoutDate])
   @@map("TipPayout")
 }
-

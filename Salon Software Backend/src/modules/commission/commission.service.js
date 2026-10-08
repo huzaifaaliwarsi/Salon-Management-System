@@ -13,6 +13,7 @@ import { nextSequence } from '../../lib/sequence.js';
 import { num, opt, iso } from '../../lib/dto.js';
 import { isCompensationEligibleForCommission } from '../../lib/calculations/commissionCalculations.js';
 import { payoutMoney, reverseMoney } from '../cash/cash.service.js';
+import { lockCommissionBranch, assertCommissionAvailable } from './payrollCommission.js';
 
 const runInclude = { statements: { include: { payments: true } } };
 const noAccountant = (actor) => {
@@ -38,7 +39,7 @@ const toStatementDTO = (st, run) => {
   const paid = round2((st.payments ?? []).filter((p) => p.status === 'COMPLETED').reduce((s, p) => s.plus(p.amount), toDec(0)));
   const net = toDec(st.netPayable);
   return {
-    ...st.snapshot, id: st.id, commissionRunId: st.runId, statementNumber: st.statementNumber, netCommissionPayable: net.toNumber(),
+    ...st.snapshot, id: st.id, commissionRunId: st.runId, statementNumber: st.statementNumber, netCommissionPayable: net.toNumber(), payrollPayslipId: opt(st.payrollPayslipId),
     paidAmount: paid.toNumber(), outstandingAmount: round2(net.minus(paid)).toNumber(), status: statementStatus(run.status, net, paid),
     attributionLines: st.snapshot.lineItems, payments: (st.payments ?? []).sort((a, b) => a.paidAt - b.paidAt).map(toPaymentDTO),
   };
@@ -68,9 +69,9 @@ const runDTO = async (tx, id) => {
 };
 
 /** Build one statement per eligible staff member from unconsumed events in the window. */
-const buildStatements = async (tx, branchId, startDate, endDate, staffId) => {
-  const staffRows = await tx.staff.findMany({ where: { branchId, isActive: true, ...(staffId ? { id: staffId } : {}) }, orderBy: { employeeCode: 'asc' } });
-  const eligible = staffRows.filter((s) => isCompensationEligibleForCommission(s.compensationType));
+export const buildStatements = async (tx, branchId, startDate, endDate, staffId, payrollStaffIds) => {
+  const staffRows = await tx.staff.findMany({ where: { branchId, ...(payrollStaffIds ? { id: { in: payrollStaffIds } } : { isActive: true, ...(staffId ? { id: staffId } : {}) }) }, orderBy: { employeeCode: 'asc' } });
+  const eligible = payrollStaffIds ? staffRows : staffRows.filter((s) => isCompensationEligibleForCommission(s.compensationType));
   const events = await tx.commissionEvent.findMany({
     where: { branchId, consumedByRunId: null, eventDate: { gte: dateOnly(startDate), lte: dateOnly(endDate) }, staffId: { in: eligible.map((s) => s.id) } },
     orderBy: [{ eventDate: 'asc' }, { createdAt: 'asc' }],
@@ -134,6 +135,7 @@ export const generatePreview = async (actor, { branchId: requested, startDate, e
   if (startDate > endDate) throw badRequest('INVALID_RANGE', 'Start date must be on or before end date.');
   const branchId = resolveWriteBranch(actor, requested, 'Access Denied: Cannot generate commission for another branch.');
   return prisma.$transaction(async (tx) => {
+    await lockCommissionBranch(tx, branchId);
     const built = await buildStatements(tx, branchId, startDate, endDate, staffId);
     await tx.commissionRun.deleteMany({ where: { branchId, status: 'DRAFT', startDate: dateOnly(startDate), endDate: dateOnly(endDate) } });
     const run = await tx.commissionRun.create({
@@ -149,6 +151,9 @@ export const generatePreview = async (actor, { branchId: requested, startDate, e
 export const finalizeRun = async (actor, runId) => {
   noAccountant(actor);
   return prisma.$transaction(async (tx) => {
+    const header = await tx.commissionRun.findUnique({ where: { id: runId } });
+    if (!header) throw notFound('COMMISSION_NOT_FOUND', 'Commission run not found.');
+    await lockCommissionBranch(tx, header.branchId);
     await tx.$executeRaw`SELECT 1 FROM "CommissionRun" WHERE id = ${runId} FOR UPDATE`;
     const draft = await tx.commissionRun.findUnique({ where: { id: runId } });
     if (!draft) throw notFound('COMMISSION_NOT_FOUND', `Commission run '${runId}' not found. Please generate a preview first.`);
@@ -179,10 +184,14 @@ export const finalizeRun = async (actor, runId) => {
 export const cancelRun = async (actor, runId, reason) => {
   noAccountant(actor);
   return prisma.$transaction(async (tx) => {
-    const run = await tx.commissionRun.findUnique({ where: { id: runId }, include: { payments: true } });
+    const header = await tx.commissionRun.findUnique({ where: { id: runId } });
+    if (!header) throw notFound('COMMISSION_NOT_FOUND', 'Commission run not found.');
+    await lockCommissionBranch(tx, header.branchId);
+    const run = await tx.commissionRun.findUnique({ where: { id: runId }, include: { payments: true, statements: true } });
     if (!run) throw notFound('COMMISSION_NOT_FOUND', `Commission run '${runId}' not found.`);
     assertBranchAccess(actor, run.branchId, 'Access Denied: Cannot cancel commission run for another branch.');
     if (run.status === 'CANCELLED') throw conflict('ALREADY_CANCELLED', 'This commission run is already cancelled.');
+    if (run.statements.some((s) => s.payrollPayslipId)) throw conflict('COMMISSION_LINKED_TO_PAYROLL', 'Cancel the linked payroll before cancelling this commission run.');
     if (run.payments.some((p) => p.status === 'COMPLETED')) throw conflict('HAS_PAYMENTS', 'Runs with payments cannot be cancelled until all payments are properly reversed.');
     await tx.commissionEvent.updateMany({ where: { consumedByRunId: runId }, data: { consumedByRunId: null } });
     await tx.commissionRun.update({
@@ -199,6 +208,14 @@ export const cancelRun = async (actor, runId, reason) => {
 export const recordPayment = async (actor, input) => {
   noAccountant(actor);
   return prisma.$transaction(async (tx) => {
+    const header = await tx.commissionRun.findUnique({ where: { id: input.commissionRunId } });
+    if (!header) throw notFound('COMMISSION_NOT_FOUND', 'Commission run not found.');
+    await lockCommissionBranch(tx, header.branchId);
+    const requestKey = input.idempotencyKey ? `${actor.id}:commission:${input.idempotencyKey}` : null;
+    if (requestKey) {
+      const replay = await tx.commissionPayment.findUnique({ where: { requestKey } });
+      if (replay) return { commissionRun: await runDTO(tx, replay.runId), payment: toPaymentDTO(replay) };
+    }
     await tx.$executeRaw`SELECT 1 FROM "CommissionStatement" WHERE id = ${input.statementId} FOR UPDATE`;
     const run = await tx.commissionRun.findUnique({ where: { id: input.commissionRunId }, include: runInclude });
     if (!run) throw notFound('COMMISSION_NOT_FOUND', `Commission run '${input.commissionRunId}' not found.`);
@@ -206,9 +223,12 @@ export const recordPayment = async (actor, input) => {
     if (['DRAFT', 'CANCELLED'].includes(run.status)) throw conflict('RUN_NOT_PAYABLE', `Cannot record payment on a commission run in '${run.status}' status.`);
     const st = run.statements.find((s) => s.id === input.statementId);
     if (!st) throw notFound('STATEMENT_NOT_FOUND', `Statement '${input.statementId}' not found in this commission run.`);
+    if (st.payrollPayslipId) throw conflict('COMMISSION_LINKED_TO_PAYROLL', 'This commission is included in payroll. Pay or reverse it through the linked payslip.');
     const dto = toStatementDTO(st, run);
     const amount = round2(input.amount);
+    if (amount.lessThanOrEqualTo(0)) throw badRequest('INVALID_AMOUNT', 'Payment must be greater than zero.');
     if (amount.greaterThan(dto.outstandingAmount)) throw badRequest('OVERPAYMENT', `Payment amount (${amount}) exceeds outstanding commission balance (${dto.outstandingAmount}).`);
+    await assertCommissionAvailable(tx, run.branchId, st.staffId, amount);
 
     const branch = await tx.branch.findUnique({ where: { id: run.branchId } });
     const paymentNumber = await nextSequence(tx, branch.code, 'COMPAY', Number((await getBusinessDate(tx)).slice(0, 4)));
@@ -218,7 +238,7 @@ export const recordPayment = async (actor, input) => {
     });
     const payment = await tx.commissionPayment.create({
       data: {
-        paymentNumber, runId: run.id, statementId: st.id, staffId: st.staffId, staffName: dto.staffName, branchId: run.branchId, amount,
+        paymentNumber, runId: run.id, statementId: st.id, staffId: st.staffId, staffName: dto.staffName, branchId: run.branchId, amount, requestKey,
         method: input.method, ...source, reference: input.reference || '', notes: input.notes || null, paidByUserId: actor.id, paidByName: actor.name,
       },
     });
@@ -230,10 +250,16 @@ export const recordPayment = async (actor, input) => {
 export const reversePayment = async (actor, paymentId, reason) => {
   noAccountant(actor);
   return prisma.$transaction(async (tx) => {
+    const header = await tx.commissionPayment.findUnique({ where: { id: paymentId } });
+    if (!header) throw notFound('PAYMENT_NOT_FOUND', 'Commission payment not found.');
+    await lockCommissionBranch(tx, header.branchId);
     await tx.$executeRaw`SELECT 1 FROM "CommissionPayment" WHERE id = ${paymentId} FOR UPDATE`;
     const p = await tx.commissionPayment.findUnique({ where: { id: paymentId } });
     if (!p) throw notFound('PAYMENT_NOT_FOUND', `Commission payment '${paymentId}' not found.`);
     assertBranchAccess(actor, p.branchId, 'Access Denied: Cannot reverse payments of another branch.');
+    if (p.payrollPaymentId) throw conflict('COMMISSION_LINKED_TO_PAYROLL', 'Reverse the combined payment through Payroll.');
+    const statement = await tx.commissionStatement.findUnique({ where: { id: p.statementId } });
+    if (statement.payrollPayslipId) throw conflict('COMMISSION_LINKED_TO_PAYROLL', 'Cancel the linked payroll before reversing an earlier standalone commission payout.');
     if (p.status === 'REVERSED') throw conflict('ALREADY_REVERSED', 'This commission payment is already reversed.');
     await reverseMoney(tx, actor, {
       branchId: p.branchId, method: p.method, onlineAccountId: p.onlineAccountId, amount: p.amount, sourceModule: 'COMMISSION',

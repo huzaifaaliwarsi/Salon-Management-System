@@ -11934,6 +11934,22 @@ class MockSalonService implements SalonServiceContract {
   }
 
   async resetTestData(params?: { branchId?: string; wipeCatalogue?: boolean; wipeInventory?: boolean; wipeClients?: boolean; wipeStaff?: boolean; wipeSuppliers?: boolean }): Promise<{ success: boolean; message: string; branchId: string; resetAt: string }> {
+    const store = mockStorage.getStore();
+    if (store) {
+      const bId = params?.branchId;
+      if (!bId || bId === 'ALL') {
+        store.payrollRuns = [];
+        store.payrollPayments = [];
+      } else {
+        if (store.payrollRuns) {
+          store.payrollRuns = store.payrollRuns.filter((r: PayrollRun) => r.branchId !== bId);
+        }
+        if (store.payrollPayments) {
+          store.payrollPayments = store.payrollPayments.filter((p: PayrollPayment) => p.branchId !== bId);
+        }
+      }
+      mockStorage.saveStore(store);
+    }
     return {
       success: true,
       message: 'Mock test data reset executed successfully.',

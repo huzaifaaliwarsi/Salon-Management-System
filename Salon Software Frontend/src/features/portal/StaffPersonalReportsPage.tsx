@@ -110,9 +110,11 @@ export const StaffPersonalReportsPage: React.FC = () => {
     let totalOutstanding = 0;
 
     payslips.forEach((p) => {
-      finalizedPayable += p.netPayable;
-      totalPaid += p.paidAmount;
-      totalOutstanding += p.outstandingAmount;
+      const salaryNet = p.salaryNetPayable ?? p.netPayable;
+      const salaryPaid = p.salaryPaidAmount ?? p.paidAmount;
+      finalizedPayable += salaryNet;
+      totalPaid += salaryPaid;
+      totalOutstanding += salaryNet - salaryPaid;
     });
 
     commissions.forEach((c) => {
@@ -905,46 +907,114 @@ export const StaffPersonalReportsPage: React.FC = () => {
                 <span className="text-slate-500">Employee Name</span>
                 <span className="font-bold text-slate-900">{selectedPayslip.staffName}</span>
               </div>
+              {/* 1. Base Salary & Proration */}
               <div className="flex justify-between py-1 border-b border-slate-50">
-                <span className="text-slate-500">
-                  Base Earned
-                  {selectedPayslip.calculationDetails?.prorationApplied && <span className="block text-[10px] text-amber-600">{selectedPayslip.calculationDetails.prorationFormula}</span>}
-                </span>
-                <span className="font-semibold">{formatCurrency(basicEarned(selectedPayslip))}</span>
+                <span className="text-slate-500">Contractual Base Salary</span>
+                <span className="font-semibold text-slate-900">{formatCurrency(selectedPayslip.effectiveBaseSalary ?? selectedPayslip.baseEarnings)}</span>
               </div>
-              <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
-                <span>Absence / Unpaid Leave Deductions</span>
-                <span>-{formatCurrency(selectedPayslip.absenceDeductions)}</span>
+              {selectedPayslip.calculationDetails?.prorationApplied && (
+                <div className="flex justify-between py-1 border-b border-slate-50 text-amber-700 bg-amber-50/50 px-1 rounded">
+                  <span>
+                    Proration Adjustment
+                    <span className="block text-[10px] text-amber-600 font-normal">{selectedPayslip.calculationDetails.prorationFormula}</span>
+                  </span>
+                  <span className="font-semibold">-{formatCurrency(Math.max(0, (selectedPayslip.effectiveBaseSalary || 0) - selectedPayslip.baseEarnings))}</span>
+                </div>
+              )}
+              <div className="flex justify-between py-1 border-b border-slate-50 bg-slate-50/60 px-1 rounded">
+                <span className="text-slate-700 font-medium">Earned Base Salary</span>
+                <span className="font-bold text-slate-900">{formatCurrency(basicEarned(selectedPayslip))}</span>
               </div>
-              <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
-                <span>Late Punches Penalty</span>
-                <span>-{formatCurrency(selectedPayslip.lateEarlyDeductions)}</span>
-              </div>
-              <div className="flex justify-between py-1 border-b border-slate-50 text-emerald-600">
-                <span>Approved Overtime Pay</span>
-                <span>+{formatCurrency(selectedPayslip.approvedOvertimeAmount)}</span>
-              </div>
+
+              {/* 2. Other Earnings */}
+              {selectedPayslip.leaveEarnings > 0 && (
+                <div className="flex justify-between py-1 border-b border-slate-50">
+                  <span className="text-slate-600">Eligible Paid Leave ({selectedPayslip.paidLeaveDays} days)</span>
+                  <span className="font-semibold text-slate-900">{formatCurrency(selectedPayslip.leaveEarnings)}</span>
+                </div>
+              )}
+              {(selectedPayslip.holidayEarnings ?? 0) > 0 && (
+                <div className="flex justify-between py-1 border-b border-slate-50">
+                  <span className="text-slate-600">Holiday / Weekly-off Pay</span>
+                  <span className="font-semibold text-slate-900">+{formatCurrency(selectedPayslip.holidayEarnings || 0)}</span>
+                </div>
+              )}
+              {selectedPayslip.approvedOvertimeAmount > 0 && (
+                <div className="flex justify-between py-1 border-b border-slate-50 text-indigo-600">
+                  <span>Approved Overtime ({selectedPayslip.approvedOvertimeMinutes} mins)</span>
+                  <span className="font-semibold">+{formatCurrency(selectedPayslip.approvedOvertimeAmount)}</span>
+                </div>
+              )}
               {(selectedPayslip.allowanceLines ?? []).map((a) => (
                 <div key={a.id} className="flex justify-between py-1 border-b border-slate-50 text-emerald-600">
                   <span>{a.name} Allowance</span>
-                  <span>+{formatCurrency(a.amount)}</span>
+                  <span className="font-semibold">+{formatCurrency(a.amount)}</span>
                 </div>
               ))}
-              {(selectedPayslip.adjustments ?? []).map((a) => (
-                <div key={a.id} className={`flex justify-between py-1 border-b border-slate-50 ${a.type === 'DEDUCTION' ? 'text-rose-600' : 'text-emerald-600'}`}>
+              {(selectedPayslip.adjustments ?? []).filter((a) => a.type !== 'DEDUCTION').map((a) => (
+                <div key={a.id} className="flex justify-between py-1 border-b border-slate-50 text-emerald-600">
                   <span>{a.title}</span>
-                  <span>{a.type === 'DEDUCTION' ? '-' : '+'}{formatCurrency(a.amount)}</span>
+                  <span className="font-semibold">+{formatCurrency(a.amount)}</span>
                 </div>
               ))}
+
+              {/* Gross Earnings Subtotal */}
+              <div className="flex justify-between py-1.5 border-b-2 border-slate-200 bg-slate-100/70 px-2 rounded font-semibold text-slate-900">
+                <span>Gross Earnings</span>
+                <span>{formatCurrency(selectedPayslip.grossPayable)}</span>
+              </div>
+
+              {/* 3. Deductions */}
+              {selectedPayslip.absenceDeductions > 0 && (
+                <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
+                  <span>Absence Deductions ({selectedPayslip.absentDays} days)</span>
+                  <span>-{formatCurrency(selectedPayslip.absenceDeductions)}</span>
+                </div>
+              )}
+              {selectedPayslip.lateEarlyDeductions > 0 && (
+                <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
+                  <span>Late Punches Penalty</span>
+                  <span>-{formatCurrency(selectedPayslip.lateEarlyDeductions)}</span>
+                </div>
+              )}
+              {(selectedPayslip.adjustments ?? []).filter((a) => a.type === 'DEDUCTION').map((a) => (
+                <div key={a.id} className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
+                  <span>{a.title}</span>
+                  <span>-{formatCurrency(a.amount)}</span>
+                </div>
+              ))}
+
+              {/* Loan Recoveries */}
               {(selectedPayslip.advanceRecoveries ?? []).map((r) => (
                 <div key={r.advanceId} className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
-                  <span>Advance Recovery ({r.advanceNumber}) <span className="text-[10px] text-slate-400">balance left {formatCurrency(r.balanceAfter)}</span></span>
-                  <span>-{formatCurrency(r.amount)}</span>
+                  <span>
+                    Loan Recovery ({r.advanceNumber}){' '}
+                    <span className="text-[10px] text-slate-400 font-normal">
+                      ({selectedPayslip.status === 'DRAFT' ? 'projected balance' : 'remaining balance'}: {formatCurrency(r.balanceAfter)})
+                    </span>
+                  </span>
+                  <span className="font-semibold">-{formatCurrency(r.amount)}</span>
                 </div>
               ))}
-              <div className="pt-2 flex justify-between font-bold text-sm text-slate-900 border-t-2 border-slate-900">
-                <span>Net Payable</span>
-                <span className="text-indigo-600">{formatCurrency(selectedPayslip.netPayable)}</span>
+
+              {/* Total Deductions Subtotal */}
+              <div className="flex justify-between py-1.5 border-b border-slate-200 text-rose-600 font-semibold px-2">
+                <span>Total Deductions</span>
+                <span>-{formatCurrency(selectedPayslip.totalDeductions)}</span>
+              </div>
+
+              {/* 4. Net Payable */}
+                <div className="pt-2 flex justify-between font-bold text-sm text-slate-900 border-t-2 border-slate-900">
+                  <span>Net Salary Payable</span>
+                  <span>{formatCurrency(selectedPayslip.salaryNetPayable ?? selectedPayslip.netPayable)}</span>
+                </div>
+                <div className="flex justify-between py-1 text-emerald-700">
+                  <span>Finalized Commission</span>
+                  <span>+{formatCurrency(selectedPayslip.commissionPayable ?? 0)}</span>
+                </div>
+                <div className="pt-2 flex justify-between font-bold text-sm text-slate-900 border-t-2 border-slate-900">
+                  <span>Combined Net Payable</span>
+                  <span className="text-indigo-600">{formatCurrency(selectedPayslip.netPayable)}</span>
               </div>
               <div className="flex justify-between text-slate-500 pt-1">
                 <span>Paid: {formatCurrency(selectedPayslip.paidAmount)}</span>

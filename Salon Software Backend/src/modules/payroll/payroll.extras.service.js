@@ -76,7 +76,17 @@ export const loadPayrollExtras = async (tx, branchId, month, staffIds) => {
   const by = (rows, map) => (id) => rows.filter((r) => r.staffId === id).map(map);
   const a = by(allowances, (x) => ({ id: x.id, name: x.name, amount: num(x.amount) }));
   const j = by(adjustments, (x) => ({ id: x.id, type: x.type, title: x.title, amount: num(x.amount) }));
-  const v = by(advances, (x) => ({ id: x.id, advanceNumber: x.advanceNumber, recoveryPerMonth: num(x.recoveryPerMonth), balance: num(advanceBalance(x)) }));
+  const v = by(advances, (x) => {
+    const activeThisMonth = (x.recoveries || []).filter((r) => r.status === 'ACTIVE' && r.month === month);
+    const recoveredThisMonth = num(activeThisMonth.reduce((s, r) => s.plus(r.amount), toDec(0)));
+    return {
+      id: x.id,
+      advanceNumber: x.advanceNumber,
+      recoveryPerMonth: num(x.recoveryPerMonth),
+      balance: num(advanceBalance(x)),
+      recoveredThisMonth,
+    };
+  });
   return new Map(staffIds.map((id) => [id, { allowances: a(id), adjustments: j(id), advances: v(id).filter((x) => x.balance > 0) }]));
 };
 
