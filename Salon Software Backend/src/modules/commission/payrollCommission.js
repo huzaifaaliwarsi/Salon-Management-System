@@ -31,9 +31,10 @@ export const payrollCommission = async (tx, actor, branchId, month, staffIds, fi
   const [year, m] = month.split('-').map(Number);
   const endDate = period.endDate || `${month}-${new Date(year, m, 0).getDate()}`;
   const built = await buildStatements(tx, branchId, startDate, endDate, undefined, staffIds);
-  // A statement is indivisible: only finalized windows wholly in this payroll month can be linked.
+  // Carry forward finalized unpaid statements through the period end, preserving their original
+  // dates and payments. A statement ending after this payroll remains eligible in a later run.
   const existing = await tx.commissionStatement.findMany({
-    where: { staffId: { in: staffIds }, payrollPayslipId: null, run: { branchId, status: 'FINALIZED', startDate: { gte: dateOnly(startDate) }, endDate: { lte: dateOnly(endDate) } } },
+    where: { staffId: { in: staffIds }, payrollPayslipId: null, run: { branchId, status: 'FINALIZED', endDate: { lte: dateOnly(endDate) } } },
     include: { payments: true }, orderBy: { id: 'asc' },
   });
   const byStaff = new Map(staffIds.map((id) => [id, { amount: 0, statements: [] }]));

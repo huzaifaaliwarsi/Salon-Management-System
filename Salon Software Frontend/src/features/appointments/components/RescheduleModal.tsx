@@ -87,7 +87,7 @@ export const RescheduleModal: React.FC<RescheduleModalProps> = ({
       <DialogContent className="max-w-md p-6">
         <DialogHeader>
           <DialogTitle className="text-lg font-bold text-slate-900 flex items-center gap-2">
-            <Clock className="w-5 h-5 text-[#2254E1]" />
+            <Calendar className="w-5 h-5 text-[#2254E1]" />
             Reschedule Appointment
           </DialogTitle>
           <p className="text-xs text-slate-500">
@@ -104,9 +104,9 @@ export const RescheduleModal: React.FC<RescheduleModalProps> = ({
           )}
 
           <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs space-y-1">
-            <span className="text-slate-500 block">Current Reserved Slot:</span>
+            <span className="text-slate-500 block">Current Scheduled Date:</span>
             <span className="font-semibold text-slate-800">
-              {appointment.date} at {appointment.startTime || appointment.time}
+              {appointment.date}
             </span>
           </div>
 
@@ -119,21 +119,6 @@ export const RescheduleModal: React.FC<RescheduleModalProps> = ({
               className="mt-1"
               required
             />
-          </div>
-
-          <div>
-            <Label className="text-xs">New Start Time Slot</Label>
-            <select
-              value={newStartTime}
-              onChange={(e) => setNewStartTime(e.target.value)}
-              className="w-full mt-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2254E1]"
-            >
-              {timeOptions.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
           </div>
 
           <div>
@@ -156,7 +141,7 @@ export const RescheduleModal: React.FC<RescheduleModalProps> = ({
               disabled={isSubmitting}
               className="bg-[#2254E1] hover:bg-[#1b43b5] text-white"
             >
-              {isSubmitting ? 'Checking Slots...' : 'Confirm Reschedule'}
+              {isSubmitting ? 'Rescheduling...' : 'Confirm Reschedule'}
             </Button>
           </DialogFooter>
         </form>

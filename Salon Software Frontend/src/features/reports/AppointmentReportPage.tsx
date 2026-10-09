@@ -671,13 +671,9 @@ export const AppointmentReportPage: React.FC = () => {
 
                   return (
                     <tr key={r.id} className="hover:bg-slate-50/60 transition-colors">
-                      {/* Scheduled Date & Time */}
+                      {/* Scheduled Date */}
                       <td className="py-3 px-4 whitespace-nowrap">
                         <span className="font-bold text-slate-900 block">{r.date}</span>
-                        <span className="text-slate-500 text-[11px] flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-slate-400" />
-                          {r.startTime}
-                        </span>
                       </td>
 
                       {/* Ref */}

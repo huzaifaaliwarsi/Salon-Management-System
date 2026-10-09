@@ -175,9 +175,11 @@ export const payoutMoney = async (tx, actor, { branchId, method, onlineAccountId
  * Bring a reversed payout back as a dated IN movement. Cash returns to the reversing actor's active
  * drawer (the original drawer may already be settled — its history is never rewritten).
  */
-export const reverseMoney = async (tx, actor, { branchId, method, onlineAccountId, amount, sourceModule, sourceId, reference, description }) => {
+export const reverseMoney = async (tx, actor, { branchId, method, onlineAccountId, receivingDrawerId, amount, sourceModule, sourceId, reference, description }) => {
   if (method === 'CASH') {
-    const drawer = await getActiveDrawer(tx, actor, branchId);
+    const drawer = receivingDrawerId ? await lockHolder(tx, receivingDrawerId) : await getActiveDrawer(tx, actor, branchId);
+    assertBranchAccess(actor, drawer.branchId);
+    if (drawer.branchId !== branchId || drawer.status !== 'OPEN' || drawer.kind !== 'DRAWER') throw badRequest('INVALID_RECEIVING_DRAWER', 'Receiving drawer must be open and belong to the payment branch.');
     await postCashMovement(tx, { holderId: drawer.id, type: 'REVERSAL', direction: 'IN', amount, sourceModule, sourceId, reference, description, actor });
     return { receivingDrawerId: drawer.id };
   }

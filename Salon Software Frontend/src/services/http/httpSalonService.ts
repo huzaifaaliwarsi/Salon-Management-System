@@ -308,7 +308,7 @@ const liveMethods: SalonServiceContract = {
 
   // ── Step 16 · Payroll ──────────────────────────────────────────────────────
   getPayrollRuns: (branchId, month) => api.get<PayrollRun[]>('/payroll/runs', { ...branchQuery(branchId), month }),
-  generatePayrollPreview: (branchId, month, staffId) => api.post<PayrollRun>('/payroll/preview', { branchId, month, staffId }),
+  generatePayrollPreview: (branchId, month, staffId, _actor, options) => api.post<PayrollRun>('/payroll/preview', { branchId, month, staffId, ...options }),
   finalizePayroll: (runId) => api.post<PayrollRun>(`/payroll/runs/${runId}/finalize`),
   cancelPayrollRun: (runId, reason) => api.post<PayrollRun>(`/payroll/runs/${runId}/cancel`, { reason }),
   recordPayrollPayment: (input) => api.post('/payroll/payments', input, newIdempotencyKey()),

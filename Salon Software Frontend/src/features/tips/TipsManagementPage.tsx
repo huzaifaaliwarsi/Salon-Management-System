@@ -169,7 +169,7 @@ export const TipsManagementPage: React.FC = () => {
 
   // Overall Summary Metrics
   const summaryMetrics = useMemo(() => {
-    const netCollected = receipts.reduce((sum, r) => sum + r.collectedAmount, 0);
+    const netCollected = receipts.reduce((sum, r) => sum + r.allocatedAmount + r.unallocatedAmount, 0);
     const unallocated = receipts.reduce((sum, r) => sum + r.unallocatedAmount, 0);
     const allocatedUnpaid = allocations
       .filter((a) => a.status !== 'CANCELLED')

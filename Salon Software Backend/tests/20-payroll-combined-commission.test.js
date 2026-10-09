@@ -8,6 +8,7 @@ import { setSystemDate } from '../src/modules/settings/settings.service.js';
 import { issueAdvance } from '../src/modules/payroll/payroll.extras.service.js';
 import { staffSalaryReport, staffCommissionReport } from '../src/modules/reports/staffPay.report.js';
 import { accountBalances } from '../src/lib/balances.js';
+import { toDateString } from '../src/lib/dates.js';
 import { as } from './helpers.js';
 
 const actor = { id: 'usr-super-01', name: 'Super Admin', role: 'SUPER_ADMIN' };
@@ -47,7 +48,86 @@ async function fixture(type = 'DAILY_PLUS_COMMISSION') {
   return { branch, account, staff, invoice, preview, finalize, pay, cPreview, refund };
 }
 
+describe('Payroll periods and contract selection', () => {
+  it('prorates monthly custom dates, scopes OT and commission, permits the next range and blocks overlap', async () => {
+    const f = await fixture('MONTHLY_PLUS_COMMISSION');
+    await prisma.staff.update({ where: { id: f.staff.id }, data: { baseSalary: 30000 } });
+    const input = { branchId: f.branch.id, month: MONTH, staffId: f.staff.id, runType: 'CUSTOM_RANGE', compensationType: 'MONTHLY_PLUS_COMMISSION' };
+    const first = await payroll.generatePreview(actor, { ...input, startDate: '2026-06-01', endDate: '2026-06-15' });
+    const next = await payroll.generatePreview(actor, { ...input, startDate: '2026-06-16', endDate: '2026-06-30' });
+    expect(await prisma.payrollRun.findUnique({ where: { id: first.id } })).not.toBeNull();
+    expect(slipOf(first, f)).toMatchObject({ baseEarnings: 15000, approvedOvertimeAmount: 150, commissionPayable: 100, netPayable: 15250 });
+    expect(slipOf(next, f)).toMatchObject({ baseEarnings: 15000, approvedOvertimeAmount: 0, commissionPayable: 0, netPayable: 15000 });
+    const a = await payroll.finalizeRun(actor, first.id);
+    await payroll.finalizeRun(actor, next.id);
+    const overlap = await payroll.generatePreview(actor, { ...input, startDate: '2026-06-14', endDate: '2026-06-18' });
+    await expect(payroll.finalizeRun(actor, overlap.id)).rejects.toMatchObject({ code: 'PAYROLL_BLOCKED' });
+    const paid = await f.pay(a, 15250, 'custom-monthly-payment');
+    expect(paid.payment).toMatchObject({ salaryAmount: 15150, commissionAmount: 100 });
+    await payroll.reversePayment(actor, paid.payment.id, 'Custom period reversal');
+    expect(slipOf((await payroll.listRuns(actor, { branchId: f.branch.id, month: MONTH })).find((r) => r.id === a.id), f).outstandingAmount).toBe(15250);
+  });
+
+  it.each(['DAILY_SALARY', 'DAILY_PLUS_COMMISSION', 'MONTHLY_SALARY', 'MONTHLY_PLUS_COMMISSION', 'COMMISSION_ONLY'])('honors %s contract filter and preserves other drafts', async (type) => {
+    const f = await fixture(type);
+    const daily = type.startsWith('DAILY');
+    const input = { branchId: f.branch.id, month: MONTH, runType: daily ? 'DAILY' : 'MONTHLY', compensationType: type, ...(daily ? { startDate: DAY, endDate: DAY } : {}) };
+    const response = await as('super').post('/payroll/preview', input);
+    expect(response.status).toBe(201);
+    const preview = response.body.data;
+    expect(preview.payslips.map((p) => p.compensationType)).toEqual([type]);
+    const repeat = await payroll.generatePreview(actor, input);
+    expect(await prisma.payrollRun.findUnique({ where: { id: preview.id } })).toBeNull();
+    expect(await prisma.payrollRun.findUnique({ where: { id: repeat.id } })).not.toBeNull();
+    await expect(payroll.generatePreview(actor, { ...input, compensationType: daily ? 'MONTHLY_SALARY' : 'DAILY_SALARY' })).rejects.toMatchObject({ code: 'NO_ELIGIBLE_STAFF' });
+  });
+
+  it('rejects invalid, reversed, cross-month and multiple-day daily periods', async () => {
+    const f = await fixture();
+    for (const dates of [
+      { startDate: '2026-06-31', endDate: '2026-06-31' },
+      { startDate: '2026-06-12', endDate: DAY },
+      { startDate: DAY, endDate: '2026-07-01' },
+      { startDate: DAY, endDate: '2026-06-11', runType: 'DAILY' },
+    ]) await expect(payroll.generatePreview(actor, { branchId: f.branch.id, month: MONTH, ...dates })).rejects.toMatchObject({ code: 'INVALID_RANGE' });
+  });
+
+  it('prorates recurring allowance and loan installment while consuming monthly adjustments once', async () => {
+    const f = await fixture('MONTHLY_PLUS_COMMISSION');
+    await prisma.staff.update({ where: { id: f.staff.id }, data: { baseSalary: 30000 } });
+    await prisma.staffAllowance.create({ data: { branchId: f.branch.id, staffId: f.staff.id, name: 'Travel', amount: 3000, createdByUserId: actor.id, createdByName: actor.name } });
+    await issueAdvance(actor, { staffId: f.staff.id, amount: 600, recoveryPerMonth: 600, startMonth: MONTH, method: 'ONLINE', onlineAccountId: f.account.id, reason: 'Loan' });
+    await prisma.payrollAdjustment.create({ data: { branchId: f.branch.id, staffId: f.staff.id, month: MONTH, type: 'DEDUCTION', title: 'Other', amount: 50, createdByUserId: actor.id, createdByName: actor.name } });
+    const input = { branchId: f.branch.id, month: MONTH, staffId: f.staff.id, runType: 'CUSTOM_RANGE' };
+    const first = await payroll.finalizeRun(actor, (await payroll.generatePreview(actor, { ...input, startDate: '2026-06-01', endDate: '2026-06-15' })).id);
+    expect(slipOf(first, f)).toMatchObject({ allowancesTotal: 1500, advanceRecoveryAmount: 300, otherDeductions: 50, commissionPayable: 100, netPayable: 16400 });
+    const next = await payroll.finalizeRun(actor, (await payroll.generatePreview(actor, { ...input, startDate: '2026-06-16', endDate: '2026-06-30' })).id);
+    expect(slipOf(next, f)).toMatchObject({ allowancesTotal: 1500, advanceRecoveryAmount: 300, otherDeductions: 0, netPayable: 16200 });
+  });
+});
+
 describe('Combined payroll uses canonical commission, separate ledgers and atomic ownership', () => {
+  it('carries an earlier part-paid statement forward without changing its dates or payment history', async () => {
+    const f = await fixture('MONTHLY_PLUS_COMMISSION');
+    const cr = await commission.finalizeRun(actor, (await f.cPreview()).id);
+    const paid = await commission.recordPayment(actor, { commissionRunId: cr.id, statementId: cr.statements[0].id, amount: 40, method: 'ONLINE', onlineAccountId: f.account.id });
+    const preview = await payroll.generatePreview(actor, { branchId: f.branch.id, month: MONTH, staffId: f.staff.id,
+      startDate: '2026-06-16', endDate: '2026-06-30', runType: 'CUSTOM_RANGE' });
+    expect(slipOf(preview, f).commissionPayable).toBe(60);
+    expect(slipOf(preview, f).calculationDetails.formula).toContain('Commission (Rs. 60)');
+    const run = await payroll.finalizeRun(actor, preview.id);
+    const st = await prisma.commissionStatement.findUnique({ where: { id: cr.statements[0].id }, include: { payments: true, run: true } });
+    expect(st.payrollPayslipId).toBe(slipOf(run, f).id);
+    expect(st.run.startDate.toISOString().slice(0, 10)).toBe(DAY);
+    expect(st.payments).toHaveLength(1);
+    expect(st.payments[0].id).toBe(paid.payment.id);
+    const payment = await f.pay(run, slipOf(run, f).netPayable, 'carry-forward');
+    expect(payment.payment.commissionAmount).toBe(60);
+    await payroll.reversePayment(actor, payment.payment.id, 'Restore carried balance');
+    const restored = (await commission.listRuns(actor, { branchId: f.branch.id })).find(r => r.id === cr.id).statements[0];
+    expect(restored).toMatchObject({ paidAmount: 40, outstandingAmount: 60 });
+    expect(restored.payments).toHaveLength(2);
+  });
   it.each(['DAILY_PLUS_COMMISSION', 'MONTHLY_PLUS_COMMISSION'])('%s: 1000 salary + 150 OT + 100 commission = 1250; preview does not consume/pay', async (type) => {
     const f = await fixture(type);
     expect(f.invoice).toMatchObject({ netSales: 1000, tax: 160, tip: 500 });
@@ -76,13 +156,17 @@ describe('Combined payroll uses canonical commission, separate ledgers and atomi
     await expect(commission.reversePayment(actor, cp.id, 'Wrong screen')).rejects.toMatchObject({ code: 'COMMISSION_LINKED_TO_PAYROLL' });
     const salaryReport = await staffSalaryReport(actor, { branchId: f.branch.id, month: MONTH });
     expect(salaryReport.totals).toMatchObject({ net: 1150, paid: 1150, outstanding: 0 });
-    const commissionReport = await staffCommissionReport(actor, { branchId: f.branch.id, startDate: DAY, endDate: DAY });
+    // Earnings use the business date; payouts use their actual paid timestamp.
+    const paymentDay = toDateString(new Date(payment.payment.paidAt));
+    const reportEnd = paymentDay > DAY ? paymentDay : DAY;
+    const commissionReport = await staffCommissionReport(actor, { branchId: f.branch.id, startDate: DAY, endDate: reportEnd });
     expect(commissionReport.totals).toMatchObject({ earned: 100, reversed: 0, paid: 100, outstanding: 0 });
     const summary = await payroll.monthlySummary(actor, { branchId: f.branch.id, month: MONTH });
     expect(summary.totals).toMatchObject({ salaryNet: 1150, salaryPaid: 1150, commissionNet: 100, commissionPaid: 100, totalPaid: 1250 });
     await payroll.reversePayment(actor, payment.payment.id, 'Reverse together');
     expect(await balance(f)).toBe(before);
     expect((await prisma.commissionPayment.findUnique({ where: { id: cp.id } })).status).toBe('REVERSED');
+    expect((await staffCommissionReport(actor, { branchId: f.branch.id, startDate: DAY, endDate: reportEnd })).totals).toMatchObject({ paid: 0, outstanding: 100 });
     await expect(payroll.reversePayment(actor, payment.payment.id, 'Retry')).rejects.toMatchObject({ code: 'ALREADY_REVERSED' });
     await payroll.cancelRun(actor, run.id, 'Release eligibility');
     expect((await prisma.commissionEvent.findFirst({ where: { staffId: f.staff.id } })).consumedByRunId).toBeNull();
@@ -170,6 +254,37 @@ describe('Combined payroll uses canonical commission, separate ledgers and atomi
     expect(await prisma.payrollPayment.count({ where: { runId: run.id } })).toBe(1);
   });
 
+  it('concurrent Payroll and Staff Commission payouts cannot pay a linked statement twice', async () => {
+    const f = await fixture();
+    const cr = await commission.finalizeRun(actor, (await f.cPreview()).id);
+    const run = await f.finalize();
+    const before = await balance(f);
+    const [combined, standalone] = await Promise.allSettled([
+      f.pay(run, 1250, 'cross-screen-payroll'),
+      commission.recordPayment(actor, { commissionRunId: cr.id, statementId: cr.statements[0].id, amount: 100, method: 'ONLINE', onlineAccountId: f.account.id, idempotencyKey: 'cross-screen-commission' }),
+    ]);
+    expect(combined.status).toBe('fulfilled');
+    expect(standalone.status).toBe('rejected');
+    expect(standalone.reason).toMatchObject({ code: 'COMMISSION_LINKED_TO_PAYROLL' });
+    expect(await balance(f)).toBe(before - 1250);
+    expect(await prisma.commissionPayment.count({ where: { staffId: f.staff.id, status: 'COMPLETED' } })).toBe(1);
+  });
+
+  it('refund debt after a completed payout survives cancellation and blocks repayment', async () => {
+    const f = await fixture();
+    const run = await f.finalize();
+    const paid = await f.pay(run, 1250, 'paid-before-refund');
+    await f.refund();
+    await expect(payroll.cancelRun(actor, run.id, 'Has completed payment')).rejects.toMatchObject({ code: 'HAS_PAYMENTS' });
+    await payroll.reversePayment(actor, paid.payment.id, 'Return combined payout');
+    await expect(f.pay(run, 1250, 'repay-after-refund')).rejects.toMatchObject({ code: 'COMMISSION_REFUND_ADJUSTMENT' });
+    await payroll.cancelRun(actor, run.id, 'Recalculate refunded sale');
+    const regenerated = await f.finalize();
+    expect(slipOf(regenerated, f)).toMatchObject({ commissionPayable: 0, netPayable: 1150 });
+    await f.pay(regenerated, 1150, 'salary-after-refund');
+    expect(await prisma.commissionPayment.count({ where: { staffId: f.staff.id, status: 'COMPLETED' } })).toBe(0);
+  });
+
   it('insufficient combined funds roll back salary movement, commission payment and payment records', async () => {
     const f = await fixture();
     const run = await f.finalize();
@@ -182,11 +297,13 @@ describe('Combined payroll uses canonical commission, separate ledgers and atomi
     expect(await prisma.commissionPayment.count({ where: { staffId: f.staff.id } })).toBe(0);
   });
 
-  it('loan and other deductions remain salary lines; commission is added once after deductions', async () => {
-    const f = await fixture();
+  it.each(['DAILY_PLUS_COMMISSION', 'MONTHLY_PLUS_COMMISSION'])('%s: loan and other deductions remain salary lines; commission is added once after deductions', async (type) => {
+    const f = await fixture(type);
     await issueAdvance(actor, { staffId: f.staff.id, amount: 100, recoveryPerMonth: 100, startMonth: MONTH, method: 'ONLINE', onlineAccountId: f.account.id, reason: 'Loan' });
     await prisma.payrollAdjustment.create({ data: { branchId: f.branch.id, staffId: f.staff.id, month: MONTH, type: 'DEDUCTION', title: 'Other deduction', amount: 50, createdByUserId: actor.id, createdByName: actor.name } });
     const run = await f.finalize();
-    expect(slipOf(run, f)).toMatchObject({ advanceRecoveryAmount: 100, otherDeductions: 50, totalDeductions: 150, salaryNetPayable: 1000, commissionPayable: 100, netPayable: 1100 });
+    // Preserve daily installment proration (100 / 30) and monthly full recovery.
+    const recovery = type === 'DAILY_PLUS_COMMISSION' ? 3.33 : 100;
+    expect(slipOf(run, f)).toMatchObject({ advanceRecoveryAmount: recovery, otherDeductions: 50, totalDeductions: recovery + 50, salaryNetPayable: 1100 - recovery, commissionPayable: 100, netPayable: 1200 - recovery });
   });
 });

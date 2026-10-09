@@ -15,6 +15,7 @@ import {
   calculateScheduledHours, calculateDeductionSnapshot, evaluateLeaveAllowance, isWorkingDay,
 } from '../../lib/calculations/attendanceCalculations.js';
 import { toStaffDTO } from '../staff/staff.mapper.js';
+import { lockStaffPayBranch, assertPayrollPeriodOpen } from '../../lib/hrTransactions.js';
 
 const recordInclude = { punches: true, corrections: true };
 const LEAVE_STATUSES = ['PAID_LEAVE', 'UNPAID_LEAVE'];
@@ -57,15 +58,20 @@ const holidaysFor = async (tx, branchId) =>
   (await tx.branchHoliday.findMany({ where: { branchId: { in: ['ALL', branchId] } } })).map(toHolidayDTO);
 
 /** Leaves in the shape the shared allowance engine expects. */
-const leavesForEngine = async (tx, staffId) =>
-  (await tx.leaveRecord.findMany({ where: { staffId } })).map((l) => ({
-    staffId: l.staffId, status: l.status, type: l.type, startDate: ymd(l.startDate), endDate: ymd(l.endDate), totalDays: l.totalDays,
-  }));
+const leavesForEngine = async (tx, staffId) => {
+  const rows = await tx.leaveRecord.findMany({ where: { staffId } });
+  const days = await tx.attendanceRecord.findMany({ where: { leaveId: { in: rows.map((l) => l.id) } }, select: { leaveId: true, workDate: true } });
+  return rows.map((l) => {
+    const workingDates = days.filter((d) => d.leaveId === l.id).map((d) => ymd(d.workDate));
+    return { staffId: l.staffId, status: l.status, type: l.type, startDate: ymd(l.startDate), endDate: ymd(l.endDate), totalDays: l.totalDays, ...(workingDates.length ? { workingDates } : {}) };
+  });
+};
 
 /** Who the request is about: staff users are always pinned to their own profile. */
 const resolveStaffFilter = (actor, staffId) => {
   if (actor.role === 'ACCOUNTANT') throw forbidden('FORBIDDEN', 'Access Denied: Accountants do not have permission to view staff attendance.');
   if (actor.role === 'STAFF') {
+    if (!actor.staffId) throw forbidden('FORBIDDEN', 'Staff record associated with the authenticated user could not be found.');
     if (staffId && staffId !== actor.staffId) throw forbidden('FORBIDDEN', 'Access Denied: Staff members can only view their own attendance records.');
     return actor.staffId;
   }
@@ -108,9 +114,11 @@ export const listAttendance = async (actor, { branchId, date, startDate, endDate
 export const createAttendance = async (input, actor) => {
   const branchId = resolveWriteBranch(actor, input.branchId, 'Access Denied: Cannot record attendance for another branch.');
   return prisma.$transaction(async (tx) => {
+    await lockStaffPayBranch(tx, branchId);
     const staff = await tx.staff.findUnique({ where: { id: input.staffId } });
     if (!staff || !staff.isActive) throw badRequest('STAFF_INVALID', `Staff member '${input.staffId}' is inactive or not found.`);
     if (staff.branchId !== branchId) throw badRequest('STAFF_BRANCH', `Staff member '${staff.name}' does not belong to this branch.`);
+    await assertPayrollPeriodOpen(tx, staff.id, input.date);
     if (await tx.attendanceRecord.findUnique({ where: { staffId_workDate: { staffId: staff.id, workDate: dateOnly(input.date) } } })) {
       throw conflict('ATTENDANCE_EXISTS', `An attendance record for ${staff.name} on ${input.date} already exists. Use edit/correction to update existing punches.`);
     }
@@ -143,9 +151,14 @@ export const createAttendance = async (input, actor) => {
 
 export const correctAttendance = async (id, input, actor) =>
   prisma.$transaction(async (tx) => {
+    const header = await tx.attendanceRecord.findUnique({ where: { id } });
+    if (!header) throw notFound('ATTENDANCE_NOT_FOUND', `Attendance record '${id}' not found.`);
+    await lockStaffPayBranch(tx, header.branchId);
     const record = await tx.attendanceRecord.findUnique({ where: { id }, include: recordInclude });
     if (!record) throw notFound('ATTENDANCE_NOT_FOUND', `Attendance record '${id}' not found.`);
     assertBranchAccess(actor, record.branchId, 'Access Denied: Cannot correct attendance for another branch.');
+    await assertPayrollPeriodOpen(tx, record.staffId, ymd(record.workDate));
+    if (record.leaveId) throw conflict('ON_LEAVE', 'Cancel the approved leave before changing its attendance.');
     const staff = await tx.staff.findUnique({ where: { id: record.staffId } });
 
     const snap = (r) => ({
@@ -173,6 +186,7 @@ export const correctAttendance = async (id, input, actor) =>
 export const finalizeDay = async ({ branchId: requested, date }, actor) => {
   const branchId = resolveWriteBranch(actor, requested, 'Access Denied: Cannot finalize attendance for another branch.');
   return prisma.$transaction(async (tx) => {
+    await lockStaffPayBranch(tx, branchId);
     if (date > (await getBusinessDate(tx))) throw badRequest('FUTURE_DATE', 'Cannot finalize attendance for a future date. Wait until the workday is completed.');
     const holidays = await holidaysFor(tx, branchId);
     const staffRows = await tx.staff.findMany({ where: { branchId, isActive: true } });
@@ -181,6 +195,7 @@ export const finalizeDay = async ({ branchId: requested, date }, actor) => {
     for (const s of staffRows) {
       const dto = toStaffDTO(s);
       if (!isWorkingDay(date, dto, holidays).isWorking) continue;
+      await assertPayrollPeriodOpen(tx, s.id, date);
       const rec = await tx.attendanceRecord.findUnique({ where: { staffId_workDate: { staffId: s.id, workDate: dateOnly(date) } } });
       if (!rec) {
         await tx.attendanceRecord.create({
@@ -206,6 +221,7 @@ export const finalizeDay = async ({ branchId: requested, date }, actor) => {
 export const markAllAttendance = async ({ branchId: requested, date, status = 'PRESENT', checkIn, checkOut, staffIds, notes }, actor) => {
   const branchId = resolveWriteBranch(actor, requested, 'Access Denied: Cannot record attendance for another branch.');
   return prisma.$transaction(async (tx) => {
+    await lockStaffPayBranch(tx, branchId);
     const where = { branchId, isActive: true };
     if (staffIds && staffIds.length > 0) {
       where.id = { in: staffIds };
@@ -217,6 +233,7 @@ export const markAllAttendance = async ({ branchId: requested, date, status = 'P
     const skippedNames = [];
 
     for (const s of staffRows) {
+      await assertPayrollPeriodOpen(tx, s.id, date);
       // Check if already has an attendance record on this date
       const existing = await tx.attendanceRecord.findUnique({
         where: { staffId_workDate: { staffId: s.id, workDate: dateOnly(date) } },
@@ -302,6 +319,7 @@ export const markAllAttendance = async ({ branchId: requested, date, status = 'P
 export const importCSV = async ({ branchId: requested, rows }, actor) => {
   const branchId = resolveWriteBranch(actor, requested, 'Access Denied: Cannot import attendance for another branch.');
   return prisma.$transaction(async (tx) => {
+    await lockStaffPayBranch(tx, branchId);
     const staffRows = await tx.staff.findMany({ where: { branchId } });
     const byCode = new Map(staffRows.map((s) => [s.employeeCode.toUpperCase(), s]));
     let accepted = 0;
@@ -323,6 +341,9 @@ export const importCSV = async ({ branchId: requested, rows }, actor) => {
       }
       let day;
       try {
+        await assertPayrollPeriodOpen(tx, staff.id, row.date);
+        const leave = await tx.leaveRecord.findFirst({ where: { staffId: staff.id, status: 'APPROVED', startDate: { lte: dateOnly(row.date) }, endDate: { gte: dateOnly(row.date) } } });
+        if (leave) throw conflict('ON_LEAVE', 'Cannot import attendance during approved leave.');
         day = evaluateDay(toStaffDTO(staff), row.checkIn, row.checkOut, staff.isOvernightShift);
       } catch (e) {
         rejected += 1;
@@ -352,11 +373,13 @@ export const importCSV = async ({ branchId: requested, rows }, actor) => {
 
 // ═══ LEAVES ═══════════════════════════════════════════════════════════════════
 
-export const listLeaves = async (actor, { branchId, staffId } = {}) => {
+export const listLeaves = async (actor, { branchId, staffId, date, startDate, endDate } = {}) => {
   const sid = resolveStaffFilter(actor, staffId);
   const b = actor.role === 'STAFF' ? null : resolveReadBranch(actor, branchId);
   const rows = await prisma.leaveRecord.findMany({
-    where: { ...(b ? { branchId: b } : {}), ...(sid ? { staffId: sid } : {}) }, orderBy: { startDate: 'desc' },
+    where: { ...(b ? { branchId: b } : {}), ...(sid ? { staffId: sid } : {}),
+      ...(date || endDate ? { startDate: { lte: dateOnly(date || endDate) } } : {}),
+      ...(date || startDate ? { endDate: { gte: dateOnly(date || startDate) } } : {}) }, orderBy: { startDate: 'desc' },
   });
   const staff = await staffMap(prisma, rows.map((r) => r.staffId));
   return rows.map((l) => toLeaveDTO(l, staff.get(l.staffId)));
@@ -368,7 +391,11 @@ export const markLeave = async (input, actor) =>
     if (!staff || !staff.isActive) throw badRequest('STAFF_INVALID', `Staff member '${input.staffId}' is inactive or not found.`);
     const branchId = resolveWriteBranch(actor, input.branchId || staff.branchId, 'Access Denied: Cannot mark leave for another branch.');
     if (staff.branchId !== branchId) throw badRequest('STAFF_BRANCH', `Staff member '${staff.name}' does not belong to this branch.`);
+    await lockStaffPayBranch(tx, branchId);
     if (input.startDate > input.endDate) throw badRequest('INVALID_RANGE', 'Leave start date must be on or before end date.');
+    await assertPayrollPeriodOpen(tx, staff.id, input.startDate, input.endDate);
+    const attended = await tx.attendanceRecord.findFirst({ where: { staffId: staff.id, workDate: { gte: dateOnly(input.startDate), lte: dateOnly(input.endDate) }, status: { in: ['PRESENT', 'LATE', 'MISSING_PUNCH'] } } });
+    if (attended) throw conflict('LEAVE_ATTENDANCE_CONFLICT', 'This leave overlaps recorded attendance. Correct the attendance before marking leave.');
 
     const overlap = await tx.leaveRecord.findFirst({
       where: { staffId: staff.id, status: 'APPROVED', startDate: { lte: dateOnly(input.endDate) }, endDate: { gte: dateOnly(input.startDate) } },
@@ -387,12 +414,18 @@ export const markLeave = async (input, actor) =>
     if (!dates.length) throw badRequest('NO_WORKING_DAYS', 'Selected date range does not contain any scheduled working days.');
 
     if (input.type === 'PAID') {
-      const allowance = evaluateLeaveAllowance(dto, await leavesForEngine(tx, staff.id), input.startDate);
-      if (!allowance.isConfigured) {
-        throw badRequest('NO_ALLOWANCE', `Cannot mark paid leave: Paid leave allowance is not configured for ${staff.name}. Use unpaid leave or configure allowance first.`);
+      const existingLeaves = await leavesForEngine(tx, staff.id);
+      const periods = new Map();
+      for (const date of dates) {
+        const key = dto.leaveAllowancePeriod === 'YEARLY' ? date.slice(0, 4) : date.slice(0, 7);
+        const bucket = periods.get(key) || [];
+        bucket.push(date);
+        periods.set(key, bucket);
       }
-      if (dates.length > allowance.remainingDays) {
-        throw conflict('ALLOWANCE_EXCEEDED', `Cannot mark paid leave: ${staff.name} only has ${allowance.remainingDays} paid leave day(s) remaining for this ${allowance.period.toLowerCase()} allowance period (requested: ${dates.length} days).`);
+      for (const [period, days] of periods) {
+        const allowance = evaluateLeaveAllowance(dto, existingLeaves, days[0], holidays);
+        if (!allowance.isConfigured) throw badRequest('NO_ALLOWANCE', `Cannot mark paid leave: Paid leave allowance is not configured for ${staff.name}. Use unpaid leave or configure allowance first.`);
+        if (days.length > allowance.remainingDays) throw conflict('ALLOWANCE_EXCEEDED', `Cannot mark paid leave: ${staff.name} only has ${allowance.remainingDays} paid leave day(s) remaining for ${period} (requested: ${days.length} days).`);
       }
     }
 
@@ -422,16 +455,22 @@ export const markLeave = async (input, actor) =>
 
 export const cancelLeave = async (id, reason, actor) =>
   prisma.$transaction(async (tx) => {
+    const header = await tx.leaveRecord.findUnique({ where: { id } });
+    if (!header) throw notFound('LEAVE_NOT_FOUND', `Leave record '${id}' not found.`);
+    await lockStaffPayBranch(tx, header.branchId);
     const leave = await tx.leaveRecord.findUnique({ where: { id } });
     if (!leave) throw notFound('LEAVE_NOT_FOUND', `Leave record '${id}' not found.`);
     assertBranchAccess(actor, leave.branchId, 'Access Denied: Cannot cancel leave from another branch.');
     if (leave.status === 'CANCELLED') throw conflict('ALREADY_CANCELLED', `Leave '${leave.leaveNumber}' is already cancelled.`);
+    await assertPayrollPeriodOpen(tx, leave.staffId, ymd(leave.startDate), ymd(leave.endDate));
     const updated = await tx.leaveRecord.update({
       where: { id },
       data: { status: 'CANCELLED', cancelledAt: new Date(), cancelledByUserId: actor.id, cancelledByName: actor.name, cancellationReason: reason },
     });
     // Remove only the synthetic leave days this voucher created.
     await tx.attendanceRecord.deleteMany({ where: { leaveId: id, status: { in: LEAVE_STATUSES }, checkIn: 'LEAVE' } });
+    // Leave may have replaced an existing absent row; restore absence rather than leaving paid leave behind.
+    await tx.attendanceRecord.updateMany({ where: { leaveId: id, status: { in: LEAVE_STATUSES } }, data: { status: 'ABSENT', workedHours: 0, leaveId: null } });
     await tx.attendanceRecord.updateMany({ where: { leaveId: id }, data: { leaveId: null } });
     await auditLog(tx, { userId: actor.id, userName: actor.name, action: 'LEAVE_CANCELLED', entity: 'LeaveRecord', entityId: id, branchId: leave.branchId, after: { reason } });
     return toLeaveDTO(updated, await tx.staff.findUnique({ where: { id: leave.staffId } }));

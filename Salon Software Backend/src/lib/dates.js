@@ -52,7 +52,11 @@ export const parseDateRange = (query) => {
   return { from: f ? startOfDay(f) : null, to: t ? endOfDay(t) : null };
 };
 
-export const isYmd = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+export const isYmd = (s) => {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const parsed = new Date(`${s}T00:00:00Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === s;
+};
 
 // ── Business date ───────────────────────────────────────────────────────────
 // The frontend has a "system/demo date" concept. When a businessDate setting exists

@@ -315,28 +315,31 @@ export const StaffDirectoryPage: React.FC = () => {
     return true;
   });
 
-  const generateNextEmployeeCode = (branchId: string, currentList: StaffMember[] = staffList) => {
-    const targetBranch = branches.find((b) => b.id === branchId);
-    const prefix = targetBranch ? targetBranch.code.split('-')[0] : 'STF';
+  const generateNextEmployeeCode = (_branchId?: string, currentList: StaffMember[] = staffList) => {
     let maxNum = 0;
-    const branchRegex = new RegExp(`^EMP-${prefix}-(\\d+)`, 'i');
-    const generalRegex = /^EMP-[A-Z]+-(\\d+)/i;
+    const existingCodes = new Set(
+      currentList
+        .map((s) => s.employeeCode?.trim().toUpperCase())
+        .filter(Boolean) as string[]
+    );
 
     for (const s of currentList) {
-      if (s.branchId === branchId) {
-        const m = s.employeeCode?.match(branchRegex);
-        if (m) {
-          const val = parseInt(m[1], 10);
-          if (!isNaN(val) && val > maxNum) maxNum = val;
-        }
-      }
-      const gm = s.employeeCode?.match(generalRegex);
-      if (gm && s.branchId === branchId) {
-        const val = parseInt(gm[1], 10);
+      if (!s.employeeCode) continue;
+      const m = s.employeeCode.match(/(\d+)$/);
+      if (m) {
+        const val = parseInt(m[1], 10);
         if (!isNaN(val) && val > maxNum) maxNum = val;
       }
     }
-    return `EMP-${prefix}-${String(maxNum + 1).padStart(3, '0')}`;
+
+    let nextNum = maxNum + 1;
+    // Short 5-6 characters format: EMP-01, EMP-02 (clean 6-character ID)
+    let candidate = `EMP-${String(nextNum).padStart(2, '0')}`;
+    while (existingCodes.has(candidate)) {
+      nextNum++;
+      candidate = `EMP-${String(nextNum).padStart(2, '0')}`;
+    }
+    return candidate;
   };
 
   const handleOpenAdd = () => {
@@ -1067,7 +1070,7 @@ export const StaffDirectoryPage: React.FC = () => {
                       type="text"
                       required
                       disabled={isEditModalOpen}
-                      placeholder="e.g. EMP-LHE-004"
+                      placeholder="e.g. EMP-01"
                       value={formData.employeeCode}
                       onChange={(e) => setFormData({ ...formData, employeeCode: e.target.value.toUpperCase() })}
                     />

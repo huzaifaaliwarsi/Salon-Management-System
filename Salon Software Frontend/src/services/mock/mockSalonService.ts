@@ -61,6 +61,7 @@ import {
   OvertimeStatus,
   AttendancePunch,
   PayrollRun,
+  PayrollPreviewOptions,
   PayrollPayment,
   PayrollPolicyConfig,
   PayslipRecord,
@@ -1690,7 +1691,7 @@ class MockSalonService implements SalonServiceContract {
     }
 
     if (typeof service.durationMinutes !== 'number' || isNaN(service.durationMinutes) || service.durationMinutes <= 0) {
-      throw new Error('Duration must be a positive number of minutes.');
+      service.durationMinutes = 30;
     }
 
     if (service.taxTreatment === 'SPECIFIC_RULE') {
@@ -1748,14 +1749,27 @@ class MockSalonService implements SalonServiceContract {
       if (typeof comp.quantity !== 'number' || !Number.isInteger(comp.quantity) || comp.quantity <= 0) {
         throw new Error(`Component '${srv.name}' quantity must be a positive whole number.`);
       }
-      if (typeof comp.allocationPercentage !== 'number' || isNaN(comp.allocationPercentage) || comp.allocationPercentage < 0 || comp.allocationPercentage > 100) {
-        throw new Error(`Component '${srv.name}' allocation percentage must be between 0% and 100%.`);
-      }
     }
 
-    const totalPercentage = pkg.components.reduce((sum, c) => sum + (c.allocationPercentage || 0), 0);
-    if (Math.abs(totalPercentage - 100) > 0.001) {
-      throw new Error(`Component allocation percentages must total exactly 100% (currently ${totalPercentage}%).`);
+    const n = pkg.components.length;
+    const hasValidAllocations = pkg.components.every(
+      (c) => typeof c.allocationPercentage === 'number' && c.allocationPercentage > 0
+    );
+    const sumAllocations = hasValidAllocations
+      ? pkg.components.reduce((sum, c) => sum + (c.allocationPercentage || 0), 0)
+      : 0;
+
+    if (!hasValidAllocations || Math.abs(sumAllocations - 100) > 0.001) {
+      const base = n > 0 ? Math.floor((100 / n) * 100) / 100 : 0;
+      let acc = 0;
+      pkg.components.forEach((c, idx) => {
+        if (idx === n - 1) {
+          c.allocationPercentage = Number((100 - acc).toFixed(2));
+        } else {
+          c.allocationPercentage = base;
+          acc += base;
+        }
+      });
     }
 
     if (pkg.taxTreatment === 'SPECIFIC_RULE') {
@@ -2692,14 +2706,16 @@ class MockSalonService implements SalonServiceContract {
       const netSales = roundCurrency(gross - lineDisc);
 
       let taxRate = 0;
-      if (cItem.item.taxTreatment === 'SPECIFIC_RULE') {
+      if (input.applyTax === false) {
+        taxRate = 0;
+      } else if (cItem.item.taxTreatment === 'SPECIFIC_RULE') {
         if (cItem.item.specificTaxRuleId) {
           const rule = clonedStore.taxRules.find((r: TaxRule) => r.id === cItem.item.specificTaxRuleId && r.branchId === branchId);
           if (rule && rule.isActive) {
             taxRate = rule.rate;
           }
         }
-      } else if (cItem.item.taxTreatment === 'BRANCH_DEFAULT') {
+      } else {
         if (clonedBranch.taxEnabled) {
           taxRate = clonedBranch.taxRate || 0;
         }
@@ -2814,6 +2830,9 @@ class MockSalonService implements SalonServiceContract {
         taxRate,
         tax: lineTax,
         total: lineTotal,
+        assignedStaff: cItem.assignedStaff && cItem.assignedStaff.length > 0
+          ? cItem.assignedStaff
+          : (cItem.type === 'PACKAGE' ? [{ staffId: cItem.staffId, staffName: cItem.staffName, staffCommissionRate: primaryStaff?.commissionRate || 0 }] : undefined),
         packageComponents: pkgComponentsSnapshot,
         packageComponentsSnapshot: pkgComponentsSnapshot,
         batchId: itemBatchId,
@@ -5665,12 +5684,17 @@ class MockSalonService implements SalonServiceContract {
 
     // Check paid leave allowance
     if (input.type === 'PAID') {
-      const allowance = evaluateLeaveAllowance(staff, clonedStore.leaves || [], input.startDate);
-      if (!allowance.isConfigured) {
-        throw new Error(`Cannot mark paid leave: Paid leave allowance is not configured for ${staff.name}. Use unpaid leave or configure allowance first.`);
+      const periods = new Map<string, string[]>();
+      for (const date of leaveDates) {
+        const key = staff.leaveAllowancePeriod === 'YEARLY' ? date.slice(0, 4) : date.slice(0, 7);
+        const bucket = periods.get(key) || [];
+        bucket.push(date);
+        periods.set(key, bucket);
       }
-      if (workingDaysCount > allowance.remainingDays) {
-        throw new Error(`Cannot mark paid leave: ${staff.name} only has ${allowance.remainingDays} paid leave day(s) remaining for this ${allowance.period.toLowerCase()} allowance period (requested: ${workingDaysCount} days).`);
+      for (const [period, dates] of periods) {
+        const allowance = evaluateLeaveAllowance(staff, clonedStore.leaves || [], dates[0], clonedStore.branchHolidays);
+        if (!allowance.isConfigured) throw new Error(`Cannot mark paid leave: Paid leave allowance is not configured for ${staff.name}. Use unpaid leave or configure allowance first.`);
+        if (dates.length > allowance.remainingDays) throw new Error(`Cannot mark paid leave: ${staff.name} only has ${allowance.remainingDays} paid leave day(s) remaining for ${period} (requested: ${dates.length} days).`);
       }
     }
 
@@ -6505,8 +6529,12 @@ class MockSalonService implements SalonServiceContract {
     branchId: string,
     month: string,
     staffId?: string,
-    actor?: User
+    actor?: User,
+    options?: PayrollPreviewOptions
   ): Promise<PayrollRun> {
+    if (options?.runType || options?.startDate || options?.endDate || options?.compensationType) {
+      throw new Error('Payroll periods and canonical commission require the live API (VITE_USE_MOCK=false).');
+    }
     const authenticatedActor = this.getAuthenticatedActor(actor);
     if (authenticatedActor.role === 'ACCOUNTANT') {
       throw new Error('Access Denied: Accountants are not authorized to view or generate payroll.');
@@ -8427,50 +8455,35 @@ class MockSalonService implements SalonServiceContract {
             });
           }
 
-          // 2. Bundled Package Component
-          const comps = item.packageComponents || (item as any).components;
-          if (item.type === 'PACKAGE' && Array.isArray(comps)) {
+          // 2. Bundled Package (Multi-staff divided or legacy component-assigned)
+          if (item.type === 'PACKAGE') {
+            const comps = item.packageComponents || (item as any).components;
             if (filters?.packageId && filters.packageId !== 'ALL' && (item.itemId || item.id) !== filters.packageId) {
               continue;
             }
 
-            comps.forEach((comp: any, compIdx: number) => {
-              if (comp.staffId === st.id) {
-                if (filters?.serviceId && filters.serviceId !== 'ALL' && comp.serviceId !== filters.serviceId) {
-                  return;
-                }
+            if (item.assignedStaff && item.assignedStaff.length > 0) {
+              const staffEntry = item.assignedStaff.find((as: any) => as.staffId === st.id);
+              if (staffEntry) {
+                const numStaff = item.assignedStaff.length;
+                const lineGross = (item.unitPrice || 0) * (item.quantity || 1);
+                const lineNet = typeof item.netSales === 'number' ? item.netSales : (lineGross - (item.discountAllocated || 0));
+                const lineDisc = item.discountAllocated || 0;
 
-                const compQty = comp.quantity || 1;
-                let allocatedNet = 0;
-                let rawAllocated = comp.allocatedAmount || 0;
-                let compDiscount = 0;
+                const staffShareNet = roundCurrency(lineNet / numStaff);
+                const staffShareGross = roundCurrency(lineGross / numStaff);
+                const staffShareDisc = roundCurrency(lineDisc / numStaff);
 
-                if (typeof comp.netAllocatedAmount === 'number') {
-                  allocatedNet = comp.netAllocatedAmount;
-                  rawAllocated = comp.allocatedAmount || allocatedNet;
-                  compDiscount = roundCurrency(Math.max(0, rawAllocated - allocatedNet));
-                } else if (typeof comp.netSales === 'number') {
-                  allocatedNet = comp.netSales;
-                  rawAllocated = comp.allocatedAmount || allocatedNet;
-                  compDiscount = roundCurrency(Math.max(0, rawAllocated - allocatedNet));
-                } else {
-                  rawAllocated = comp.allocatedAmount || 0;
-                  if (inv.discount && inv.subtotal > 0) {
-                    compDiscount = roundCurrency((rawAllocated / inv.subtotal) * inv.discount);
-                  }
-                  allocatedNet = roundCurrency(rawAllocated - compDiscount);
-                }
-
-                const rawCompRate = typeof comp.staffCommissionRate === 'number'
-                  ? comp.staffCommissionRate
-                  : (typeof comp.commissionRate === 'number' ? comp.commissionRate : (st.commissionRate || 0));
+                const rawCompRate = typeof staffEntry.staffCommissionRate === 'number'
+                  ? staffEntry.staffCommissionRate
+                  : (st.commissionRate || 0);
                 const effectiveCompRate = rawCompRate > 0 && rawCompRate <= 1 ? roundCurrency(rawCompRate * 100) : rawCompRate;
-                const earned = roundCurrency(allocatedNet * (effectiveCompRate / 100));
+                const earned = roundCurrency(staffShareNet * (effectiveCompRate / 100));
 
-                packageComponentsCount += compQty;
-                attributedGrossSales = roundCurrency(attributedGrossSales + rawAllocated);
-                totalDiscountAllocation = roundCurrency(totalDiscountAllocation + compDiscount);
-                attributedNetSales = roundCurrency(attributedNetSales + allocatedNet);
+                packageComponentsCount += 1;
+                attributedGrossSales = roundCurrency(attributedGrossSales + staffShareGross);
+                totalDiscountAllocation = roundCurrency(totalDiscountAllocation + staffShareDisc);
+                attributedNetSales = roundCurrency(attributedNetSales + staffShareNet);
                 estimatedCommission = roundCurrency(estimatedCommission + earned);
 
                 if (inv.clientName && inv.clientName.trim()) {
@@ -8483,17 +8496,78 @@ class MockSalonService implements SalonServiceContract {
                   date: inv.date,
                   time: inv.time,
                   clientName: inv.clientName,
-                  itemId: comp.serviceId || `comp-${compIdx}`,
-                  serviceName: `${comp.serviceName} (${item.name})`,
+                  itemId: item.itemId || item.id || 'pkg',
+                  serviceName: `${item.name} (Shared Package - ${(100 / numStaff).toFixed(0)}%)`,
                   itemType: 'PACKAGE_COMPONENT',
-                  cataloguePrice: rawAllocated,
-                  discountAllocated: compDiscount,
-                  netSales: allocatedNet,
+                  cataloguePrice: staffShareGross,
+                  discountAllocated: staffShareDisc,
+                  netSales: staffShareNet,
                   commissionRatePercent: effectiveCompRate,
                   commissionEarned: earned,
                 });
               }
-            });
+            } else if (Array.isArray(comps)) {
+              comps.forEach((comp: any, compIdx: number) => {
+                if (comp.staffId === st.id) {
+                  if (filters?.serviceId && filters.serviceId !== 'ALL' && comp.serviceId !== filters.serviceId) {
+                    return;
+                  }
+
+                  const compQty = comp.quantity || 1;
+                  let allocatedNet = 0;
+                  let rawAllocated = comp.allocatedAmount || 0;
+                  let compDiscount = 0;
+
+                  if (typeof comp.netAllocatedAmount === 'number') {
+                    allocatedNet = comp.netAllocatedAmount;
+                    rawAllocated = comp.allocatedAmount || allocatedNet;
+                    compDiscount = roundCurrency(Math.max(0, rawAllocated - allocatedNet));
+                  } else if (typeof comp.netSales === 'number') {
+                    allocatedNet = comp.netSales;
+                    rawAllocated = comp.allocatedAmount || allocatedNet;
+                    compDiscount = roundCurrency(Math.max(0, rawAllocated - allocatedNet));
+                  } else {
+                    rawAllocated = comp.allocatedAmount || 0;
+                    if (inv.discount && inv.subtotal > 0) {
+                      compDiscount = roundCurrency((rawAllocated / inv.subtotal) * inv.discount);
+                    }
+                    allocatedNet = roundCurrency(rawAllocated - compDiscount);
+                  }
+
+                  const rawCompRate = typeof comp.staffCommissionRate === 'number'
+                    ? comp.staffCommissionRate
+                    : (typeof comp.commissionRate === 'number' ? comp.commissionRate : (st.commissionRate || 0));
+                  const effectiveCompRate = rawCompRate > 0 && rawCompRate <= 1 ? roundCurrency(rawCompRate * 100) : rawCompRate;
+                  const earned = roundCurrency(allocatedNet * (effectiveCompRate / 100));
+
+                  packageComponentsCount += compQty;
+                  attributedGrossSales = roundCurrency(attributedGrossSales + rawAllocated);
+                  totalDiscountAllocation = roundCurrency(totalDiscountAllocation + compDiscount);
+                  attributedNetSales = roundCurrency(attributedNetSales + allocatedNet);
+                  estimatedCommission = roundCurrency(estimatedCommission + earned);
+
+                  if (inv.clientName && inv.clientName.trim()) {
+                    clientSet.add(inv.clientId ? inv.clientId : inv.clientName.trim().toLowerCase());
+                  }
+
+                  detailedServices.push({
+                    invoiceId: inv.id,
+                    invoiceNumber: inv.invoiceNumber,
+                    date: inv.date,
+                    time: inv.time,
+                    clientName: inv.clientName,
+                    itemId: comp.serviceId || `comp-${compIdx}`,
+                    serviceName: `${comp.serviceName} (${item.name})`,
+                    itemType: 'PACKAGE_COMPONENT',
+                    cataloguePrice: rawAllocated,
+                    discountAllocated: compDiscount,
+                    netSales: allocatedNet,
+                    commissionRatePercent: effectiveCompRate,
+                    commissionEarned: earned,
+                  });
+                }
+              });
+            }
           }
         }
       }
@@ -8745,9 +8819,15 @@ class MockSalonService implements SalonServiceContract {
         for (let cIdx = 0; cIdx < pkg.components.length; cIdx++) {
           const compDef = pkg.components[cIdx];
           const rawComp = it.packageComponents?.find((c) => c.serviceId === compDef.serviceId);
-          const staffId = rawComp?.staffId;
+          let staffId = rawComp?.staffId;
           if (!staffId) {
-            throw new Error(`Staff assignment is required for component '${compDef.serviceName}' in package '${pkg.name}'.`);
+            if (it.assignedStaff && it.assignedStaff.length > 0) {
+              staffId = it.assignedStaff[cIdx % it.assignedStaff.length].staffId;
+            } else if (it.staffId) {
+              staffId = it.staffId;
+            } else {
+              throw new Error(`Staff assignment is required for component '${compDef.serviceName}' in package '${pkg.name}'.`);
+            }
           }
           const staff = store.staff.find((st) => st.id === staffId && st.branchId === branchId);
           if (!staff || !staff.isActive) {
@@ -8789,6 +8869,16 @@ class MockSalonService implements SalonServiceContract {
         totalPrice = roundCurrency(totalPrice + pkg.price);
 
         const primaryCompStaff = scheduledComponents[0];
+        const packageAssignedStaff = it.assignedStaff && it.assignedStaff.length > 0
+          ? it.assignedStaff
+          : [
+              {
+                staffId: primaryCompStaff.staffId,
+                staffName: primaryCompStaff.staffName,
+                staffCommissionRate: store.staff.find((s) => s.id === primaryCompStaff.staffId)?.commissionRate || 0,
+              },
+            ];
+
         scheduledItems.push({
           lineInstanceId,
           type: 'PACKAGE',
@@ -8797,8 +8887,9 @@ class MockSalonService implements SalonServiceContract {
           name: pkg.name,
           durationMinutes: pkgDuration,
           unitPrice: pkg.price,
-          staffId: primaryCompStaff.staffId,
-          staffName: primaryCompStaff.staffName,
+          staffId: packageAssignedStaff[0].staffId,
+          staffName: packageAssignedStaff.map((s) => s.staffName).join(', '),
+          assignedStaff: packageAssignedStaff,
           startTime: formatMinutesToTime(pkgStart),
           endTime: formatMinutesToTime(pkgEnd),
           packageComponents: scheduledComponents,
@@ -9325,7 +9416,7 @@ class MockSalonService implements SalonServiceContract {
       ? apt.items.map((it) => (it.type === 'PACKAGE' ? `${it.name} (Package)` : it.name))
       : [apt.serviceName || 'Salon Service'];
 
-    const messageText = `Dear ${apt.clientName},\nYour appointment at ${branchName} is confirmed!\n\nReference: ${apt.appointmentNumber || apt.id}\nDate: ${apt.date}\nTime: ${apt.startTime || apt.time}\nServices: ${servicesList.join(', ')}\nEstimated Total: PKR ${apt.price.toLocaleString('en-PK')}\nBranch Contact: ${branchPhone}\n\nWe look forward to serving you!`;
+    const messageText = `Dear ${apt.clientName},\nYour appointment at ${branchName} is confirmed!\n\nReference: ${apt.appointmentNumber || apt.id}\nDate: ${apt.date}\nServices: ${servicesList.join(', ')}\nEstimated Total: PKR ${apt.price.toLocaleString('en-PK')}\nBranch Contact: ${branchPhone}\n\nWe look forward to serving you!`;
 
     const digitsOnly = normalizePhoneDigits(apt.clientPhone);
     const cleanPhone = digitsOnly.startsWith('92') ? digitsOnly : digitsOnly.startsWith('0') ? `92${digitsOnly.slice(1)}` : `92${digitsOnly}`;

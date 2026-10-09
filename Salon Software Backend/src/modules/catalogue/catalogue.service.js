@@ -153,9 +153,12 @@ const validateComponents = async (tx, branchId, components) => {
     if (srv.branchId !== branchId) throw badRequest('COMPONENT_BRANCH', `Component service '${srv.name}' belongs to a different branch.`);
     if (!srv.isActive) throw badRequest('COMPONENT_INACTIVE', `Cannot include deactivated service '${srv.name}' in package.`);
   }
-  const total = components.reduce((sum, c) => sum.plus(round2(c.allocationPercentage)), toDec(0));
-  if (!total.equals(100)) {
-    throw badRequest('ALLOCATION_NOT_100', `Component allocation percentages must total exactly 100% (currently ${total.toNumber()}%).`);
+  const hasAllocations = components.some((c) => c.allocationPercentage !== undefined && c.allocationPercentage !== null);
+  if (hasAllocations) {
+    const total = components.reduce((sum, c) => sum.plus(round2(c.allocationPercentage || 0)), toDec(0));
+    if (!total.equals(100)) {
+      throw badRequest('ALLOCATION_NOT_100', `Component allocation percentages must total exactly 100% (currently ${total.toNumber()}%).`);
+    }
   }
 };
 
@@ -166,8 +169,33 @@ const assertPackageCodeFree = async (tx, branchId, code, exceptId) => {
   if (clash) throw conflict('PACKAGE_CODE_TAKEN', `Package code '${code}' is already registered in this branch.`);
 };
 
-const componentRows = (components) =>
-  components.map((c, i) => ({ serviceId: c.serviceId, quantity: c.quantity ?? 1, allocationPercentage: round2(c.allocationPercentage), sortOrder: i }));
+const componentRows = (components) => {
+  const n = components.length;
+  const hasValid = components.every((c) => c.allocationPercentage !== undefined && c.allocationPercentage !== null);
+  const sumValid = hasValid ? components.reduce((s, c) => s.plus(round2(c.allocationPercentage)), toDec(0)) : toDec(0);
+  const useSupplied = hasValid && sumValid.equals(100);
+
+  const base = n > 0 ? toDec(Math.floor((100 / n) * 100) / 100) : toDec(0);
+  let accumulated = toDec(0);
+
+  return components.map((c, i) => {
+    let alloc;
+    if (useSupplied) {
+      alloc = round2(c.allocationPercentage);
+    } else if (i === n - 1) {
+      alloc = round2(toDec(100).minus(accumulated));
+    } else {
+      alloc = base;
+      accumulated = accumulated.plus(base);
+    }
+    return {
+      serviceId: c.serviceId,
+      quantity: c.quantity ?? 1,
+      allocationPercentage: alloc,
+      sortOrder: i,
+    };
+  });
+};
 
 export const listPackages = async (actor, branchId) => {
   const b = resolveReadBranch(actor, branchId);

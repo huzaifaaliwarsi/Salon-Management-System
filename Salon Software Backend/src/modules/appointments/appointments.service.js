@@ -119,15 +119,16 @@ const scheduleItems = async (tx, { branchId, date, startTime, rawItems, excludeA
       const components = [];
       for (const [cIdx, def] of [...pkg.components].sort((a, b) => a.sortOrder - b.sortOrder).entries()) {
         const assignment = raw.packageComponents?.find((c) => c.serviceId === def.serviceId);
-        if (!assignment?.staffId) {
+        const assignedStaffId = assignment?.staffId || (raw.assignedStaff && raw.assignedStaff[cIdx % raw.assignedStaff.length]?.staffId) || raw.staffId;
+        if (!assignedStaffId) {
           throw badRequest('STAFF_REQUIRED', `Staff assignment is required for component '${def.service.name}' in package '${pkg.name}'.`);
         }
-        const st = requireStaff(assignment.staffId, `component '${def.service.name}'`);
+        const st = requireStaff(assignedStaffId, `component '${def.service.name}'`);
         const start = pointer;
         const end = start + (def.service.durationMinutes || 30);
         pointer = end;
         components.push({
-          componentInstanceId: assignment.componentInstanceId || newId('comp'), sortOrder: cIdx,
+          componentInstanceId: assignment?.componentInstanceId || newId('comp'), sortOrder: cIdx,
           serviceId: def.serviceId, serviceCode: def.service.code, serviceName: def.service.name,
           durationMinutes: end - start, allocationPercentage: def.allocationPercentage,
           staffId: st.id, staffName: st.name, startTime: formatMinutesToTime(start), endTime: formatMinutesToTime(end),
@@ -135,10 +136,13 @@ const scheduleItems = async (tx, { branchId, date, startTime, rawItems, excludeA
         intervals.push({ staff: st, start, end });
       }
       totalPrice = add(totalPrice, pkg.price);
+      const packageStaffName = raw.assignedStaff && raw.assignedStaff.length > 0
+        ? raw.assignedStaff.map((s) => s.staffName || s.name).filter(Boolean).join(', ')
+        : components[0].staffName;
       items.push({
         lineInstanceId, sortOrder: index, type: 'PACKAGE', itemId: pkg.id, code: pkg.code, name: pkg.name,
         durationMinutes: pointer - pkgStart, unitPrice: pkg.price,
-        staffId: components[0].staffId, staffName: components[0].staffName,
+        staffId: components[0].staffId, staffName: packageStaffName,
         startTime: formatMinutesToTime(pkgStart), endTime: formatMinutesToTime(pointer), components,
       });
     }
@@ -471,7 +475,7 @@ export const confirmationMessage = async (actor, id) => {
   const servicesList = apt.items.map((it) => (it.type === 'PACKAGE' ? `${it.name} (Package)` : it.name));
   const messageText =
     `Dear ${apt.clientName},\nYour appointment at ${branch.name} is confirmed!\n\n` +
-    `Reference: ${apt.appointmentNumber}\nDate: ${apt.date}\nTime: ${apt.startTime}\n` +
+    `Reference: ${apt.appointmentNumber}\nDate: ${apt.date}\n` +
     `Services: ${servicesList.join(', ')}\nEstimated Total: PKR ${apt.price.toLocaleString('en-PK')}\n` +
     `Branch Contact: ${branch.phone}\n\nWe look forward to serving you!`;
 

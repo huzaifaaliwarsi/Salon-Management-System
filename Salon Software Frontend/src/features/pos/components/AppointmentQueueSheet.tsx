@@ -231,11 +231,10 @@ export const AppointmentQueueSheet: React.FC<AppointmentQueueSheetProps> = ({
                         : 'bg-white border-slate-200/90 hover:border-slate-300 shadow-2xs'
                     }`}
                   >
-                    {/* Top Row: Time + Status Badge */}
+                    {/* Top Row: Ref + Status Badge */}
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-slate-900 flex items-center gap-1">
-                        <Clock className="w-3.5 h-3.5 text-slate-400" />
-                        {appt.startTime || appt.time || '10:00 AM'} - {appt.endTime || 'End'}
+                      <span className="font-mono text-xs font-semibold text-slate-700">
+                        {appt.appointmentNumber || appt.id.slice(-6)}
                       </span>
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${cfg.bg} ${cfg.text} ${cfg.border}`}>
                         {cfg.label}
@@ -271,11 +270,16 @@ export const AppointmentQueueSheet: React.FC<AppointmentQueueSheetProps> = ({
                                 → {item.staffName}
                               </span>
                             )}
-                            {item.type === 'PACKAGE' && item.packageComponents && (
+                            {item.type === 'PACKAGE' && (
                               <div className="pl-2 text-[10px] text-slate-500">
-                                {item.packageComponents.map((c, cIdx) => (
+                                {item.assignedStaff && item.assignedStaff.length > 1 && (
+                                  <div className="text-blue-600 font-medium">
+                                    Shared ({item.assignedStaff.length} stylists): {item.assignedStaff.map((s) => s.staffName).join(', ')}
+                                  </div>
+                                )}
+                                {item.packageComponents && item.packageComponents.map((c, cIdx) => (
                                   <div key={c.componentInstanceId || cIdx}>
-                                    • {c.serviceName} ({c.staffName})
+                                    • {c.serviceName}
                                   </div>
                                 ))}
                               </div>

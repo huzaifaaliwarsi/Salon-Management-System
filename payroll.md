@@ -38,7 +38,13 @@
 | `DAILY_PLUS_COMMISSION` | Same as daily | ✅ monthly commission run |
 | `COMMISSION_ONLY` | Base 0 (OT/allowances only if any) | ✅ monthly commission run |
 
-Salary and commission are **two separate liabilities** (two runs, two payments, two report lines). A combined **Monthly Earnings Summary** per staff shows both together (salary net + commission net = total take-home for the month), without merging the ledgers.
+Salary and commission remain **two separate liabilities and report lines**. Daily + Commission and Monthly + Commission staff can receive both through one payroll payment. Payroll finalization recalculates eligible commission, finalizes canonical commission statements and links them to the payslip in the same transaction. An existing finalized statement contributes only its unpaid balance, and only when its entire period falls within the payroll window. Previews never authorize commission payments.
+
+Payslips show salary, approved overtime, loan recovery, other deductions, commission and combined net payable separately. For example, salary 1,000 + approved overtime 150 + eligible commission 100 = 1,250 before deductions. Daily runs preserve per-day proration of monthly loan installments.
+
+Partial payroll payments settle salary first, then commission. The salary portion stays in payroll accounting; the commission portion creates canonical commission payments and separate commission money movements. Linked statements cannot be paid, reversed or cancelled through Staff Commission. Branch transaction locks serialize overlapping payroll/commission finalizations, payouts and refunds; persisted request keys protect concurrent payment retries.
+
+Reversing payroll reverses both payment portions atomically. Cancellation requires all payments to be reversed, unlinks existing statements, and releases events finalized by payroll. Refunds are checked again before commission payout and can block a stale finalized amount until the unpaid payroll is cancelled and regenerated. Commission excludes tax and tips. Salary reports use payroll periods; commission reports use earning/refund event dates and actual payout dates. The combined Monthly Earnings Summary presents both liabilities without merging their ledgers.
 
 ---
 

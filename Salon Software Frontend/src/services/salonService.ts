@@ -36,6 +36,7 @@ import {
   CreateOvertimeInput,
   UpdateOvertimeInput,
   PayrollRun,
+  PayrollPreviewOptions,
   PayrollPayment,
   PayrollPolicyConfig,
   PayslipRecord,
@@ -466,7 +467,7 @@ export interface SalonServiceContract {
   // --- PHASE 3E: PAYROLL & STAFF COMMISSION ---
   getPayrollPolicy(branchId: string): Promise<PayrollPolicyConfig>;
   updatePayrollPolicy(branchId: string, policy: Partial<PayrollPolicyConfig>, actor?: User): Promise<PayrollPolicyConfig>;
-  generatePayrollPreview(branchId: string, month: string, staffId?: string, actor?: User): Promise<PayrollRun>;
+  generatePayrollPreview(branchId: string, month: string, staffId?: string, actor?: User, options?: PayrollPreviewOptions): Promise<PayrollRun>;
   finalizePayroll(payrollRunId: string, actor?: User): Promise<PayrollRun>;
   recordPayrollPayment(input: RecordPayrollPaymentInput, actor?: User): Promise<{ payrollRun: PayrollRun; payment: PayrollPayment }>;
   cancelPayrollRun(payrollRunId: string, reason: string, actor?: User): Promise<PayrollRun>;

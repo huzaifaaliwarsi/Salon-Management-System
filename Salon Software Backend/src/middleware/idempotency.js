@@ -18,6 +18,7 @@ export const idempotency = asyncHandler(async (req, res, next) => {
 
   const existing = await prisma.idempotencyKey.findUnique({ where: { key } });
   if (existing) {
+    if (existing.route !== `${req.method} ${req.originalUrl}`) throw new AppError(409, 'IDEMPOTENCY_CONFLICT', 'This request key was already used for a different operation.');
     res.setHeader('Idempotent-Replay', 'true');
     return res.status(existing.statusCode).json(JSON.parse(existing.responseJson));
   }

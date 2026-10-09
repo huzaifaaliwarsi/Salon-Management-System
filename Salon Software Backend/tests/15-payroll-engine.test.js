@@ -26,6 +26,30 @@ const run = (s, month, att, opts = {}) =>
   evaluateEmployeePayroll(s, month, opts.policy || POLICY, att, opts.ot || [], opts.holidays || [], opts.extras || {});
 
 describe('Payroll engine · monthly', () => {
+  it.each(['2026-02', '2024-02', '2026-09', '2026-10'])('full %s pays the contractual base for both monthly contracts', (month) => {
+    for (const compensationType of ['MONTHLY_SALARY', 'MONTHLY_PLUS_COMMISSION']) {
+      const result = run(staff({ compensationType }), month, attendance(month));
+      expect(result.canFinalize).toBe(true);
+      expect(result.payslip).toMatchObject({ baseEarnings: 60000, netPayable: 60000 });
+      expect(result.payslip.calculationDetails).toMatchObject({ prorationApplied: false, payableDays: days(month).length, prorationDivisor: days(month).length });
+    }
+  });
+
+  it('Oct 1–8 counts only Oct 8 for an Oct 8 joiner and exposes pre-employment attendance', () => {
+    const result = evaluateEmployeePayroll(staff({ joiningDate: '2026-10-08', baseSalary: 30000 }), '2026-10', POLICY,
+      attendance('2026-10', { to: '2026-10-08' }), [], [], {}, { startDate: '2026-10-01', endDate: '2026-10-08', runType: 'CUSTOM_RANGE' });
+    expect(result.canFinalize).toBe(true);
+    expect(result.payslip).toMatchObject({ baseEarnings: 967.74, presentDays: 1, joiningDate: '2026-10-08', absenceDeductions: 0 });
+    expect(result.payslip.calculationDetails).toMatchObject({ payableDays: 1, prorationDivisor: 31, divisorUsed: 30 });
+    expect(result.payslip.employmentNotes[0]).toContain('outside employment dates');
+  });
+
+  it('partial monthly salary uses employment days then deducts absence once', () => {
+    const result = evaluateEmployeePayroll(staff({ joiningDate: '2026-09-16' }), '2026-09', POLICY,
+      attendance('2026-09', { from: '2026-09-16', special: { '2026-09-17': { status: 'ABSENT', calculationSnapshot: { totalDeductionAmount: 2000 } } } }),
+      [], [], {}, { startDate: '2026-09-16', endDate: '2026-09-30', runType: 'CUSTOM_RANGE' });
+    expect(result.payslip).toMatchObject({ baseEarnings: 30000, absenceDeductions: 2000, attendancePenaltyDeductions: 0, netPayable: 28000 });
+  });
   it('S1 full month pays the full base regardless of month length (Feb = 28 days)', () => {
     const r = run(staff(), '2026-02', attendance('2026-02'));
     expect(r.canFinalize).toBe(true);

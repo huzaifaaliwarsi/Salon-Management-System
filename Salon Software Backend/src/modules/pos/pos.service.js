@@ -213,7 +213,9 @@ export const postInvoice = async (input, actor, idempotencyKey) => {
         throw conflict('PRICE_OUTDATED', `Cart price quote for '${catalogue.name}' is outdated. Please refresh your cart.`);
       }
       const staff = requireStaff(c.staffId, catalogue.name);
-      const taxRate = resolveTaxRate(catalogue.taxTreatment, catalogue.specificTaxRuleId, branch, rules);
+      const taxRate = input.applyTax === false
+        ? toDec(0)
+        : resolveTaxRate(catalogue.taxTreatment, catalogue.specificTaxRuleId, branch, rules);
       return { c, catalogue, staff, unitPrice: price, gross: round2(price.times(c.quantity)), taxRate };
     });
     if (!drafts.length) throw badRequest('EMPTY_CART', 'Cannot post invoice with an empty cart.');
@@ -290,10 +292,14 @@ export const postInvoice = async (input, actor, idempotencyKey) => {
 
     // ── Lines (+ package allocation, stock & COGS, commission EARN) ──
     for (const [i, d] of drafts.entries()) {
+      const lineStaffName = d.c.type === 'PACKAGE' && d.c.assignedStaff && d.c.assignedStaff.length > 1
+        ? d.c.assignedStaff.map((s) => s.staffName || s.name).filter(Boolean).join(', ')
+        : d.staff.name;
+
       const line = await tx.invoiceLine.create({
         data: {
           invoiceId: invoice.id, sortOrder: i, type: d.c.type, itemId: d.catalogue.id, code: d.c.type === 'PRODUCT' ? d.catalogue.sku : d.catalogue.code,
-          name: d.catalogue.name, staffId: d.staff.id, staffName: d.staff.name, staffCommissionRate: commissionRate(d.staff),
+          name: d.catalogue.name, staffId: d.staff.id, staffName: lineStaffName, staffCommissionRate: commissionRate(d.staff),
           quantity: d.c.quantity, unitPrice: d.unitPrice, discountAllocated: d.discount, netSales: d.net,
           taxTreatment: d.catalogue.taxTreatment, taxRate: d.taxRate, tax: d.tax, total: round2(d.net.plus(d.tax)),
         },
@@ -312,20 +318,46 @@ export const postInvoice = async (input, actor, idempotencyKey) => {
       if (d.c.type === 'SERVICE') await earn(d.staff, d.net);
 
       if (d.c.type === 'PACKAGE') {
-        // One package sale split by saved weights — extra staff never multiply the price (spec §4.2).
-        const comps = [...d.catalogue.components].sort((a, b) => a.sortOrder - b.sortOrder);
-        const shares = splitWithRemainder(d.net, comps.map((k) => toDec(k.allocationPercentage)));
-        for (const [ci, k] of comps.entries()) {
-          const assigned = d.c.packageComponents?.find((pc) => pc.serviceId === k.serviceId);
-          const staff = assigned ? requireStaff(assigned.staffId, k.service.name) : d.staff;
-          const comp = await tx.invoiceLineComponent.create({
-            data: {
-              lineId: line.id, sortOrder: ci, serviceId: k.serviceId, serviceCode: k.service.code, serviceName: k.service.name,
-              quantity: k.quantity, staffId: staff.id, staffName: staff.name, allocationPercentage: k.allocationPercentage,
-              allocatedAmount: shares[ci], staffCommissionRate: commissionRate(staff),
-            },
-          });
-          await earn(staff, shares[ci], comp.id);
+        const assignedStaffList = d.c.assignedStaff && d.c.assignedStaff.length > 0
+          ? d.c.assignedStaff.map((s) => requireStaff(s.staffId, d.catalogue.name))
+          : (d.c.packageComponents?.length && d.c.packageComponents.some((pc) => pc.staffId && pc.staffId !== d.staff.id)
+              ? null
+              : [d.staff]);
+
+        if (assignedStaffList && assignedStaffList.length > 0) {
+          // Multi-staff assigned to package: split revenue & commission equally across all assigned staff
+          const shares = splitWithRemainder(d.net, assignedStaffList.map(() => toDec(1)));
+          for (const [si, st] of assignedStaffList.entries()) {
+            await earn(st, shares[si]);
+          }
+
+          const comps = [...d.catalogue.components].sort((a, b) => a.sortOrder - b.sortOrder);
+          for (const [ci, k] of comps.entries()) {
+            await tx.invoiceLineComponent.create({
+              data: {
+                lineId: line.id, sortOrder: ci, serviceId: k.serviceId, serviceCode: k.service.code, serviceName: k.service.name,
+                quantity: k.quantity, staffId: assignedStaffList[0].id, staffName: assignedStaffList.map((s) => s.name).join(', '),
+                allocationPercentage: k.allocationPercentage,
+                allocatedAmount: toDec(0), staffCommissionRate: commissionRate(assignedStaffList[0]),
+              },
+            });
+          }
+        } else {
+          // Fallback legacy per-component split
+          const comps = [...d.catalogue.components].sort((a, b) => a.sortOrder - b.sortOrder);
+          const shares = splitWithRemainder(d.net, comps.map((k) => toDec(k.allocationPercentage)));
+          for (const [ci, k] of comps.entries()) {
+            const assigned = d.c.packageComponents?.find((pc) => pc.serviceId === k.serviceId);
+            const staff = assigned ? requireStaff(assigned.staffId, k.service.name) : d.staff;
+            const comp = await tx.invoiceLineComponent.create({
+              data: {
+                lineId: line.id, sortOrder: ci, serviceId: k.serviceId, serviceCode: k.service.code, serviceName: k.service.name,
+                quantity: k.quantity, staffId: staff.id, staffName: staff.name, allocationPercentage: k.allocationPercentage,
+                allocatedAmount: shares[ci], staffCommissionRate: commissionRate(staff),
+              },
+            });
+            await earn(staff, shares[ci], comp.id);
+          }
         }
       }
 

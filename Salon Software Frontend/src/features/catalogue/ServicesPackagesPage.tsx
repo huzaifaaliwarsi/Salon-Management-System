@@ -254,13 +254,12 @@ export const ServicesPackagesPage: React.FC = () => {
     });
   }, [packages, searchQuery, statusFilter]);
 
-  // Compute package allocation summary live for package modal
-  const packageAllocationSummary = useMemo(() => {
-    return allocatePackageRevenue(packageFormData.price, packageFormData.components);
-  }, [packageFormData.price, packageFormData.components]);
-
-  const packageAllocationTotalPct = useMemo(() => {
-    return packageFormData.components.reduce((sum, c) => sum + (c.allocationPercentage || 0), 0);
+  // Sum of included services standard catalogue prices
+  const servicesTotalValue = useMemo(() => {
+    return packageFormData.components.reduce(
+      (sum, c) => sum + (c.unitPrice || 0) * (c.quantity || 1),
+      0
+    );
   }, [packageFormData.components]);
 
   // Handler: Add category
@@ -297,8 +296,8 @@ export const ServicesPackagesPage: React.FC = () => {
             durationMinutes: Number(serviceFormData.durationMinutes),
             price: Number(serviceFormData.price),
             description: serviceFormData.description,
-            taxTreatment: serviceFormData.taxTreatment,
-            specificTaxRuleId: serviceFormData.taxTreatment === 'SPECIFIC_RULE' ? serviceFormData.specificTaxRuleId : undefined,
+            taxTreatment: 'BRANCH_DEFAULT',
+            specificTaxRuleId: undefined,
             isActive: serviceFormData.isActive,
           },
           user
@@ -317,8 +316,8 @@ export const ServicesPackagesPage: React.FC = () => {
             durationMinutes: Number(serviceFormData.durationMinutes),
             price: Number(serviceFormData.price),
             description: serviceFormData.description,
-            taxTreatment: serviceFormData.taxTreatment,
-            specificTaxRuleId: serviceFormData.taxTreatment === 'SPECIFIC_RULE' ? serviceFormData.specificTaxRuleId : undefined,
+            taxTreatment: 'BRANCH_DEFAULT',
+            specificTaxRuleId: undefined,
             isActive: serviceFormData.isActive,
           },
           user
@@ -362,9 +361,6 @@ export const ServicesPackagesPage: React.FC = () => {
       return;
     }
 
-    const currentCount = packageFormData.components.length + 1;
-    const defaultPct = Math.round(100 / currentCount);
-
     const newComponents: PackageComponent[] = [
       ...packageFormData.components,
       {
@@ -372,13 +368,24 @@ export const ServicesPackagesPage: React.FC = () => {
         serviceCode: srv.code,
         serviceName: srv.name,
         quantity: 1,
-        allocationPercentage: defaultPct,
+        allocationPercentage: 0,
         unitPrice: srv.price,
       },
     ];
 
+    const prevSum = packageFormData.components.reduce(
+      (sum, c) => sum + (c.unitPrice || 0) * (c.quantity || 1),
+      0
+    );
+    const newSum = prevSum + srv.price;
+    const shouldUpdatePrice =
+      packageFormData.price === 0 ||
+      packageFormData.price === prevSum ||
+      packageFormData.components.length === 0;
+
     setPackageFormData({
       ...packageFormData,
+      price: shouldUpdatePrice ? newSum : packageFormData.price,
       components: newComponents,
     });
   };
@@ -402,9 +409,26 @@ export const ServicesPackagesPage: React.FC = () => {
     e.preventDefault();
     setErrorMessage(null);
     try {
-      if (Math.abs(packageAllocationTotalPct - 100) > 0.001) {
-        throw new Error(`Total allocation percentage must equal exactly 100% (currently ${packageAllocationTotalPct}%).`);
+      if (packageFormData.components.length === 0) {
+        throw new Error('Please add at least one service to the package.');
       }
+
+      // Auto-assign equal allocation percentage in background for schema compliance
+      const n = packageFormData.components.length;
+      const base = n > 0 ? Math.floor((100 / n) * 100) / 100 : 0;
+      let acc = 0;
+      const normalizedComponents = packageFormData.components.map((c, i) => {
+        let alloc = base;
+        if (i === n - 1) {
+          alloc = Number((100 - acc).toFixed(2));
+        } else {
+          acc += base;
+        }
+        return {
+          ...c,
+          allocationPercentage: alloc,
+        };
+      });
 
       if (isAddPackageModalOpen) {
         await salonService.createPackage(
@@ -414,9 +438,9 @@ export const ServicesPackagesPage: React.FC = () => {
             name: packageFormData.name,
             description: packageFormData.description,
             price: Number(packageFormData.price),
-            components: packageFormData.components,
-            taxTreatment: packageFormData.taxTreatment,
-            specificTaxRuleId: packageFormData.taxTreatment === 'SPECIFIC_RULE' ? packageFormData.specificTaxRuleId : undefined,
+            components: normalizedComponents,
+            taxTreatment: 'BRANCH_DEFAULT',
+            specificTaxRuleId: undefined,
             isActive: packageFormData.isActive,
           },
           user
@@ -431,9 +455,9 @@ export const ServicesPackagesPage: React.FC = () => {
             name: packageFormData.name,
             description: packageFormData.description,
             price: Number(packageFormData.price),
-            components: packageFormData.components,
-            taxTreatment: packageFormData.taxTreatment,
-            specificTaxRuleId: packageFormData.taxTreatment === 'SPECIFIC_RULE' ? packageFormData.specificTaxRuleId : undefined,
+            components: normalizedComponents,
+            taxTreatment: 'BRANCH_DEFAULT',
+            specificTaxRuleId: undefined,
             isActive: packageFormData.isActive,
           },
           user
@@ -544,7 +568,7 @@ export const ServicesPackagesPage: React.FC = () => {
             Services & Package Catalogue
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Configure standalone treatments, bundled package weights, multi-stylist allocation, and tax treatment.
+            Configure standalone treatments, bundled packages, and multi-stylist allocation.
           </p>
         </div>
 
@@ -710,9 +734,7 @@ export const ServicesPackagesPage: React.FC = () => {
                       <TableHead className="w-28 text-xs font-semibold">Code</TableHead>
                       <TableHead className="text-xs font-semibold">Service Details</TableHead>
                       <TableHead className="text-xs font-semibold">Category</TableHead>
-                      <TableHead className="text-xs font-semibold">Duration</TableHead>
                       <TableHead className="text-xs font-semibold text-right">Selling Price</TableHead>
-                      <TableHead className="text-xs font-semibold">Tax Treatment</TableHead>
                       <TableHead className="text-xs font-semibold">Status</TableHead>
                       <TableHead className="w-12 text-center text-xs font-semibold">Actions</TableHead>
                     </TableRow>
@@ -720,7 +742,7 @@ export const ServicesPackagesPage: React.FC = () => {
                   <TableBody>
                     {filteredServices.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={8} className="py-12 text-center text-slate-400">
+                        <TableCell colSpan={6} className="py-12 text-center text-slate-400">
                           <Scissors className="w-8 h-8 mx-auto text-slate-300 mb-2" />
                           <p className="font-medium text-xs text-slate-600">No services match the active filters.</p>
                           <p className="text-[11px] text-slate-400 mt-0.5">Add a new service or adjust your search.</p>
@@ -747,17 +769,8 @@ export const ServicesPackagesPage: React.FC = () => {
                               {srv.category}
                             </span>
                           </TableCell>
-                          <TableCell className="text-xs text-slate-600 font-medium">
-                            <span className="flex items-center gap-1">
-                              <Clock className="w-3 h-3 text-slate-400" />
-                              {srv.durationMinutes} mins
-                            </span>
-                          </TableCell>
                           <TableCell className="text-xs font-semibold text-slate-900 text-right tabular-nums">
                             {formatCurrency(srv.price)}
-                          </TableCell>
-                          <TableCell>
-                            {renderTaxTreatmentBadge(srv.taxTreatment, srv.specificTaxRuleId)}
                           </TableCell>
                           <TableCell>
                             {srv.isActive ? (
@@ -863,7 +876,6 @@ export const ServicesPackagesPage: React.FC = () => {
                       <TableHead className="text-xs font-semibold">Package Bundle</TableHead>
                       <TableHead className="text-xs font-semibold">Included Services Breakdown</TableHead>
                       <TableHead className="text-xs font-semibold text-right">Package Price</TableHead>
-                      <TableHead className="text-xs font-semibold">Tax Treatment</TableHead>
                       <TableHead className="text-xs font-semibold">Status</TableHead>
                       <TableHead className="w-12 text-center text-xs font-semibold">Actions</TableHead>
                     </TableRow>
@@ -871,10 +883,10 @@ export const ServicesPackagesPage: React.FC = () => {
                   <TableBody>
                     {filteredPackages.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={7} className="py-12 text-center text-slate-400">
+                        <TableCell colSpan={6} className="py-12 text-center text-slate-400">
                           <Package className="w-8 h-8 mx-auto text-slate-300 mb-2" />
                           <p className="font-medium text-xs text-slate-600">No packages configured for this branch.</p>
-                          <p className="text-[11px] text-slate-400 mt-0.5">Create your first bundled package with weighted service allocations.</p>
+                          <p className="text-[11px] text-slate-400 mt-0.5">Create your first bundled package with services.</p>
                         </TableCell>
                       </TableRow>
                     ) : (
@@ -904,7 +916,7 @@ export const ServicesPackagesPage: React.FC = () => {
                                     key={i}
                                     className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-[#2254E1] border border-blue-200"
                                   >
-                                    {c.quantity}x {c.serviceName} ({c.allocationPercentage}%)
+                                    {c.quantity}x {c.serviceName}
                                   </span>
                                 ))}
                               </div>
@@ -912,9 +924,6 @@ export const ServicesPackagesPage: React.FC = () => {
                           </TableCell>
                           <TableCell className="text-xs font-semibold text-slate-900 text-right tabular-nums">
                             {formatCurrency(pkg.price)}
-                          </TableCell>
-                          <TableCell>
-                            {renderTaxTreatmentBadge(pkg.taxTreatment, pkg.specificTaxRuleId)}
                           </TableCell>
                           <TableCell>
                             {pkg.isActive ? (
@@ -1007,7 +1016,7 @@ export const ServicesPackagesPage: React.FC = () => {
               {isAddServiceModalOpen ? 'Add New Salon Service' : `Edit Service: ${selectedService?.code}`}
             </DialogTitle>
             <DialogDescription className="text-xs text-slate-500">
-              Configure treatment pricing, duration, category classification, and tax treatment for {currentBranch?.name}.
+              Configure treatment pricing and category classification for {currentBranch?.name}.
             </DialogDescription>
           </DialogHeader>
 
@@ -1055,81 +1064,20 @@ export const ServicesPackagesPage: React.FC = () => {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Duration (Minutes) *</label>
-                <Input
-                  type="number"
-                  min="5"
-                  step="5"
-                  value={serviceFormData.durationMinutes}
-                  onChange={(e) =>
-                    setServiceFormData({ ...serviceFormData, durationMinutes: Math.max(1, Number(e.target.value)) })
-                  }
-                  required
-                  className="text-xs"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Selling Price (PKR) *</label>
-                <Input
-                  type="number"
-                  min="0"
-                  step="50"
-                  value={serviceFormData.price}
-                  onChange={(e) =>
-                    setServiceFormData({ ...serviceFormData, price: Math.max(0, Number(e.target.value)) })
-                  }
-                  required
-                  className="text-xs font-semibold tabular-nums"
-                />
-              </div>
-            </div>
-
             <div>
-              <label className="font-semibold text-slate-700 block mb-1">Tax Treatment *</label>
-              <Select
-                value={serviceFormData.taxTreatment}
-                onValueChange={(val) => setServiceFormData({ ...serviceFormData, taxTreatment: val as any })}
-              >
-                <SelectTrigger className="h-9 text-xs">
-                  <SelectValue placeholder="Select Tax Treatment" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="BRANCH_DEFAULT" className="text-xs">
-                    Branch Default ({branchTaxPercent}%)
-                  </SelectItem>
-                  <SelectItem value="SPECIFIC_RULE" className="text-xs">
-                    Specific Branch Tax Rule
-                  </SelectItem>
-                  <SelectItem value="EXEMPT" className="text-xs">
-                    Tax Exempt (0%)
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+              <label className="font-semibold text-slate-700 block mb-1">Selling Price (PKR) *</label>
+              <Input
+                type="number"
+                min="0"
+                step="50"
+                value={serviceFormData.price}
+                onChange={(e) =>
+                  setServiceFormData({ ...serviceFormData, price: Math.max(0, Number(e.target.value)) })
+                }
+                required
+                className="text-xs font-semibold tabular-nums"
+              />
             </div>
-
-            {serviceFormData.taxTreatment === 'SPECIFIC_RULE' && (
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Select Specific Tax Rule *</label>
-                <Select
-                  value={serviceFormData.specificTaxRuleId}
-                  onValueChange={(val) => setServiceFormData({ ...serviceFormData, specificTaxRuleId: val })}
-                >
-                  <SelectTrigger className="h-9 text-xs">
-                    <SelectValue placeholder="Select Tax Rule" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {taxRules.map((r) => (
-                      <SelectItem key={r.id} value={r.id} className="text-xs">
-                        {r.name} ({(r.rate * 100).toFixed(1)}%)
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
 
             <div>
               <label className="font-semibold text-slate-700 block mb-1">Description (Optional)</label>
@@ -1177,7 +1125,7 @@ export const ServicesPackagesPage: React.FC = () => {
               {isAddPackageModalOpen ? 'Create Bundled Service Package' : `Edit Package: ${selectedPackage?.code}`}
             </DialogTitle>
             <DialogDescription className="text-xs text-slate-500">
-              Combine standalone services into an independently priced bundle with deterministic net revenue weights for {currentBranch?.name}.
+              Combine standalone services into an independently priced bundle for {currentBranch?.name}.
             </DialogDescription>
           </DialogHeader>
 
@@ -1234,77 +1182,31 @@ export const ServicesPackagesPage: React.FC = () => {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Package Tax Treatment *</label>
-                <Select
-                  value={packageFormData.taxTreatment}
-                  onValueChange={(val) => setPackageFormData({ ...packageFormData, taxTreatment: val as any })}
-                >
-                  <SelectTrigger className="h-9 text-xs">
-                    <SelectValue placeholder="Select Tax Treatment" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="BRANCH_DEFAULT" className="text-xs">
-                      Branch Default ({branchTaxPercent}%)
-                    </SelectItem>
-                    <SelectItem value="SPECIFIC_RULE" className="text-xs">
-                      Specific Branch Tax Rule
-                    </SelectItem>
-                    <SelectItem value="EXEMPT" className="text-xs">
-                      Tax Exempt (0%)
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {packageFormData.taxTreatment === 'SPECIFIC_RULE' && (
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Specific Tax Rule *</label>
-                  <Select
-                    value={packageFormData.specificTaxRuleId}
-                    onValueChange={(val) => setPackageFormData({ ...packageFormData, specificTaxRuleId: val })}
-                  >
-                    <SelectTrigger className="h-9 text-xs">
-                      <SelectValue placeholder="Select Rule" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {taxRules.map((r) => (
-                        <SelectItem key={r.id} value={r.id} className="text-xs">
-                          {r.name} ({(r.rate * 100).toFixed(1)}%)
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-            </div>
-
             {/* PACKAGE COMPONENTS BUILDER */}
             <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <h4 className="font-semibold text-slate-800 text-xs">Included Treatments & Revenue Allocations</h4>
+                  <h4 className="font-semibold text-slate-800 text-xs">Included Services</h4>
                   <p className="text-[11px] text-slate-500">
-                    Weights split the package net selling price for staff commission and reporting.
+                    Add the services included in this package bundle.
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <Badge
-                    variant={Math.abs(packageAllocationTotalPct - 100) < 0.001 ? 'success' : 'destructive'}
-                    className="font-mono text-xs"
-                  >
-                    Total Weight: {packageAllocationTotalPct.toFixed(1)}% / 100%
-                  </Badge>
-                </div>
+                {packageFormData.components.length > 0 && (
+                  <div className="text-right">
+                    <span className="text-[11px] text-slate-500 block">Total Services Value:</span>
+                    <span className="font-mono font-semibold text-xs text-slate-800">
+                      {formatCurrency(servicesTotalValue)}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Add Component Selector */}
               <div className="flex items-center gap-2">
                 <Select onValueChange={(val) => handleAddPackageComponent(val)}>
                   <SelectTrigger className="h-8 text-xs bg-white flex-1">
-                    <SelectValue placeholder="Add an active treatment from catalogue..." />
+                    <SelectValue placeholder="Add an active service from catalogue..." />
                   </SelectTrigger>
                   <SelectContent>
                     {services
@@ -1321,89 +1223,56 @@ export const ServicesPackagesPage: React.FC = () => {
               {/* Component Rows Table */}
               {packageFormData.components.length === 0 ? (
                 <div className="py-6 text-center text-slate-400 bg-white rounded-lg border border-dashed border-slate-200">
-                  <p className="text-xs font-medium text-slate-500">No components added yet.</p>
-                  <p className="text-[11px] text-slate-400">Select active treatments from the dropdown above.</p>
+                  <p className="text-xs font-medium text-slate-500">No services added yet.</p>
+                  <p className="text-[11px] text-slate-400">Select active services from the dropdown above.</p>
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {packageFormData.components.map((comp, idx) => {
-                    const allocatedPkr = packageAllocationSummary.allocatedComponents[idx]?.allocatedAmount || 0;
-                    return (
-                      <div
-                        key={idx}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 bg-white rounded-lg border border-slate-200"
-                      >
-                        <div className="flex-1">
-                          <p className="font-semibold text-xs text-slate-900 flex items-center gap-1.5">
-                            <span className="font-mono text-[10px] text-slate-400">{comp.serviceCode}</span>
-                            <span>{comp.serviceName}</span>
-                          </p>
-                          <span className="text-[10px] text-slate-400">
-                            Catalogue reference: {formatCurrency(comp.unitPrice)}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center gap-3">
-                          <div className="flex items-center gap-1">
-                            <span className="text-[11px] text-slate-500">Qty:</span>
-                            <Input
-                              type="number"
-                              min="1"
-                              value={comp.quantity}
-                              onChange={(e) =>
-                                handleUpdatePackageComponent(idx, { quantity: Math.max(1, Number(e.target.value)) })
-                              }
-                              className="w-14 h-7 text-xs text-center"
-                            />
-                          </div>
-
-                          <div className="flex items-center gap-1">
-                            <span className="text-[11px] text-slate-500">Weight:</span>
-                            <Input
-                              type="number"
-                              min="0"
-                              max="100"
-                              step="0.5"
-                              value={comp.allocationPercentage}
-                              onChange={(e) =>
-                                handleUpdatePackageComponent(idx, { allocationPercentage: Number(e.target.value) })
-                              }
-                              className="w-16 h-7 text-xs text-center font-mono font-semibold"
-                            />
-                            <span className="text-xs text-slate-400">%</span>
-                          </div>
-
-                          <div className="w-24 text-right">
-                            <span className="text-[10px] text-slate-400 block">Allocated</span>
-                            <span className="font-mono font-semibold text-xs text-[#2254E1]">
-                              {formatCurrency(allocatedPkr)}
-                            </span>
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => handleRemovePackageComponent(idx)}
-                            className="p-1 rounded text-rose-500 hover:bg-rose-50 cursor-pointer"
-                            title="Remove component"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                  {packageFormData.components.map((comp, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center justify-between gap-2 p-2.5 bg-white rounded-lg border border-slate-200"
+                    >
+                      <div className="flex-1">
+                        <p className="font-semibold text-xs text-slate-900 flex items-center gap-1.5">
+                          <span className="font-mono text-[10px] text-slate-400">{comp.serviceCode}</span>
+                          <span>{comp.serviceName}</span>
+                        </p>
+                        <span className="text-[10px] text-slate-400">
+                          Price: {formatCurrency(comp.unitPrice)}
+                        </span>
                       </div>
-                    );
-                  })}
 
-                  {/* Reconciled Rounding Remainder Distribution Notice */}
-                  <div className="p-2 bg-blue-50/70 border border-blue-200/80 rounded flex items-center justify-between text-[11px] text-[#2254E1]">
-                    <span className="flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5 text-[#2254E1]" />
-                      Deterministic Remainder Reconciled:
-                    </span>
-                    <span className="font-mono font-semibold">
-                      Total Allocated: {formatCurrency(packageAllocationSummary.totalAllocated)} (
-                      {formatCurrency(packageFormData.price)} Target)
-                    </span>
-                  </div>
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-1">
+                          <span className="text-[11px] text-slate-500">Qty:</span>
+                          <Input
+                            type="number"
+                            min="1"
+                            value={comp.quantity}
+                            onChange={(e) => {
+                              const newQty = Math.max(1, Number(e.target.value));
+                              handleUpdatePackageComponent(idx, { quantity: newQty });
+                            }}
+                            className="w-14 h-7 text-xs text-center"
+                          />
+                        </div>
+
+                        <span className="font-mono font-semibold text-xs text-slate-700 w-20 text-right">
+                          {formatCurrency((comp.unitPrice || 0) * (comp.quantity || 1))}
+                        </span>
+
+                        <button
+                          type="button"
+                          onClick={() => handleRemovePackageComponent(idx)}
+                          className="p-1 rounded text-rose-500 hover:bg-rose-50 cursor-pointer"
+                          title="Remove service"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -1424,7 +1293,7 @@ export const ServicesPackagesPage: React.FC = () => {
                 type="submit"
                 variant="primary"
                 size="sm"
-                disabled={Math.abs(packageAllocationTotalPct - 100) > 0.001 || packageFormData.components.length === 0}
+                disabled={packageFormData.components.length === 0}
               >
                 {isAddPackageModalOpen ? 'Create Package' : 'Save Changes'}
               </Button>
@@ -1478,9 +1347,6 @@ export const ServicesPackagesPage: React.FC = () => {
                       <div>
                         <p className="font-semibold text-slate-900 text-xs flex items-center gap-1.5">
                           <span>{comp.serviceName}</span>
-                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-600">
-                            {comp.allocationPercentage}% Weight
-                          </span>
                         </p>
                         <p className="text-[11px] text-slate-500 mt-0.5">
                           Net revenue share: <strong className="text-slate-900">{formatCurrency(allocatedShare)}</strong>

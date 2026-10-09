@@ -14,6 +14,7 @@ import { nextSequence } from '../../lib/sequence.js';
 import { num, opt, iso } from '../../lib/dto.js';
 import { formatMinutesToTime, parseTimeToMinutes } from '../../lib/calculations/attendanceCalculations.js';
 import { payoutMoney, reverseMoney } from '../cash/cash.service.js';
+import { lockStaffPayBranch, replayMoneyRequest, saveMoneyResponse } from '../../lib/hrTransactions.js';
 
 const clockTime = () => formatMinutesToTime(parseTimeToMinutes(toTimeString(new Date())));
 const managersOnly = (actor) => {
@@ -34,7 +35,7 @@ const toReceiptDTO = (r, branchName) => ({
 
 const allocationTotals = (a) => {
   const paid = round2((a.payouts ?? []).filter((p) => p.status === 'COMPLETED').reduce((s, p) => s.plus(p.amount), toDec(0)));
-  const outstanding = round2(toDec(a.amount).minus(paid));
+  const outstanding = a.status === 'CANCELLED' ? toDec(0) : round2(toDec(a.amount).minus(paid));
   const status = a.status === 'CANCELLED' ? 'CANCELLED' : outstanding.lessThanOrEqualTo(0) ? 'PAID' : paid.greaterThan(0) ? 'PARTIALLY_PAID' : 'UNPAID';
   return { paid, outstanding, status };
 };
@@ -46,7 +47,7 @@ const toAllocationDTO = (a) => {
     invoiceId: a.receipt?.invoiceId, invoiceNumber: a.receipt?.invoiceNumber, paymentId: a.receipt?.paymentId, staffId: a.staffId,
     staffName: a.staffName, amount: num(a.amount), paidAmount: t.paid.toNumber(), outstandingAmount: t.outstanding.toNumber(),
     allocationType: a.allocationType, allocationDate: ymd(a.allocationDate), allocationTime: a.allocationTime,
-    allocatedByUserId: a.allocatedByUserId, allocatedByName: a.allocatedByName, status: t.status, cancelledAt: iso(a.cancelledAt),
+    allocatedByUserId: a.allocatedByUserId, allocatedByName: a.allocatedByName, status: t.status, cancelledAt: iso(a.cancelledAt), cancellationDate: ymd(a.cancellationDate),
     cancelledByUserId: opt(a.cancelledByUserId), cancelledByName: opt(a.cancelledByName), cancelReason: opt(a.cancelReason), notes: opt(a.notes),
   };
 };
@@ -150,13 +151,18 @@ const Decimal_max0 = (d) => (d.lessThan(0) ? toDec(0) : d);
 export const allocateTips = async (actor, input) => {
   managersOnly(actor);
   return prisma.$transaction(async (tx) => {
+    const header = await tx.tipReceipt.findUnique({ where: { id: input.tipReceiptId } });
+    if (!header) throw notFound('TIP_RECEIPT_NOT_FOUND', `Tip receipt '${input.tipReceiptId}' not found.`);
+    await lockStaffPayBranch(tx, header.branchId);
     await tx.$executeRaw`SELECT 1 FROM "TipReceipt" WHERE id = ${input.tipReceiptId} FOR UPDATE`;
     const receipt = await refreshReceipt(tx, input.tipReceiptId).catch(() => null);
     if (!receipt) throw notFound('TIP_RECEIPT_NOT_FOUND', `Tip receipt '${input.tipReceiptId}' not found.`);
     assertBranchAccess(actor, receipt.branchId, 'Access Denied: Cannot allocate tips for another branch.');
     if (toDec(receipt.unallocatedAmount).lessThanOrEqualTo(0)) throw conflict('FULLY_ALLOCATED', `Tip receipt '${receipt.receiptNumber}' is already fully allocated.`);
 
-    const total = round2(input.recipients.reduce((s, r) => s.plus(r.amount), toDec(0)));
+    const amounts = input.recipients.map((r) => round2(r.amount));
+    if (!amounts.length || amounts.some((amount) => amount.lessThanOrEqualTo(0))) throw badRequest('INVALID_AMOUNT', 'Each allocated tip must be greater than zero after rounding.');
+    const total = round2(amounts.reduce((s, amount) => s.plus(amount), toDec(0)));
     if (total.greaterThan(receipt.unallocatedAmount)) {
       throw badRequest('OVER_ALLOCATION', `Total allocation amount (${total}) exceeds available unallocated tip balance (${toDec(receipt.unallocatedAmount)}).`);
     }
@@ -187,6 +193,10 @@ export const allocateTips = async (actor, input) => {
 export const cancelAllocation = async (actor, allocationId, reason) => {
   managersOnly(actor);
   return prisma.$transaction(async (tx) => {
+    const header = await tx.tipAllocation.findUnique({ where: { id: allocationId } });
+    if (!header) throw notFound('ALLOCATION_NOT_FOUND', `Tip allocation '${allocationId}' not found.`);
+    await lockStaffPayBranch(tx, header.branchId);
+    await tx.$executeRaw`SELECT 1 FROM "TipAllocation" WHERE id = ${allocationId} FOR UPDATE`;
     const a = await tx.tipAllocation.findUnique({ where: { id: allocationId }, include: allocInclude });
     if (!a) throw notFound('ALLOCATION_NOT_FOUND', `Tip allocation '${allocationId}' not found.`);
     assertBranchAccess(actor, a.branchId, 'Access Denied: Cannot cancel allocation for another branch.');
@@ -195,7 +205,7 @@ export const cancelAllocation = async (actor, allocationId, reason) => {
     if (t.paid.greaterThan(0)) throw conflict('HAS_PAYOUTS', `Cannot cancel tip allocation with active payouts (${t.paid} PKR paid). Linked payouts must be reversed first.`);
     const cancelled = await tx.tipAllocation.update({
       where: { id: allocationId },
-      data: { status: 'CANCELLED', cancelledAt: new Date(), cancelledByUserId: actor.id, cancelledByName: actor.name, cancelReason: reason },
+      data: { status: 'CANCELLED', cancelledAt: new Date(), cancellationDate: dateOnly(await getBusinessDate(tx)), cancelledByUserId: actor.id, cancelledByName: actor.name, cancelReason: reason },
       include: allocInclude,
     });
     const receipt = await refreshReceipt(tx, a.receiptId);
@@ -209,6 +219,11 @@ export const cancelAllocation = async (actor, allocationId, reason) => {
 export const recordPayout = async (actor, input) => {
   managersOnly(actor);
   return prisma.$transaction(async (tx) => {
+    const replay = await replayMoneyRequest(tx, actor, input.idempotencyKey, 'POST /api/v1/tips/payouts');
+    if (replay) return replay;
+    const header = await tx.tipAllocation.findUnique({ where: { id: input.allocationId } });
+    if (!header) throw notFound('ALLOCATION_NOT_FOUND', `Tip allocation '${input.allocationId}' not found.`);
+    await lockStaffPayBranch(tx, header.branchId);
     await tx.$executeRaw`SELECT 1 FROM "TipAllocation" WHERE id = ${input.allocationId} FOR UPDATE`;
     const a = await tx.tipAllocation.findUnique({ where: { id: input.allocationId }, include: allocInclude });
     if (!a) throw notFound('ALLOCATION_NOT_FOUND', `Tip allocation '${input.allocationId}' not found.`);
@@ -217,6 +232,7 @@ export const recordPayout = async (actor, input) => {
     if (t.status === 'CANCELLED') throw conflict('ALLOCATION_CANCELLED', 'Cannot disburse payout against a cancelled tip allocation.');
     if (t.status === 'PAID') throw conflict('ALREADY_PAID', `Tip allocation '${a.allocationNumber}' is already fully paid.`);
     const amount = round2(input.amount);
+    if (amount.lessThanOrEqualTo(0)) throw badRequest('INVALID_AMOUNT', 'Tip payout must be greater than zero after rounding.');
     if (amount.greaterThan(t.outstanding)) throw badRequest('OVERPAYMENT', `Payout amount (${amount}) exceeds outstanding allocation balance (${t.outstanding}).`);
 
     const branch = await tx.branch.findUnique({ where: { id: a.branchId } });
@@ -237,20 +253,23 @@ export const recordPayout = async (actor, input) => {
     });
     await auditLog(tx, { userId: actor.id, userName: actor.name, action: 'TIP_PAID_OUT', entity: 'TipPayout', entityId: payout.id, branchId: a.branchId, after: { amount: amount.toNumber() } });
     const fresh = await tx.tipAllocation.findUnique({ where: { id: a.id }, include: allocInclude });
-    return { payout: toPayoutDTO(payout), allocation: toAllocationDTO(fresh) };
+    return saveMoneyResponse(tx, actor, input.idempotencyKey, 'POST /api/v1/tips/payouts', { payout: toPayoutDTO(payout), allocation: toAllocationDTO(fresh) });
   });
 };
 
-export const reversePayout = async (actor, { payoutId, reversalReason }) => {
+export const reversePayout = async (actor, { payoutId, reversalReason, receivingDrawerId }) => {
   managersOnly(actor);
   return prisma.$transaction(async (tx) => {
+    const header = await tx.tipPayout.findUnique({ where: { id: payoutId } });
+    if (!header) throw notFound('PAYOUT_NOT_FOUND', `Tip payout '${payoutId}' not found.`);
+    await lockStaffPayBranch(tx, header.branchId);
     await tx.$executeRaw`SELECT 1 FROM "TipPayout" WHERE id = ${payoutId} FOR UPDATE`;
     const p = await tx.tipPayout.findUnique({ where: { id: payoutId } });
     if (!p) throw notFound('PAYOUT_NOT_FOUND', `Tip payout '${payoutId}' not found.`);
     assertBranchAccess(actor, p.branchId, 'Access Denied: Cannot reverse tip payout for another branch.');
     if (p.status === 'REVERSED') throw conflict('ALREADY_REVERSED', 'This tip payout is already reversed.');
     const back = await reverseMoney(tx, actor, {
-      branchId: p.branchId, method: p.method, onlineAccountId: p.onlineAccountId, amount: p.amount, sourceModule: 'TIPS',
+      branchId: p.branchId, method: p.method, onlineAccountId: p.onlineAccountId, receivingDrawerId, amount: p.amount, sourceModule: 'TIPS',
       sourceId: p.id, reference: p.payoutNumber, description: `Reversal of tip payout ${p.payoutNumber}: ${reversalReason}`,
     });
     const today = await getBusinessDate(tx);
@@ -305,7 +324,7 @@ export const statement = async (actor, { branchId, startDate, endDate, staffId, 
     prisma.invoiceRefund.findMany({ where: { tipReversed: { gt: 0 }, ...(b ? { invoice: { branchId: b } } : {}) } }),
   ]);
   const d = (x) => ymd(x);
-  const cancelDay = (a) => (a.cancelledAt ? toDateString(a.cancelledAt) : null);
+  const cancelDay = (a) => (a.cancellationDate ? ymd(a.cancellationDate) : a.cancelledAt ? toDateString(a.cancelledAt) : null);
   const sum = (arr, f) => round2(arr.reduce((t, x) => t.plus(f(x)), toDec(0)));
   const before = (day) => day < s;
   const inRange = (day) => day >= s && day <= e;

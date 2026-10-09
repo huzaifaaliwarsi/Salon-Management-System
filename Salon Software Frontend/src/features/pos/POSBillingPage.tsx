@@ -161,6 +161,7 @@ export const POSBillingPage: React.FC = () => {
   const [discountValue, setDiscountValue] = useState<number>(0);
   const [tipAmount, setTipAmount] = useState<number>(0);
   const [invoiceNotes, setInvoiceNotes] = useState('');
+  const [applyBranchTax, setApplyBranchTax] = useState<boolean>(true);
 
   // Payment / Checkout dialog state
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
@@ -600,6 +601,13 @@ export const POSBillingPage: React.FC = () => {
       staffId: defaultStaff.id,
       staffName: defaultStaff.name,
       staffCommissionRate: defaultStaff.commissionRate,
+      assignedStaff: [
+        {
+          staffId: defaultStaff.id,
+          staffName: defaultStaff.name,
+          staffCommissionRate: defaultStaff.commissionRate,
+        },
+      ],
       packageComponents: compAssignments,
     };
 
@@ -653,7 +661,61 @@ export const POSBillingPage: React.FC = () => {
     );
   };
 
-  // Assign staff to a specific package component
+  // Add staff member to a package line item
+  const handleAddStaffToPackage = (cartInstanceId: string, staffId: string) => {
+    const staff = staffList.find((s) => s.id === staffId);
+    if (!staff) return;
+
+    setCart((prev) =>
+      prev.map((ci) => {
+        if (ci.cartInstanceId !== cartInstanceId) return ci;
+        const currentStaff = ci.assignedStaff || [
+          {
+            staffId: ci.staffId,
+            staffName: ci.staffName,
+            staffCommissionRate: ci.staffCommissionRate,
+          },
+        ];
+        if (currentStaff.some((s) => s.staffId === staffId)) return ci;
+        const updatedStaff = [
+          ...currentStaff,
+          {
+            staffId: staff.id,
+            staffName: staff.name,
+            staffCommissionRate: staff.commissionRate,
+          },
+        ];
+        return {
+          ...ci,
+          staffId: updatedStaff[0].staffId,
+          staffName: updatedStaff.map((s) => s.staffName).join(', '),
+          staffCommissionRate: updatedStaff[0].staffCommissionRate,
+          assignedStaff: updatedStaff,
+        };
+      })
+    );
+  };
+
+  // Remove staff member from a package line item
+  const handleRemoveStaffFromPackage = (cartInstanceId: string, staffId: string) => {
+    setCart((prev) =>
+      prev.map((ci) => {
+        if (ci.cartInstanceId !== cartInstanceId) return ci;
+        const currentStaff = ci.assignedStaff || [];
+        if (currentStaff.length <= 1) return ci; // Keep at least one staff
+        const updatedStaff = currentStaff.filter((s) => s.staffId !== staffId);
+        return {
+          ...ci,
+          staffId: updatedStaff[0].staffId,
+          staffName: updatedStaff.map((s) => s.staffName).join(', '),
+          staffCommissionRate: updatedStaff[0].staffCommissionRate,
+          assignedStaff: updatedStaff,
+        };
+      })
+    );
+  };
+
+  // Assign staff to a specific package component (legacy fallback)
   const handleAssignPackageComponentStaff = (
     cartInstanceId: string,
     serviceId: string,
@@ -691,6 +753,7 @@ export const POSBillingPage: React.FC = () => {
     setInvoiceNotes('');
     setLoadedAppointment(null);
     setAcknowledgedPriceDiscrepancy(false);
+    setApplyBranchTax(true);
   };
 
   // Open Appointment in POS
@@ -760,14 +823,32 @@ export const POSBillingPage: React.FC = () => {
           const primaryStaffName = compAssignments[0]?.staffName || itm.staffName || staffList[0]?.name || 'Primary Stylist';
           const primaryStaffMember = staffList.find((s) => s.id === primaryStaffId);
 
+          const packageAssignedStaff = itm.assignedStaff && itm.assignedStaff.length > 0
+            ? itm.assignedStaff.map((as) => {
+                const member = staffList.find((s) => s.id === as.staffId);
+                return {
+                  staffId: as.staffId,
+                  staffName: as.staffName || member?.name || 'Stylist',
+                  staffCommissionRate: as.staffCommissionRate ?? member?.commissionRate ?? 0.1,
+                };
+              })
+            : [
+                {
+                  staffId: primaryStaffId,
+                  staffName: primaryStaffName,
+                  staffCommissionRate: primaryStaffMember?.commissionRate ?? 0.1,
+                },
+              ];
+
           newCartItems.push({
             cartInstanceId: itm.lineInstanceId || `ci-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
             type: 'PACKAGE',
             item: matchedPkg,
             quantity: 1,
             staffId: primaryStaffId,
-            staffName: primaryStaffName,
+            staffName: packageAssignedStaff.map((s) => s.staffName).join(', ') || primaryStaffName,
             staffCommissionRate: primaryStaffMember?.commissionRate ?? 0.1,
+            assignedStaff: packageAssignedStaff,
             packageComponents: compAssignments,
           });
         } else {
@@ -818,7 +899,8 @@ export const POSBillingPage: React.FC = () => {
       calculatedDiscount = roundCurrency(Math.max(0, Math.min(grossSubtotal, discountValue || 0)));
     }
 
-    // Allocate discount across lines proportionally
+    // Branch sales tax (configured in Branch Settings)
+    const branchTaxRate = (applyBranchTax && currentBranch?.taxEnabled) ? (currentBranch.taxRate || 0) : 0;
     let totalTax = 0;
 
     const lineCalculations = cart.map((ci) => {
@@ -827,18 +909,7 @@ export const POSBillingPage: React.FC = () => {
       const lineDisc = grossSubtotal > 0 ? roundCurrency((gross / grossSubtotal) * calculatedDiscount) : 0;
       const lineNet = roundCurrency(gross - lineDisc);
 
-      let effectiveTaxRate = 0;
-      const specificTaxId = getCatalogueTaxRuleId(ci.item);
-      if (ci.item.taxTreatment === 'SPECIFIC_RULE') {
-        if (specificTaxId && currentBranch) {
-          effectiveTaxRate = currentBranch.taxEnabled ? currentBranch.taxRate : 0;
-        }
-      } else if (ci.item.taxTreatment === 'BRANCH_DEFAULT') {
-        if (currentBranch?.taxEnabled) {
-          effectiveTaxRate = currentBranch.taxRate || 0;
-        }
-      }
-
+      const effectiveTaxRate = branchTaxRate;
       const lineTax = roundCurrency(lineNet * effectiveTaxRate);
       totalTax = roundCurrency(totalTax + lineTax);
 
@@ -868,7 +939,7 @@ export const POSBillingPage: React.FC = () => {
       fullInvoiceTotal,
       lineCalculations,
     };
-  }, [cart, discountType, discountValue, tipAmount, currentBranch]);
+  }, [cart, discountType, discountValue, tipAmount, currentBranch, applyBranchTax]);
 
   // Check if booking quote differs from canonical cart subtotal
   const bookingPriceDiscrepancy = useMemo(() => {
@@ -1026,6 +1097,7 @@ export const POSBillingPage: React.FC = () => {
         discountType,
         discountValue,
         tip: tipAmount,
+        applyTax: applyBranchTax,
         cartItems: cart,
         payments,
         idempotencyKey,
@@ -1474,10 +1546,6 @@ export const POSBillingPage: React.FC = () => {
                           <span className="font-mono text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded font-semibold">
                             {srv.code}
                           </span>
-                          <span className="text-[10px] text-slate-500 font-medium flex items-center gap-1">
-                            <Clock className="w-3 h-3 text-slate-400" />
-                            {srv.durationMinutes}m
-                          </span>
                         </div>
                         <h3 className="font-bold text-slate-900 text-xs mt-1 tracking-tight group-hover:text-[#2254E1] transition-colors">
                           {srv.name}
@@ -1797,38 +1865,94 @@ export const POSBillingPage: React.FC = () => {
                         </Select>
                       </div>
                     ) : (
-                      /* Package Component Staff Assignment Breakdown */
-                      <div className="pt-2 border-t border-slate-200/60 space-y-1.5">
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
-                          Package Component Staff Assignments:
-                        </span>
-                        {ci.packageComponents?.map((comp) => (
-                          <div
-                            key={comp.serviceId}
-                            className="flex items-center justify-between gap-2 bg-white p-1.5 rounded border border-slate-200/50 text-[11px]"
-                          >
-                            <span className="text-slate-700 font-medium flex-1 truncate">
-                              • {comp.serviceName}
+                      /* Package Multi-Staff Assignment & Commission Split */
+                      <div className="pt-2 border-t border-slate-200/60 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                            Assigned Stylists ({ci.assignedStaff?.length || 1}):
+                          </span>
+                          {ci.assignedStaff && ci.assignedStaff.length > 1 ? (
+                            <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200/60">
+                              Equal Split ({(100 / ci.assignedStaff.length).toFixed(1)}% each)
                             </span>
-                            <Select
-                              value={comp.staffId}
-                              onValueChange={(val) =>
-                                handleAssignPackageComponentStaff(ci.cartInstanceId, comp.serviceId, val)
-                              }
+                          ) : (
+                            <span className="text-[10px] text-slate-400">
+                              100% attributed
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Assigned Staff Chips */}
+                        <div className="flex flex-wrap gap-1.5 items-center">
+                          {(ci.assignedStaff && ci.assignedStaff.length > 0
+                            ? ci.assignedStaff
+                            : [
+                                {
+                                  staffId: ci.staffId,
+                                  staffName: ci.staffName,
+                                  staffCommissionRate: ci.staffCommissionRate,
+                                },
+                              ]
+                          ).map((st) => (
+                            <span
+                              key={st.staffId}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 hover:bg-slate-200/80 text-slate-800 rounded-md text-[11px] font-medium border border-slate-200/80 transition-colors"
                             >
-                              <SelectTrigger className="w-[150px] text-[10px] h-6 bg-slate-50 border-slate-200">
-                                <SelectValue placeholder="Select Staff" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {staffList.map((st) => (
-                                  <SelectItem key={st.id} value={st.id} className="text-[11px]">
-                                    {st.name}
+                              <span>{st.staffName}</span>
+                              <span className="text-[10px] text-slate-400 font-normal">
+                                ({Math.round((st.staffCommissionRate || 0) * 100)}%)
+                              </span>
+                              {ci.assignedStaff && ci.assignedStaff.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveStaffFromPackage(ci.cartInstanceId, st.staffId)}
+                                  className="ml-0.5 text-slate-400 hover:text-rose-600 focus:outline-hidden"
+                                  title="Remove staff"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              )}
+                            </span>
+                          ))}
+
+                          {/* Add staff to package dropdown */}
+                          <Select
+                            value=""
+                            onValueChange={(val) => {
+                              if (val) handleAddStaffToPackage(ci.cartInstanceId, val);
+                            }}
+                          >
+                            <SelectTrigger className="w-[110px] text-[10px] h-6 bg-blue-50/60 border-blue-200 text-[#2254E1] hover:bg-blue-100/60 font-semibold cursor-pointer">
+                              <SelectValue placeholder="+ Add Staff" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {staffList
+                                .filter((s) => !ci.assignedStaff?.some((as) => as.staffId === s.id))
+                                .map((st) => (
+                                  <SelectItem key={st.id} value={st.id} className="text-xs">
+                                    {st.name} ({st.roleTitle})
                                   </SelectItem>
                                 ))}
-                              </SelectContent>
-                            </Select>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        {/* Included services in package */}
+                        <div className="bg-slate-50/80 p-1.5 rounded border border-slate-200/50 space-y-1">
+                          <span className="text-[9px] font-semibold text-slate-500 uppercase tracking-wider block">
+                            Included Package Services ({((ci.item as PackageItem).components || []).length}):
+                          </span>
+                          <div className="flex flex-wrap gap-1">
+                            {((ci.item as PackageItem).components || []).map((c, idx) => (
+                              <span
+                                key={idx}
+                                className="inline-block px-1.5 py-0.5 bg-white border border-slate-200 rounded text-[10px] text-slate-600 font-medium"
+                              >
+                                • {c.serviceName}
+                              </span>
+                            ))}
                           </div>
-                        ))}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1915,9 +2039,24 @@ export const POSBillingPage: React.FC = () => {
                 <span className="font-mono">{formatCurrency(calculations.netSales)}</span>
               </div>
 
-              <div className="flex justify-between text-slate-600">
-                <span>Sales Tax Breakdown ({currentBranch?.taxEnabled ? `${((currentBranch.taxRate || 0) * 100).toFixed(1)}%` : '0%'})</span>
-                <span className="font-mono">{formatCurrency(calculations.totalTax)}</span>
+              <div className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-200">
+                <label htmlFor="pos-tax-toggle" className="flex items-center gap-2 cursor-pointer text-slate-700 text-xs font-medium select-none">
+                  <input
+                    id="pos-tax-toggle"
+                    type="checkbox"
+                    checked={applyBranchTax}
+                    onChange={(e) => setApplyBranchTax(e.target.checked)}
+                    className="rounded border-slate-300 text-[#2254E1] focus:ring-[#2254E1] h-3.5 w-3.5 cursor-pointer"
+                  />
+                  <span>
+                    Branch Sales Tax ({currentBranch?.taxEnabled ? `${((currentBranch.taxRate || 0) * 100).toFixed(0)}%` : '0%'})
+                  </span>
+                </label>
+                <span className="font-mono text-xs font-semibold text-slate-900">
+                  {applyBranchTax && currentBranch?.taxEnabled && calculations.totalTax > 0
+                    ? `+ ${formatCurrency(calculations.totalTax)}`
+                    : 'Rs 0'}
+                </span>
               </div>
 
               <div className="flex justify-between text-slate-900 font-bold text-sm pt-1 border-t border-slate-200">

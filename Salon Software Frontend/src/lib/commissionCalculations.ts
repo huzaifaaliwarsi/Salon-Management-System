@@ -137,75 +137,141 @@ export function evaluateStaffCommission(
         });
       }
 
-      // 2. Bundled Package Component
-      const comps = item.packageComponents || (item as any).components;
-      if (item.type === 'PACKAGE' && Array.isArray(comps)) {
-        comps.forEach((comp: any, compIdx: number) => {
-          if (comp.staffId === staff.id) {
+      // 2. Bundled Package (Multi-staff divided or legacy component-assigned)
+      if (item.type === 'PACKAGE') {
+        const assignedStaffList = item.assignedStaff && item.assignedStaff.length > 0
+          ? item.assignedStaff
+          : undefined;
+
+        if (assignedStaffList) {
+          const isStaffAssigned = assignedStaffList.some((st: any) => st.staffId === staff.id);
+          if (isStaffAssigned) {
+            const numStaff = assignedStaffList.length;
+            const lineGross = item.unitPrice * (item.quantity || 1);
+            let discountAllocation = typeof item.discountAllocated === 'number' ? item.discountAllocated : 0;
+            if (!discountAllocation && inv.discount && inv.subtotal > 0) {
+              discountAllocation = roundCurrency((lineGross / inv.subtotal) * inv.discount);
+            }
+            const netPackageSales =
+              typeof item.netSales === 'number'
+                ? item.netSales
+                : roundCurrency(lineGross - discountAllocation);
+
+            // Split package revenue and discount equally among all assigned staff
+            const staffShareNet = roundCurrency(netPackageSales / numStaff);
+            const staffShareGross = roundCurrency(lineGross / numStaff);
+            const staffShareDiscount = roundCurrency(discountAllocation / numStaff);
+
+            const staffEntry = assignedStaffList.find((st: any) => st.staffId === staff.id);
+            const rawRate = typeof staffEntry?.staffCommissionRate === 'number'
+              ? staffEntry.staffCommissionRate
+              : (staff.commissionRate || 0);
+            const effectiveRatePercent = rawRate > 0 && rawRate <= 1 ? roundCurrency(rawRate * 100) : rawRate;
+            const earned = roundCurrency(staffShareNet * (effectiveRatePercent / 100));
+
             const lineKey = item.id || (item as any).lineInstanceId || `idx-${itemIdx}-${item.itemId || 'pkg'}`;
-            const compKey =
-              comp.componentInstanceId ||
-              comp.id ||
-              (comp.serviceId && compIdx === 0 ? comp.serviceId : `${comp.serviceId || 'comp'}-${compIdx}`);
-            const attributionId = `${inv.id}-comp-${lineKey}-${compKey}`;
-            if (consumedLineItemIds.has(attributionId)) {
-              return;
-            }
-
-            // Component net revenue allocated after package discount (immutable from invoice snapshot)
-            let allocatedAmount = 0;
-            let rawAllocated = comp.allocatedAmount || 0;
-            let compDiscount = 0;
-            if (typeof comp.netAllocatedAmount === 'number') {
-              allocatedAmount = comp.netAllocatedAmount;
-              rawAllocated = comp.allocatedAmount || allocatedAmount;
-              compDiscount = roundCurrency(Math.max(0, rawAllocated - allocatedAmount));
-            } else if (typeof comp.netSales === 'number') {
-              allocatedAmount = comp.netSales;
-              rawAllocated = comp.allocatedAmount || allocatedAmount;
-              compDiscount = roundCurrency(Math.max(0, rawAllocated - allocatedAmount));
-            } else {
-              rawAllocated = comp.allocatedAmount || 0;
-              if (inv.discount && inv.subtotal > 0) {
-                compDiscount = roundCurrency((rawAllocated / inv.subtotal) * inv.discount);
+            const attributionId = `${inv.id}-pkg-${lineKey}-${staff.id}`;
+            if (!consumedLineItemIds.has(attributionId)) {
+              if (isVoided) {
+                refundAdjustments -= earned;
+              } else {
+                attributedNetSales += staffShareNet;
+                grossCommissionEarned += earned;
+                servicesCompletedCount += (item.quantity || 1);
               }
-              allocatedAmount = roundCurrency(rawAllocated - compDiscount);
+
+              newlyConsumedIds.push(attributionId);
+              attributionLines.push({
+                id: attributionId,
+                invoiceId: inv.id,
+                invoiceNumber: inv.invoiceNumber,
+                date: inv.date,
+                clientName: inv.clientName,
+                serviceOrPackageId: item.itemId || item.id,
+                serviceOrPackageName: item.name,
+                itemType: 'PACKAGE',
+                isPackageComponent: false,
+                componentPackageName: item.name,
+                cataloguePrice: staffShareGross,
+                discountAllocation: staffShareDiscount,
+                netAttributedAmount: isVoided ? -staffShareNet : staffShareNet,
+                commissionRatePercent: effectiveRatePercent,
+                commissionEarned: isVoided ? -earned : earned,
+              });
             }
+          }
+        } else {
+          // Fallback legacy component-level assignment
+          const comps = item.packageComponents || (item as any).components;
+          if (Array.isArray(comps)) {
+            comps.forEach((comp: any, compIdx: number) => {
+              if (comp.staffId === staff.id) {
+                const lineKey = item.id || (item as any).lineInstanceId || `idx-${itemIdx}-${item.itemId || 'pkg'}`;
+                const compKey =
+                  comp.componentInstanceId ||
+                  comp.id ||
+                  (comp.serviceId && compIdx === 0 ? comp.serviceId : `${comp.serviceId || 'comp'}-${compIdx}`);
+                const attributionId = `${inv.id}-comp-${lineKey}-${compKey}`;
+                if (consumedLineItemIds.has(attributionId)) {
+                  return;
+                }
 
-            const rawCompRate = typeof comp.staffCommissionRate === 'number'
-              ? comp.staffCommissionRate
-              : (typeof comp.commissionRate === 'number' ? comp.commissionRate : (staff.commissionRate || 0));
-            const compRatePercent = rawCompRate > 0 && rawCompRate <= 1 ? roundCurrency(rawCompRate * 100) : rawCompRate;
-            const earned = roundCurrency(allocatedAmount * (compRatePercent / 100));
+                // Component net revenue allocated after package discount (immutable from invoice snapshot)
+                let allocatedAmount = 0;
+                let rawAllocated = comp.allocatedAmount || 0;
+                let compDiscount = 0;
+                if (typeof comp.netAllocatedAmount === 'number') {
+                  allocatedAmount = comp.netAllocatedAmount;
+                  rawAllocated = comp.allocatedAmount || allocatedAmount;
+                  compDiscount = roundCurrency(Math.max(0, rawAllocated - allocatedAmount));
+                } else if (typeof comp.netSales === 'number') {
+                  allocatedAmount = comp.netSales;
+                  rawAllocated = comp.allocatedAmount || allocatedAmount;
+                  compDiscount = roundCurrency(Math.max(0, rawAllocated - allocatedAmount));
+                } else {
+                  rawAllocated = comp.allocatedAmount || 0;
+                  if (inv.discount && inv.subtotal > 0) {
+                    compDiscount = roundCurrency((rawAllocated / inv.subtotal) * inv.discount);
+                  }
+                  allocatedAmount = roundCurrency(rawAllocated - compDiscount);
+                }
 
-            if (isVoided) {
-              refundAdjustments -= earned;
-            } else {
-              attributedNetSales += allocatedAmount;
-              grossCommissionEarned += earned;
-              servicesCompletedCount += (comp.quantity || 1);
-            }
+                const rawCompRate = typeof comp.staffCommissionRate === 'number'
+                  ? comp.staffCommissionRate
+                  : (typeof comp.commissionRate === 'number' ? comp.commissionRate : (staff.commissionRate || 0));
+                const compRatePercent = rawCompRate > 0 && rawCompRate <= 1 ? roundCurrency(rawCompRate * 100) : rawCompRate;
+                const earned = roundCurrency(allocatedAmount * (compRatePercent / 100));
 
-            newlyConsumedIds.push(attributionId);
-            attributionLines.push({
-              id: attributionId,
-              invoiceId: inv.id,
-              invoiceNumber: inv.invoiceNumber,
-              date: inv.date,
-              clientName: inv.clientName,
-              serviceOrPackageId: comp.serviceId,
-              serviceOrPackageName: comp.serviceName,
-              itemType: 'PACKAGE',
-              isPackageComponent: true,
-              componentPackageName: item.name,
-              cataloguePrice: rawAllocated,
-              discountAllocation: compDiscount,
-              netAttributedAmount: isVoided ? -allocatedAmount : allocatedAmount,
-              commissionRatePercent: compRatePercent,
-              commissionEarned: isVoided ? -earned : earned,
+                if (isVoided) {
+                  refundAdjustments -= earned;
+                } else {
+                  attributedNetSales += allocatedAmount;
+                  grossCommissionEarned += earned;
+                  servicesCompletedCount += (comp.quantity || 1);
+                }
+
+                newlyConsumedIds.push(attributionId);
+                attributionLines.push({
+                  id: attributionId,
+                  invoiceId: inv.id,
+                  invoiceNumber: inv.invoiceNumber,
+                  date: inv.date,
+                  clientName: inv.clientName,
+                  serviceOrPackageId: comp.serviceId,
+                  serviceOrPackageName: comp.serviceName,
+                  itemType: 'PACKAGE',
+                  isPackageComponent: true,
+                  componentPackageName: item.name,
+                  cataloguePrice: rawAllocated,
+                  discountAllocation: compDiscount,
+                  netAttributedAmount: isVoided ? -allocatedAmount : allocatedAmount,
+                  commissionRatePercent: compRatePercent,
+                  commissionEarned: isVoided ? -earned : earned,
+                });
+              }
             });
           }
-        });
+        }
       }
     });
   }

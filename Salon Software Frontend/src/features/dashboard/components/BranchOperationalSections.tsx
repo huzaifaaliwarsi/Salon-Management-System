@@ -318,8 +318,6 @@ export const BranchOperationalSections: React.FC<BranchOperationalSectionsProps>
                       </div>
                       <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
                         <span>Stylist: <strong className="text-slate-700 font-medium">{apt.staffName}</strong></span>
-                        <span>·</span>
-                        <span className="text-slate-500">{apt.time} ({apt.durationMinutes}m)</span>
                       </div>
                     </div>
                   </div>

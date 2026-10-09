@@ -11,10 +11,11 @@ const item = z.object({
   type:           z.enum(['SERVICE', 'PACKAGE']),
   itemId:         z.string().min(1),
   staffId:        z.string().optional(),
+  assignedStaff:  z.array(z.object({ staffId: z.string(), staffName: z.string().optional(), staffCommissionRate: z.number().optional() }).passthrough()).optional(),
   packageComponents: z.array(z.object({
     componentInstanceId: z.string().optional(),
     serviceId:           z.string().min(1),
-    staffId:             z.string().min(1),
+    staffId:             z.string().optional(),
   })).optional(),
 });
 
@@ -38,7 +39,7 @@ export const createSchema = z.object({
   customerSource:        customerSource.optional(),
   customerSourceDetails: z.string().trim().optional(),
   date:                  ymd,
-  startTime:             time,
+  startTime:             time.optional().default('10:00 AM'),
   items:                 z.array(item).min(1, 'At least one service or package must be selected.'),
   notes:                 z.string().trim().optional(),
   status:                z.enum(['PENDING', 'CONFIRMED']).optional(),
@@ -63,7 +64,7 @@ export const statusSchema = z.object({
 
 export const rescheduleSchema = z.object({
   date:      ymd,
-  startTime: time,
+  startTime: time.optional().default('10:00 AM'),
   reason:    z.string().trim().optional(),
 });
 

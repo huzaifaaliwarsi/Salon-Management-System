@@ -13,6 +13,7 @@
     "db:studio": "prisma studio",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:isolated": "node scripts/run-isolated-tests.js",
     "lint": "echo 'No linter configured'",
     "db:new-migration": "node scripts/new-migration.js",
     "db:deploy": "prisma migrate deploy"

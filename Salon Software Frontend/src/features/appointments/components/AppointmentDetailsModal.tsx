@@ -201,16 +201,6 @@ export const AppointmentDetailsModal: React.FC<AppointmentDetailsModalProps> = (
                 </span>
               </div>
               <div className="flex items-center gap-2 text-slate-600">
-                <Clock className="w-4 h-4 text-[#2254E1]" />
-                <span>
-                  Time:{' '}
-                  <strong className="text-slate-900">
-                    {appointment.startTime || appointment.time} - {appointment.endTime || 'End'}
-                  </strong>{' '}
-                  ({appointment.durationMinutes} mins)
-                </span>
-              </div>
-              <div className="flex items-center gap-2 text-slate-600">
                 <Building2 className="w-4 h-4 text-[#2254E1]" />
                 <span>
                   Branch: <strong className="text-slate-900">{appointment.branchName || 'Branch'}</strong>
@@ -269,34 +259,39 @@ export const AppointmentDetailsModal: React.FC<AppointmentDetailsModalProps> = (
                       </span>
                     </div>
 
-                    <div className="flex items-center justify-between text-[11px] text-slate-500 pl-6">
+                    <div className="text-[11px] text-slate-500 pl-6">
                       <span>
-                        Stylist: <strong className="text-slate-700">{it.staffName}</strong>
-                      </span>
-                      <span>
-                        Slot: {it.startTime || appointment.startTime} - {it.endTime || appointment.endTime} ({it.durationMinutes}m)
+                        Stylist{it.assignedStaff && it.assignedStaff.length > 1 ? 's (Equal Split)' : ''}: <strong className="text-slate-700">
+                          {it.assignedStaff && it.assignedStaff.length > 0
+                            ? it.assignedStaff.map((s) => s.staffName).join(', ')
+                            : it.staffName}
+                        </strong>
                       </span>
                     </div>
 
-                    {/* If package, show multi-staff components */}
-                    {it.packageComponents && it.packageComponents.length > 0 && (
+                    {/* If package, show included components & team */}
+                    {it.type === 'PACKAGE' && (
                       <div className="mt-2 pl-6 pt-2 border-t border-slate-100 space-y-1.5">
                         <span className="text-[11px] font-semibold text-slate-600 block">
-                          Included Component Staff:
+                          Included Services & Team:
                         </span>
-                        {it.packageComponents.map((comp, cIdx) => (
-                          <div
-                            key={cIdx}
-                            className="flex items-center justify-between text-[11px] text-slate-600 bg-slate-50 p-2 rounded-lg"
-                          >
-                            <span>
-                              {comp.serviceName} ({comp.durationMinutes}m · {comp.allocationPercentage}% rev)
-                            </span>
-                            <span className="font-medium text-slate-800">
-                              {comp.staffName} ({comp.startTime} - {comp.endTime})
-                            </span>
+                        {it.assignedStaff && it.assignedStaff.length > 1 && (
+                          <div className="text-[11px] text-blue-700 bg-blue-50/70 p-2 rounded-lg font-medium border border-blue-200/50">
+                            Shared by {it.assignedStaff.length} stylists • Revenue & commission split equally ({(100 / it.assignedStaff.length).toFixed(1)}% each)
                           </div>
-                        ))}
+                        )}
+                        {it.packageComponents && it.packageComponents.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 pt-1">
+                            {it.packageComponents.map((comp, cIdx) => (
+                              <span
+                                key={cIdx}
+                                className="px-2 py-0.5 bg-slate-50 border border-slate-200 text-slate-700 rounded text-[11px]"
+                              >
+                                • {comp.serviceName}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

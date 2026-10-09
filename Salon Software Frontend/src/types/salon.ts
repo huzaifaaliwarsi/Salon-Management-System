@@ -694,6 +694,11 @@ export interface AppointmentItem {
   startTime?: string;
   endTime?: string;
   packageComponents?: AppointmentPackageComponent[];
+  assignedStaff?: Array<{
+    staffId: string;
+    staffName: string;
+    staffCommissionRate?: number;
+  }>;
 }
 
 export interface AppointmentRescheduleRecord {
@@ -771,6 +776,11 @@ export interface CreateAppointmentInput {
     type: 'SERVICE' | 'PACKAGE';
     itemId: string;
     staffId?: string; // For SERVICE
+    assignedStaff?: Array<{
+      staffId: string;
+      staffName: string;
+      staffCommissionRate?: number;
+    }>;
     packageComponents?: {
       componentInstanceId?: string;
       serviceId: string;
@@ -789,6 +799,11 @@ export interface UpdateAppointmentInput {
     type: 'SERVICE' | 'PACKAGE';
     itemId: string;
     staffId?: string;
+    assignedStaff?: Array<{
+      staffId: string;
+      staffName: string;
+      staffCommissionRate?: number;
+    }>;
     packageComponents?: {
       componentInstanceId?: string;
       serviceId: string;
@@ -915,6 +930,11 @@ export interface InvoiceLineItem {
   taxRate?: number;
   tax: number;
   total: number;
+  assignedStaff?: Array<{
+    staffId: string;
+    staffName: string;
+    staffCommissionRate?: number;
+  }>;
   packageComponents?: InvoiceLineItemComponent[];
   packageComponentsSnapshot?: InvoiceLineItemComponent[];
   batchId?: string;
@@ -982,6 +1002,11 @@ export interface POSCartItem {
   staffId: string;
   staffName: string;
   staffCommissionRate: number;
+  assignedStaff?: Array<{
+    staffId: string;
+    staffName: string;
+    staffCommissionRate: number;
+  }>;
   packageComponents?: POSCartComponentAssignment[];
   batchId?: string;
   batchNumber?: string;
@@ -1014,6 +1039,7 @@ export interface CreatePOSInvoiceInput {
   payments: POSPaymentEntry[];
   idempotencyKey?: string;
   notes?: string;
+  applyTax?: boolean;
 }
 
 export interface CollectOutstandingPaymentInput {
@@ -1359,6 +1385,7 @@ export interface LeaveRecord {
   startDate: string; // YYYY-MM-DD
   endDate: string; // YYYY-MM-DD
   totalDays: number;
+  workingDates?: string[];
   type: 'PAID' | 'UNPAID';
   reason: string;
   status: 'APPROVED' | 'CANCELLED';
@@ -1534,11 +1561,18 @@ export interface PayslipCalculationDetails {
   prorationApplied?: boolean;
   prorationFormula?: string;
   prorationDays?: number;
+  payableDays?: number;
+  prorationDivisor?: number;
   dailyRateUsed?: number;
   policyNotes: string;
 }
 
 export interface PayslipRecord {
+  joiningDate?: string;
+  employmentNotes?: string[];
+  startDate?: string;
+  endDate?: string;
+  runType?: PayrollRunType;
   id: string;
   payrollRunId: string;
   payslipNumber: string; // PS-LHE-2026-09-0001
@@ -1603,12 +1637,24 @@ export interface PayslipRecord {
   payments: PayrollPayment[];
 }
 
+export type PayrollRunType = 'DAILY' | 'MONTHLY' | 'CUSTOM_RANGE';
+export interface PayrollPreviewOptions {
+  runType?: PayrollRunType;
+  startDate?: string;
+  endDate?: string;
+  compensationType?: CompensationType | 'ALL';
+}
+
 export interface PayrollRun {
   id: string;
   payrollNumber: string; // PAY-LHE-2026-09-0001
   branchId: string;
   branchName?: string;
   month: string; // YYYY-MM
+  startDate?: string;
+  endDate?: string;
+  runType?: PayrollRunType;
+  compensationTypeFilter?: CompensationType | 'ALL';
   status: PayrollRunStatus;
   totalPayable: number;
   totalPaid: number;
@@ -2009,6 +2055,7 @@ export interface TipAllocationRecord {
   allocatedByName: string;
   status: TipAllocationStatus;
   cancelledAt?: string;
+  cancellationDate?: string;
   cancelledByUserId?: string;
   cancelledByName?: string;
   cancelReason?: string;
@@ -2138,4 +2185,3 @@ export interface TipsStatementSummary {
   allocationsCount: number;
   payoutsCount: number;
 }
-

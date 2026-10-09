@@ -9,8 +9,9 @@ import { idempotency } from '../../middleware/idempotency.js';
 import { asyncHandler } from '../../lib/asyncHandler.js';
 import * as s from './payroll.service.js';
 import * as x from './payroll.extras.service.js';
+import { isYmd } from '../../lib/dates.js';
 
-const month = z.string().regex(/^\d{4}-\d{2}$/, 'Month must be YYYY-MM');
+const month = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Month must be YYYY-MM');
 const reason = z.object({ reason: z.string().trim().min(1, 'A reason is required.') });
 const send = (fn, status = 200) => asyncHandler(async (req, res) => res.status(status).json({ data: await fn(req) }));
 
@@ -18,14 +19,15 @@ const router = Router();
 router.get('/payslips/me', authenticate, authorize('STAFF'), send((req) => s.personalPayslips(req.user)));
 
 router.use(authenticate, authorize('SUPER_ADMIN', 'ADMIN'));
+router.get('/runs', validate(z.object({ branchId: z.string().optional(), month: month.optional() }), 'query'), send((req) => s.listRuns(req.user, req.query)));
 router.post('/preview', validate(z.object({
   branchId: z.string().optional(),
   month: month.optional(),
   staffId: z.string().optional(),
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'startDate must be YYYY-MM-DD').optional(),
-  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'endDate must be YYYY-MM-DD').optional(),
+  startDate: z.string().refine(isYmd, 'startDate must be a valid YYYY-MM-DD date').optional(),
+  endDate: z.string().refine(isYmd, 'endDate must be a valid YYYY-MM-DD date').optional(),
   runType: z.enum(['MONTHLY', 'DAILY', 'CUSTOM_RANGE']).optional(),
-  compensationType: z.string().optional(),
+  compensationType: z.enum(['ALL', 'DAILY_SALARY', 'DAILY_PLUS_COMMISSION', 'MONTHLY_SALARY', 'MONTHLY_PLUS_COMMISSION', 'COMMISSION_ONLY']).optional(),
 })), send((req) => s.generatePreview(req.user, req.body), 201));
 router.post('/runs/:id/finalize', send((req) => s.finalizeRun(req.user, req.params.id)));
 router.post('/runs/:id/cancel', validate(reason), send((req) => s.cancelRun(req.user, req.params.id, req.body.reason)));
@@ -61,7 +63,7 @@ router.post('/advances', idempotency, validate(z.object({
   staffId: z.string().min(1), amount: z.number().positive('Advance amount must be greater than zero.'),
   recoveryPerMonth: z.number().positive('Monthly recovery must be greater than zero.').optional(), startMonth: month.optional(),
   method: z.enum(['CASH', 'ONLINE']), onlineAccountId: z.string().optional(), reason: z.string().trim().min(1, 'A reason is required.'),
-})), send((req) => x.issueAdvance(req.user, req.body), 201));
+})), send((req) => x.issueAdvance(req.user, { ...req.body, idempotencyKey: req.idempotencyKey }), 201));
 router.post('/advances/:id/reverse', validate(reason), send((req) => x.reverseAdvance(req.user, req.params.id, req.body.reason)));
 
 export default router;

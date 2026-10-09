@@ -7,7 +7,7 @@ import prisma from '../../config/prisma.js';
 import { auditLog } from '../../lib/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/AppError.js';
 import { assertBranchAccess, resolveReadBranch, resolveWriteBranch } from '../../lib/scope.js';
-import { getBusinessDate, dateOnly, ymd } from '../../lib/dates.js';
+import { getBusinessDate, dateOnly, ymd, isYmd } from '../../lib/dates.js';
 import { round2, toDec } from '../../lib/money.js';
 import { nextSequence, nextPeriodSequence } from '../../lib/sequence.js';
 import { num, opt, iso } from '../../lib/dto.js';
@@ -44,10 +44,14 @@ const toPayslipDTO = (ps, run) => {
   const outstanding = round2(net.minus(paid));
   const status = run.status === 'DRAFT' || run.status === 'CANCELLED' ? run.status
     : outstanding.lessThanOrEqualTo(0) && net.greaterThan(0) ? 'PAID' : paid.greaterThan(0) ? 'PARTIALLY_PAID' : 'FINALIZED';
+  const snapshot = ps.snapshot;
+  const money = (value) => num(value ?? 0).toLocaleString();
+  const formula = `Base (Rs. ${money(snapshot.baseEarnings)}) + Paid Leave/Holidays (Rs. ${money((snapshot.leaveEarnings ?? 0) + (snapshot.holidayEarnings ?? 0))}) + OT (Rs. ${money(snapshot.approvedOvertimeAmount)}) + Allowances (Rs. ${money(snapshot.allowancesTotal)}) + Commission (Rs. ${money(commission)}) - Deductions (Rs. ${money((snapshot.absenceDeductions ?? 0) + (snapshot.attendancePenaltyDeductions ?? 0) + (snapshot.otherDeductions ?? 0))}) - Loan (Rs. ${money(snapshot.advanceRecoveryAmount)}) = Net Payable (Rs. ${money(net)})`;
   return {
     ...ps.snapshot, id: ps.id, payrollRunId: ps.runId, payslipNumber: ps.payslipNumber, netPayable: net.toNumber(),
     salaryNetPayable: num(ps.netPayable), salaryPaidAmount: salaryPaid.toNumber(), commissionPayable: commission.toNumber(), combinedNetPayable: net.toNumber(),
     paidAmount: paid.toNumber(), outstandingAmount: outstanding.toNumber(), status,
+    calculationDetails: { ...snapshot.calculationDetails, formula },
     payments: (ps.payments ?? []).sort((a, b) => a.paidAt - b.paidAt).map(toPaymentDTO),
   };
 };
@@ -116,15 +120,8 @@ const evaluateBranchMonth = async (tx, actor, branchId, month, staffId, options 
         alreadyFinalizedByStaff.set(ps.staffId, new Set());
       }
       const set = alreadyFinalizedByStaff.get(ps.staffId);
-      const consumed = ps.snapshot?.consumedAttendanceDates;
-      if (Array.isArray(consumed) && consumed.length > 0) {
-        consumed.forEach((d) => set.add(d));
-      } else if (ps.snapshot?.startDate && ps.snapshot?.endDate) {
-        getDatesInRange(ps.snapshot.startDate, ps.snapshot.endDate).forEach((d) => set.add(d));
-      } else {
-        const dCount = getCalendarDaysInMonth(fr.month);
-        getDatesInRange(`${fr.month}-01`, `${fr.month}-${String(dCount).padStart(2, '0')}`).forEach((d) => set.add(d));
-      }
+      const dCount = getCalendarDaysInMonth(fr.month);
+      getDatesInRange(fr.policySnapshot?.startDate || ps.snapshot?.startDate || `${fr.month}-01`, fr.policySnapshot?.endDate || ps.snapshot?.endDate || `${fr.month}-${String(dCount).padStart(2, '0')}`).forEach((d) => set.add(d));
     }
   }
 
@@ -166,7 +163,8 @@ const evaluateBranchMonth = async (tx, actor, branchId, month, staffId, options 
 
     if (compensationType && compensationType !== 'ALL') {
       if (terms.compensationType !== compensationType) continue;
-    } else if (runType === 'DAILY' || runType === 'CUSTOM_RANGE') {
+    }
+    if (runType === 'DAILY') {
       if (!isDaily) continue;
     } else if (runType === 'MONTHLY') {
       if (!isMonthly) continue;
@@ -222,19 +220,24 @@ export const generatePreview = async (actor, { branchId: requested, month: reqMo
   const branchId = resolveWriteBranch(actor, requested, 'Access Denied: Cannot generate payroll for another branch.');
   return prisma.$transaction(async (tx) => {
     await lockCommissionBranch(tx, branchId);
-    const month = reqMonth || (startDate ? startDate.slice(0, 7) : new Date().toISOString().slice(0, 7));
+    const month = reqMonth || (startDate ? startDate.slice(0, 7) : (await getBusinessDate(tx)).slice(0, 7));
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw badRequest('INVALID_MONTH', 'Select a valid payroll month.');
     const totalDays = getCalendarDaysInMonth(month);
     const defaultStart = `${month}-01`;
     const defaultEnd = `${month}-${String(totalDays).padStart(2, '0')}`;
 
     let effStartDate = startDate || defaultStart;
     let effEndDate = endDate || (runType === 'DAILY' ? effStartDate : defaultEnd);
+    if (!isYmd(effStartDate) || !isYmd(effEndDate) || effStartDate > effEndDate) throw badRequest('INVALID_RANGE', 'Select a valid start date and end date in order.');
+    if (effStartDate.slice(0, 7) !== month || effEndDate.slice(0, 7) !== month) throw badRequest('INVALID_RANGE', 'Payroll dates must fall within the selected payroll month.');
+    if (runType === 'DAILY' && effStartDate !== effEndDate) throw badRequest('INVALID_RANGE', 'Daily payroll must cover exactly one day.');
     let effRunType = runType;
     if (!effRunType) {
       if (effStartDate === effEndDate) effRunType = 'DAILY';
       else if (effStartDate !== defaultStart || effEndDate !== defaultEnd) effRunType = 'CUSTOM_RANGE';
       else effRunType = 'MONTHLY';
     }
+    if (effRunType === 'MONTHLY' && (effStartDate !== defaultStart || effEndDate !== defaultEnd)) effRunType = 'CUSTOM_RANGE';
 
     const { policy, results } = await evaluateBranchMonth(tx, actor, branchId, month, staffId, {
       startDate: effStartDate,
@@ -242,10 +245,17 @@ export const generatePreview = async (actor, { branchId: requested, month: reqMo
       runType: effRunType,
       compensationType,
     });
+    if (!results.length) throw badRequest('NO_ELIGIBLE_STAFF', 'No employees match this payroll period and compensation type. Daily payroll includes daily contracts; monthly payroll includes monthly contracts. Use a custom range for a mixed group.');
 
     const commissions = await payrollCommission(tx, actor, branchId, month, results.filter((r) => combinedContract(r.payslip.compensationType)).map((r) => r.staff.id), false, { startDate: effStartDate, endDate: effEndDate });
-    // One DRAFT per branch+month: a new preview replaces the previous one.
-    await tx.payrollRun.deleteMany({ where: { branchId, month, status: 'DRAFT' } });
+    // Replace only an equivalent draft; preserve drafts for other employees, types and periods.
+    await tx.payrollRun.deleteMany({ where: { branchId, month, status: 'DRAFT', AND: [
+      { policySnapshot: { path: ['startDate'], equals: effStartDate } },
+      { policySnapshot: { path: ['endDate'], equals: effEndDate } },
+      { policySnapshot: { path: ['runType'], equals: effRunType } },
+      { policySnapshot: { path: ['compensationTypeFilter'], equals: compensationType || 'ALL' } },
+      { policySnapshot: { path: ['staffIdFilter'], equals: staffId || null } },
+    ] } });
     const run = await tx.payrollRun.create({
       data: {
         branchId, month, status: 'DRAFT',
@@ -282,23 +292,6 @@ export const finalizeRun = async (actor, runId) => {
     if (!draft) throw notFound('PAYROLL_NOT_FOUND', `Payroll run '${runId}' not found. Please generate a preview first.`);
     assertBranchAccess(actor, draft.branchId, 'Access Denied: Cannot finalize payroll for another branch.');
     if (draft.status !== 'DRAFT') throw conflict('NOT_DRAFT', `Payroll run is already in status '${draft.status}' and cannot be finalized.`);
-
-    const draftRunType = draft.policySnapshot?.runType || 'MONTHLY';
-    const existingRuns = await tx.payrollRun.findMany({
-      where: {
-        branchId: draft.branchId,
-        month: draft.month,
-        id: { not: runId },
-        status: { notIn: ['DRAFT', 'CANCELLED'] },
-      },
-    });
-
-    if (draftRunType === 'MONTHLY') {
-      const existingMonthly = existingRuns.find((r) => !r.policySnapshot?.runType || r.policySnapshot?.runType === 'MONTHLY');
-      if (existingMonthly) {
-        throw conflict('ALREADY_FINALIZED', `A finalized monthly payroll run already exists for ${draft.month} in this branch (${existingMonthly.payrollNumber}).`);
-      }
-    }
 
     // Re-evaluate at finalization so the frozen snapshot reflects the latest approved data and period options.
     const { policy, results, alreadyFinalizedByStaff } = await evaluateBranchMonth(

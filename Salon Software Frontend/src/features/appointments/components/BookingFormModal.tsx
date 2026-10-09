@@ -37,6 +37,7 @@ import {
   Package as PackageIcon,
   Sparkles,
   Search,
+  X,
 } from 'lucide-react';
 
 interface BookingFormModalProps {
@@ -90,6 +91,11 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
     type: 'SERVICE' | 'PACKAGE';
     itemId: string;
     staffId: string;
+    assignedStaff?: Array<{
+      staffId: string;
+      staffName: string;
+      staffCommissionRate?: number;
+    }>;
     packageComponents?: Array<{
       serviceId: string;
       staffId: string;
@@ -178,6 +184,7 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
             type: it.type,
             itemId: it.itemId,
             staffId: it.staffId,
+            assignedStaff: it.assignedStaff,
             packageComponents: it.packageComponents?.map((pc) => ({
               serviceId: pc.serviceId,
               staffId: pc.staffId,
@@ -227,6 +234,7 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
       ]);
     } else {
       const pkg = branchPackages.find((p) => p.id === itemId);
+      const defaultStaff = branchStaff.find((s) => s.id === defaultStaffId);
       const components = pkg?.components.map((c) => ({
         serviceId: c.serviceId,
         staffId: defaultStaffId,
@@ -239,6 +247,9 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
           type: 'PACKAGE',
           itemId,
           staffId: defaultStaffId,
+          assignedStaff: defaultStaff
+            ? [{ staffId: defaultStaff.id, staffName: defaultStaff.name, staffCommissionRate: defaultStaff.commissionRate }]
+            : [],
           packageComponents: components,
         },
       ]);
@@ -252,6 +263,41 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
   const handleServiceStaffChange = (lineInstanceId: string, staffId: string) => {
     setSelectedItems((prev) =>
       prev.map((i) => (i.lineInstanceId === lineInstanceId ? { ...i, staffId } : i))
+    );
+  };
+
+  const handleAddStaffToPackage = (lineInstanceId: string, staffId: string) => {
+    const staff = branchStaff.find((s) => s.id === staffId);
+    if (!staff) return;
+
+    setSelectedItems((prev) =>
+      prev.map((i) => {
+        if (i.lineInstanceId !== lineInstanceId) return i;
+        const currentStaff = i.assignedStaff || (i.staffId ? [{ staffId: i.staffId, staffName: branchStaff.find((s) => s.id === i.staffId)?.name || 'Stylist', staffCommissionRate: branchStaff.find((s) => s.id === i.staffId)?.commissionRate || 0 }] : []);
+        if (currentStaff.some((s) => s.staffId === staffId)) return i;
+        const updated = [...currentStaff, { staffId: staff.id, staffName: staff.name, staffCommissionRate: staff.commissionRate }];
+        return {
+          ...i,
+          staffId: updated[0]?.staffId || i.staffId,
+          assignedStaff: updated,
+        };
+      })
+    );
+  };
+
+  const handleRemoveStaffFromPackage = (lineInstanceId: string, staffId: string) => {
+    setSelectedItems((prev) =>
+      prev.map((i) => {
+        if (i.lineInstanceId !== lineInstanceId) return i;
+        const currentStaff = i.assignedStaff || [];
+        if (currentStaff.length <= 1) return i;
+        const updated = currentStaff.filter((s) => s.staffId !== staffId);
+        return {
+          ...i,
+          staffId: updated[0]?.staffId || i.staffId,
+          assignedStaff: updated,
+        };
+      })
     );
   };
 
@@ -324,9 +370,12 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
 
               const compAssigned = it.packageComponents?.find((pc) => pc.serviceId === c.serviceId);
               const st = branchStaff.find((s) => s.id === compAssigned?.staffId);
+              const packageStaffName = it.assignedStaff && it.assignedStaff.length > 0
+                ? it.assignedStaff.map((s) => s.staffName).join(', ')
+                : (st?.name || 'Unassigned');
               previewList.push({
                 title: `${pkg.name} → ${c.serviceName}`,
-                staffName: st?.name || 'Unassigned',
+                staffName: packageStaffName,
                 duration: dur,
                 startStr: formatMinutesToTime(sMin),
                 endStr: formatMinutesToTime(eMin),
@@ -378,13 +427,11 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
       }
       if (it.type === 'PACKAGE') {
         const pkg = branchPackages.find((p) => p.id === it.itemId);
-        for (const c of pkg?.components || []) {
-          const compAssigned = it.packageComponents?.find((pc) => pc.serviceId === c.serviceId);
-          if (!compAssigned || !compAssigned.staffId) {
-            setFormError(`Please assign a staff member for component '${c.serviceName}' in '${pkg?.name}'.`);
-            toast.error(`Please assign a staff member for component '${c.serviceName}' in '${pkg?.name}'.`);
-            return;
-          }
+        const hasAssigned = (it.assignedStaff && it.assignedStaff.length > 0) || it.staffId;
+        if (!hasAssigned) {
+          setFormError(`Please assign at least one staff member to package '${pkg?.name}'.`);
+          toast.error(`Please assign at least one staff member to package '${pkg?.name}'.`);
+          return;
         }
       }
     }
@@ -629,11 +676,11 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
           {/* SECTION 2: SCHEDULE & BRANCH */}
           <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-4">
             <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-              <Clock className="w-4 h-4 text-[#2254E1]" />
-              2. Branch, Date & Start Time
+              <CalendarIcon className="w-4 h-4 text-[#2254E1]" />
+              2. Branch & Date
             </h3>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <Label className="text-xs">Branch</Label>
                 <select
@@ -662,21 +709,6 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
                   className="bg-white mt-1"
                   required
                 />
-              </div>
-
-              <div>
-                <Label className="text-xs">Start Time Slot</Label>
-                <select
-                  value={startTime}
-                  onChange={(e) => setStartTime(e.target.value)}
-                  className="w-full mt-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-800"
-                >
-                  {timeOptions.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
               </div>
             </div>
           </div>
@@ -707,7 +739,7 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
                     <option value="" disabled>+ Add Service...</option>
                     {branchServices.map((s) => (
                       <option key={s.id} value={s.id}>
-                        {s.name} ({s.durationMinutes}m - {formatCurrency(s.price)})
+                        {s.name} ({formatCurrency(s.price)})
                       </option>
                     ))}
                   </select>
@@ -760,7 +792,7 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
                               {srv?.name || 'Service Item'}
                             </span>
                             <span className="text-[11px] text-slate-500">
-                              {srv?.durationMinutes || 30} mins · {formatCurrency(srv?.price || 0)}
+                              {formatCurrency(srv?.price || 0)}
                             </span>
                           </div>
                         </div>
@@ -819,38 +851,77 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
                           </Button>
                         </div>
 
-                        {/* Components Multi-Staff Breakdown */}
-                        <div className="space-y-2 pl-4 border-l-2 border-blue-300">
-                          {pkg?.components.map((comp) => {
-                            const assigned = item.packageComponents?.find((c) => c.serviceId === comp.serviceId);
-                            const compSrv = branchServices.find((s) => s.id === comp.serviceId);
-                            return (
-                              <div
-                                key={comp.serviceId}
-                                className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                        {/* Package Assigned Staff & Multi-Staff Selection */}
+                        <div className="space-y-2 pl-4 border-l-2 border-blue-400">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-semibold text-slate-700">
+                              Assigned Stylists ({item.assignedStaff?.length || 1}):
+                            </span>
+                            {item.assignedStaff && item.assignedStaff.length > 1 ? (
+                              <span className="text-[10px] font-semibold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200/60">
+                                Equal Split ({(100 / item.assignedStaff.length).toFixed(1)}% each)
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-400">
+                                100% attributed
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Staff chips */}
+                          <div className="flex flex-wrap gap-1.5 items-center">
+                            {(item.assignedStaff && item.assignedStaff.length > 0
+                              ? item.assignedStaff
+                              : [
+                                  {
+                                    staffId: item.staffId || branchStaff[0]?.id,
+                                    staffName: branchStaff.find((s) => s.id === item.staffId)?.name || 'Stylist',
+                                    staffCommissionRate: branchStaff.find((s) => s.id === item.staffId)?.commissionRate || 0,
+                                  },
+                                ]
+                            ).map((st) => (
+                              <span
+                                key={st.staffId}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 hover:bg-slate-200/80 text-slate-800 rounded-md text-xs font-medium border border-slate-200 transition-colors"
                               >
-                                <span className="text-slate-700 font-medium">
-                                  {comp.serviceName} ({compSrv?.durationMinutes || 30}m · {comp.allocationPercentage}% rev)
-                                </span>
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[11px] text-slate-400">Component Stylist:</span>
-                                  <select
-                                    value={assigned?.staffId || ''}
-                                    onChange={(e) =>
-                                      handlePackageComponentStaffChange(item.lineInstanceId, comp.serviceId, e.target.value)
-                                    }
-                                    className="px-2 py-1 bg-white border border-slate-200 rounded text-xs font-medium text-slate-800"
+                                <span>{st.staffName}</span>
+                                {item.assignedStaff && item.assignedStaff.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveStaffFromPackage(item.lineInstanceId, st.staffId)}
+                                    className="ml-1 text-slate-400 hover:text-rose-600 focus:outline-hidden"
+                                    title="Remove staff"
                                   >
-                                    {branchStaff.map((st) => (
-                                      <option key={st.id} value={st.id}>
-                                        {st.name} ({st.designation})
-                                      </option>
-                                    ))}
-                                  </select>
-                                </div>
-                              </div>
-                            );
-                          })}
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </span>
+                            ))}
+
+                            {/* Add Staff dropdown */}
+                            <select
+                              value=""
+                              onChange={(e) => {
+                                if (e.target.value) handleAddStaffToPackage(item.lineInstanceId, e.target.value);
+                              }}
+                              className="px-2 py-1 bg-blue-50/60 border border-blue-200 rounded text-xs font-semibold text-[#2254E1] hover:bg-blue-100/60 cursor-pointer"
+                            >
+                              <option value="">+ Add Staff...</option>
+                              {branchStaff
+                                .filter((s) => !item.assignedStaff?.some((as) => as.staffId === s.id))
+                                .map((st) => (
+                                  <option key={st.id} value={st.id}>
+                                    {st.name} ({st.designation || st.roleTitle})
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+
+                          {/* Included Services list */}
+                          <div className="pt-1 text-[11px] text-slate-500">
+                            <span className="font-semibold text-slate-600">Included Services: </span>
+                            {(pkg?.components || []).map((c) => c.serviceName).join(', ')}
+                          </div>
                         </div>
                       </div>
                     );
@@ -860,55 +931,19 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
             )}
           </div>
 
-          {/* SECTION 4: LIVE SEQUENTIAL SCHEDULE PREVIEW */}
-          {sequentialPreview.length > 0 && (
-            <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2">
-              <h4 className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-blue-600" />
-                Live Sequential Slot Schedule Preview
-              </h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 pt-1">
-                {sequentialPreview.map((item, i) => (
-                  <div key={i} className="p-2.5 bg-white rounded-lg border border-slate-200 text-xs space-y-0.5">
-                    <strong className="text-slate-900 block truncate font-medium">{item.title}</strong>
-                    <div className="flex items-center justify-between text-[11px] text-slate-500">
-                      <span>{item.staffName}</span>
-                      <span className="font-semibold text-blue-700 tabular-nums">
-                        {item.startStr} - {item.endStr}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* SECTION 5: ESTIMATED QUOTE & NOTES */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 rounded-xl bg-blue-50/50 border border-blue-100">
-            <div>
-              <span className="text-[11px] text-slate-500 uppercase tracking-wider font-semibold block">
-                Total Duration
-              </span>
-              <span className="text-lg font-bold text-slate-900 tabular-nums">
-                {Math.floor(totalEstimatedMinutes / 60)}h {totalEstimatedMinutes % 60}m
-              </span>
-            </div>
-
-            <div>
-              <span className="text-[11px] text-slate-500 uppercase tracking-wider font-semibold block">
-                Estimated End Time
-              </span>
-              <span className="text-lg font-bold text-slate-900 tabular-nums">{estimatedEndTime}</span>
-            </div>
-
+          {/* SECTION 4: ESTIMATED QUOTE & NOTES */}
+          <div className="p-4 rounded-xl bg-blue-50/50 border border-blue-100 flex items-center justify-between">
             <div>
               <span className="text-[11px] text-slate-500 uppercase tracking-wider font-semibold block">
                 Estimated Quote
               </span>
-              <span className="text-lg font-bold text-[#2254E1] tabular-nums">
+              <span className="text-xl font-bold text-[#2254E1] tabular-nums">
                 {formatCurrency(totalEstimatedPrice)}
               </span>
             </div>
+            <span className="text-xs text-slate-500 font-medium">
+              {selectedItems.length} {selectedItems.length === 1 ? 'item' : 'items'} selected
+            </span>
           </div>
 
           <div>

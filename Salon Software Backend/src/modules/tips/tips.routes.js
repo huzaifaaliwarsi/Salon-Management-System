@@ -8,8 +8,9 @@ import { validate } from '../../middleware/validate.js';
 import { idempotency } from '../../middleware/idempotency.js';
 import { asyncHandler } from '../../lib/asyncHandler.js';
 import * as s from './tips.service.js';
+import { isYmd } from '../../lib/dates.js';
 
-const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD');
+const ymd = z.string().refine(isYmd, 'Date must be a valid YYYY-MM-DD calendar date');
 const filters = z.object({
   branchId: z.string().optional(), startDate: ymd.optional(), endDate: ymd.optional(), method: z.string().optional(),
   status: z.string().optional(), staffId: z.string().optional(), search: z.string().optional(), paymentSource: z.string().optional(),
@@ -36,7 +37,7 @@ router.post('/payouts', idempotency, validate(z.object({
   allocationId: z.string().min(1), amount: z.number().positive('Payout amount must be greater than zero.'), method: z.enum(['CASH', 'ONLINE']),
   cashDrawerId: z.string().optional(), onlineAccountId: z.string().optional(), idempotencyKey: z.string().optional(),
   reference: z.string().optional(), notes: z.string().optional(),
-})), send((req) => s.recordPayout(req.user, req.body), 201));
+})), send((req) => s.recordPayout(req.user, { ...req.body, idempotencyKey: req.idempotencyKey }), 201));
 router.post('/payouts/:id/reverse', validate(z.object({ reversalReason: z.string().trim().min(1, 'A reversal reason is required.'), receivingDrawerId: z.string().optional() })),
   send((req) => s.reversePayout(req.user, { payoutId: req.params.id, ...req.body })));
 

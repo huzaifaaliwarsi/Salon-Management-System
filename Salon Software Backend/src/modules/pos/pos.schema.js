@@ -24,7 +24,8 @@ const cartItem = z.object({
   quantity:       z.number(),
   staffId:        z.string().min(1, 'Every cart line needs an assigned staff member.'),
   staffName:      z.string().optional(),
-  packageComponents: z.array(z.object({ serviceId: z.string(), staffId: z.string() }).passthrough()).optional(),
+  assignedStaff:  z.array(z.object({ staffId: z.string(), staffName: z.string().optional(), staffCommissionRate: z.number().optional() }).passthrough()).optional(),
+  packageComponents: z.array(z.object({ serviceId: z.string(), staffId: z.string().optional() }).passthrough()).optional(),
 }).passthrough();
 
 export const checkoutSchema = z.object({
@@ -38,6 +39,7 @@ export const checkoutSchema = z.object({
   discountType:          z.enum(['FIXED', 'PERCENTAGE']).default('FIXED'),
   discountValue:         money.min(0).default(0),
   tip:                   money.min(0).default(0),
+  applyTax:              z.boolean().optional().default(true),
   cartItems:             z.array(cartItem).min(1, 'Cannot post invoice with an empty cart.'),
   payments:              z.array(payment).default([]),
   idempotencyKey:        z.string().optional(),

@@ -681,9 +681,8 @@ export const AppointmentsPage: React.FC = () => {
                           }}
                         >
                           <div className="flex items-center justify-between gap-1 text-[10px] font-semibold">
-                            <span className="text-slate-700 flex items-center gap-0.5 truncate">
-                              <Clock className="w-2.5 h-2.5 text-slate-400 shrink-0" />
-                              {appt.startTime || appt.time || '10:00 AM'}
+                            <span className="font-mono text-slate-500 truncate text-[9px]">
+                              {appt.appointmentNumber || appt.id.slice(-6)}
                             </span>
                             <span className={`px-1 py-0.2 rounded text-[9px] font-bold ${cfg.text}`}>
                               {cfg.label}
@@ -762,7 +761,7 @@ export const AppointmentsPage: React.FC = () => {
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-50/75 text-slate-600 font-semibold uppercase tracking-wider text-[11px]">
-                    <th className="py-3 px-4">Date & Time</th>
+                    <th className="py-3 px-4">Date</th>
                     <th className="py-3 px-4">Client</th>
                     <th className="py-3 px-4">Branch</th>
                     <th className="py-3 px-4">Services & Staff</th>
@@ -783,14 +782,9 @@ export const AppointmentsPage: React.FC = () => {
                         className="hover:bg-slate-50/75 transition-colors cursor-pointer"
                         onClick={() => setSelectedAppointmentForDetails(appt)}
                       >
-                        {/* Date & Time */}
+                        {/* Date */}
                         <td className="py-3 px-4 whitespace-nowrap">
                           <div className="font-bold text-slate-900">{appt.date}</div>
-                          <div className="text-slate-500 flex items-center gap-1 mt-0.5">
-                            <Clock className="w-3 h-3 text-slate-400" />
-                            {appt.startTime || appt.time || '10:00 AM'} -{' '}
-                            {appt.endTime || 'End'}
-                          </div>
                         </td>
 
                         {/* Client */}
@@ -828,11 +822,16 @@ export const AppointmentsPage: React.FC = () => {
                                       ({item.staffName})
                                     </span>
                                   )}
-                                  {item.type === 'PACKAGE' && item.packageComponents && (
+                                  {item.type === 'PACKAGE' && (
                                     <div className="pl-2 text-[10px] text-slate-500">
-                                      {item.packageComponents.map((c, cIdx) => (
+                                      {item.assignedStaff && item.assignedStaff.length > 1 && (
+                                        <div className="text-blue-600 font-medium">
+                                          Shared ({item.assignedStaff.length} stylists): {item.assignedStaff.map((s) => s.staffName).join(', ')}
+                                        </div>
+                                      )}
+                                      {item.packageComponents && item.packageComponents.map((c, cIdx) => (
                                         <div key={c.componentInstanceId || cIdx}>
-                                          • {c.serviceName} → {c.staffName || 'Unassigned'}
+                                          • {c.serviceName}
                                         </div>
                                       ))}
                                     </div>
@@ -976,9 +975,8 @@ export const AppointmentsPage: React.FC = () => {
                     }}
                   >
                     <div className="flex items-center justify-between text-xs">
-                      <span className="font-bold text-slate-900 flex items-center gap-1">
-                        <Clock className="w-3.5 h-3.5 text-slate-400" />
-                        {appt.startTime || appt.time || '10:00 AM'} - {appt.endTime || 'End'}
+                      <span className="font-mono font-medium text-slate-500 text-[11px]">
+                        Ref: {appt.appointmentNumber || appt.id}
                       </span>
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${cfg.text}`}>
                         {cfg.label}

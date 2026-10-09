@@ -138,12 +138,19 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                 </div>
 
                 {/* Package component multi-staff breakdown */}
-                {li.packageComponents && li.packageComponents.length > 0 && (
+                {li.type === 'PACKAGE' && (
                   <div className="pl-2 border-l-2 border-blue-200 space-y-0.5 mt-1 text-[10px] text-slate-600">
-                    {li.packageComponents.map((comp) => (
+                    {li.assignedStaff && li.assignedStaff.length > 1 && (
+                      <div className="text-blue-600 font-medium pb-0.5">
+                        Stylists (Equal Split): {li.assignedStaff.map((s) => s.staffName).join(', ')}
+                      </div>
+                    )}
+                    {li.packageComponents && li.packageComponents.map((comp) => (
                       <div key={comp.serviceId} className="flex justify-between">
-                        <span>• {comp.serviceName} ({comp.staffName})</span>
-                        <span className="font-mono text-slate-500">{formatCurrency(comp.allocatedAmount)}</span>
+                        <span>• {comp.serviceName}</span>
+                        {comp.allocatedAmount > 0 && (
+                          <span className="font-mono text-slate-500">{formatCurrency(comp.allocatedAmount)}</span>
+                        )}
                       </div>
                     ))}
                   </div>

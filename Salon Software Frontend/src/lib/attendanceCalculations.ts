@@ -248,7 +248,8 @@ export function calculateDeductionSnapshot(
 export function evaluateLeaveAllowance(
   staff: StaffMember,
   existingLeaves: LeaveRecord[],
-  targetDate: string
+  targetDate: string,
+  branchHolidays: BranchHoliday[] = []
 ): {
   isConfigured: boolean;
   allowedDays: number;
@@ -270,22 +271,20 @@ export function evaluateLeaveAllowance(
     };
   }
 
-  // Filter leaves within the allowance period of targetDate
-  const targetYear = targetDate.slice(0, 4);
-  const targetMonth = targetDate.slice(0, 7);
-
-  const activeLeaves = existingLeaves.filter((l) => {
-    if (l.staffId !== staff.id || l.status !== 'APPROVED' || l.type !== 'PAID') {
-      return false;
+  const year = Number(targetDate.slice(0, 4));
+  const month = Number(targetDate.slice(5, 7));
+  const from = period === 'MONTHLY' ? `${targetDate.slice(0, 7)}-01` : `${year}-01-01`;
+  const to = period === 'MONTHLY' ? `${targetDate.slice(0, 7)}-${new Date(Date.UTC(year, month, 0)).getUTCDate()}` : `${year}-12-31`;
+  const activeLeaves = existingLeaves.filter((l) => l.staffId === staff.id && l.status === 'APPROVED' && l.type === 'PAID' && l.startDate <= to && l.endDate >= from);
+  const usedDays = activeLeaves.reduce((sum, l) => {
+    if (l.workingDates) return sum + l.workingDates.filter((date) => date >= from && date <= to).length;
+    if (l.startDate >= from && l.endDate <= to) return sum + l.totalDays;
+    let days = 0;
+    for (const day = new Date(`${l.startDate > from ? l.startDate : from}T00:00:00Z`); day.toISOString().slice(0, 10) <= (l.endDate < to ? l.endDate : to); day.setUTCDate(day.getUTCDate() + 1)) {
+      if (isWorkingDay(day.toISOString().slice(0, 10), staff, branchHolidays).isWorking) days++;
     }
-    if (period === 'MONTHLY') {
-      return l.startDate.startsWith(targetMonth) || l.endDate.startsWith(targetMonth);
-    } else {
-      return l.startDate.startsWith(targetYear) || l.endDate.startsWith(targetYear);
-    }
-  });
-
-  const usedDays = activeLeaves.reduce((sum, l) => sum + l.totalDays, 0);
+    return sum + Math.min(days, l.totalDays);
+  }, 0);
   const remainingDays = Math.max(0, allowed - usedDays);
 
   return {

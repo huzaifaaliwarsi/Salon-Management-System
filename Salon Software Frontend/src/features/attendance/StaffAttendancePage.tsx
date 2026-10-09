@@ -452,8 +452,8 @@ export const StaffAttendancePage: React.FC = () => {
     if (!leaveForm.staffId) return null;
     const staff = staffList.find((s) => s.id === leaveForm.staffId);
     if (!staff) return null;
-    return evaluateLeaveAllowance(staff, leavesList, leaveForm.startDate);
-  }, [leaveForm.staffId, leaveForm.startDate, staffList, leavesList]);
+    return evaluateLeaveAllowance(staff, leavesList, leaveForm.startDate, holidaysList);
+  }, [leaveForm.staffId, leaveForm.startDate, staffList, leavesList, holidaysList]);
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 font-['Poppins']">

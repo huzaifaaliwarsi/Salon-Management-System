@@ -10,9 +10,10 @@ import { validate } from '../../middleware/validate.js';
 import { asyncHandler } from '../../lib/asyncHandler.js';
 import * as a from './attendance.service.js';
 import * as ot from './overtime.service.js';
+import { isYmd } from '../../lib/dates.js';
 
-const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD');
-const time = z.string().trim().regex(/^\d{1,2}:\d{2}(\s?[AaPp][Mm])?$/, 'Time must be HH:MM or HH:MM AM/PM');
+const ymd = z.string().refine(isYmd, 'Date must be a valid YYYY-MM-DD calendar date');
+const time = z.string().trim().regex(/^(?:(?:[01]?\d|2[0-3]):[0-5]\d|(?:0?[1-9]|1[0-2]):[0-5]\d\s?[AaPp][Mm])$/, 'Time must be a valid HH:MM or HH:MM AM/PM');
 const source = z.enum(['MANUAL', 'IMPORT', 'BIOMETRIC']);
 const reason = (label) => z.string().trim().min(1, `A ${label} reason is required.`);
 

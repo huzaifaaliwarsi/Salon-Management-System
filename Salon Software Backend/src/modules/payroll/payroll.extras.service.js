@@ -13,6 +13,7 @@ import { round2, toDec } from '../../lib/money.js';
 import { nextSequence } from '../../lib/sequence.js';
 import { num, opt, iso } from '../../lib/dto.js';
 import { payoutMoney, reverseMoney } from '../cash/cash.service.js';
+import { lockStaffPayBranch, replayMoneyRequest, saveMoneyResponse } from '../../lib/hrTransactions.js';
 
 const noAccountant = (actor) => {
   if (actor.role === 'ACCOUNTANT' || actor.role === 'STAFF') throw forbidden('FORBIDDEN', 'Access Denied: Payroll data is confidential.');
@@ -204,10 +205,14 @@ export const listAdvances = async (actor, { branchId, staffId, status } = {}) =>
 export const issueAdvance = async (actor, input) => {
   noAccountant(actor);
   return prisma.$transaction(async (tx) => {
+    const replay = await replayMoneyRequest(tx, actor, input.idempotencyKey, 'POST /api/v1/payroll/advances');
+    if (replay) return replay;
     const staff = await staffInScope(tx, actor, input.staffId);
+    await lockStaffPayBranch(tx, staff.branchId);
     if (!staff.isActive) throw badRequest('STAFF_INACTIVE', 'Cannot issue an advance to an inactive employee.');
     const amount = round2(input.amount);
     const perMonth = round2(input.recoveryPerMonth ?? input.amount);
+    if (amount.lessThanOrEqualTo(0) || perMonth.lessThanOrEqualTo(0)) throw badRequest('INVALID_AMOUNT', 'Advance and monthly recovery must be greater than zero after rounding.');
     if (perMonth.greaterThan(amount)) throw badRequest('INVALID_RECOVERY', 'Monthly recovery cannot exceed the advance amount.');
     const today = await getBusinessDate(tx);
     const startMonth = input.startMonth || today.slice(0, 7);
@@ -226,13 +231,16 @@ export const issueAdvance = async (actor, input) => {
       include: { recoveries: true },
     });
     await auditLog(tx, { userId: actor.id, userName: actor.name, action: 'SALARY_ADVANCE_ISSUED', entity: 'SalaryAdvance', entityId: adv.id, branchId: staff.branchId, after: { amount: amount.toNumber(), perMonth: perMonth.toNumber(), startMonth } });
-    return toAdvanceDTO(adv);
+    return saveMoneyResponse(tx, actor, input.idempotencyKey, 'POST /api/v1/payroll/advances', toAdvanceDTO(adv));
   });
 };
 
 export const reverseAdvance = async (actor, id, reason) => {
   noAccountant(actor);
   return prisma.$transaction(async (tx) => {
+    const header = await tx.salaryAdvance.findUnique({ where: { id } });
+    if (!header) throw notFound('ADVANCE_NOT_FOUND', `Salary advance '${id}' not found.`);
+    await lockStaffPayBranch(tx, header.branchId);
     await tx.$executeRaw`SELECT 1 FROM "SalaryAdvance" WHERE id = ${id} FOR UPDATE`;
     const adv = await tx.salaryAdvance.findUnique({ where: { id }, include: { recoveries: true } });
     if (!adv) throw notFound('ADVANCE_NOT_FOUND', `Salary advance '${id}' not found.`);

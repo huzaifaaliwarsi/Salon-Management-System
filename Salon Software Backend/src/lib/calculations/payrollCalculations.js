@@ -49,7 +49,7 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
   // Period range:
   const periodStartDate = options.startDate || startDateStr;
   const periodEndDate = options.endDate || endDateStr;
-  const isPeriodRun = isDaily && (periodStartDate !== startDateStr || periodEndDate !== endDateStr);
+  const isPeriodRun = periodStartDate !== startDateStr || periodEndDate !== endDateStr;
   const runType = options.runType || (periodStartDate === periodEndDate ? 'DAILY' : isPeriodRun ? 'CUSTOM_RANGE' : 'MONTHLY');
 
   // Dates for working days in month (used for policy divisors and base references)
@@ -60,14 +60,14 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
   // The actual dates evaluated for attendance:
   // For Daily staff in a period run (single day or date range): ONLY evaluate dates in [periodStartDate, periodEndDate]!
   // Future dates outside this range are NOT evaluated, so they do NOT trigger unrecorded attendance exceptions.
-  const datesToEvaluate = isDaily && isPeriodRun
+  const datesToEvaluate = isPeriodRun
     ? getDatesInRange(periodStartDate, periodEndDate)
     : allMonthDates;
 
   // Filter attendance for this employee within the evaluation scope
   const empAttendance = attendanceRecords.filter((a) => {
     if (a.staffId !== staff.id) return false;
-    if (isDaily && isPeriodRun) {
+    if (isPeriodRun) {
       return a.date >= periodStartDate && a.date <= periodEndDate;
     }
     return a.date.startsWith(month);
@@ -129,7 +129,7 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
     if (ot.staffId !== staff.id) return false;
     if (ot.status !== "APPROVED" || ot.payrollId || ot.payrollRunId) return false;
     if (options.alreadyFinalizedOvertimeIds?.has(ot.id)) return false;
-    if (isDaily && isPeriodRun) {
+    if (isPeriodRun) {
       return ot.date >= periodStartDate && ot.date <= periodEndDate;
     }
     return ot.date.startsWith(month);
@@ -160,12 +160,18 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
   let baseEarnings = 0, leaveEarnings = 0, holidayEarnings = 0, absenceDeductions = 0;
   const joinedMidMonth = !!staff.joiningDate && staff.joiningDate > startDateStr && staff.joiningDate <= endDateStr;
   const leftMidMonth = !!exitDate && exitDate >= startDateStr && exitDate < endDateStr;
+  const employedDates = datesToEvaluate.filter(employed);
+  const prorationDivisor = policy.prorationMethod === 'WORKING_DAYS' ? workingDaysInMonth : totalCalendarDays;
+  const payableDays = policy.prorationMethod === 'WORKING_DAYS'
+    ? employedDates.filter((d) => isWorkingDay(d, staff, branchHolidays).isWorking).length
+    : employedDates.length;
+  const excludedAttendanceDays = empAttendance.filter((a) => !employed(a.date)).length;
 
   if (isMonthly) {
     const fullMonthlyBase = staff.baseSalary || 0;
-    if (joinedMidMonth || leftMidMonth) {
+    if (isPeriodRun || joinedMidMonth || leftMidMonth) {
       isProrated = true;
-      const span = allMonthDates.filter(employed);
+      const span = datesToEvaluate.filter(employed);
       if (policy.prorationMethod === "WORKING_DAYS") {
         const workedSpan = span.filter((d) => isWorkingDay(d, staff, branchHolidays).isWorking).length;
         baseEarnings = roundCurrency(fullMonthlyBase * (workingDaysInMonth > 0 ? workedSpan / workingDaysInMonth : 1));
@@ -194,8 +200,14 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
 
   const allowanceLines = (extras.allowances || []).map((a) => {
     let amt = roundCurrency(Number(a.amount));
-    if (isDaily && isPeriodRun) {
-      amt = roundCurrency((amt / (divisorUsed || 30)) * daysInPeriod);
+    if (isPeriodRun) {
+      if (isMonthly) {
+        const span = datesToEvaluate.filter(employed);
+        const fraction = policy.prorationMethod === 'WORKING_DAYS'
+          ? span.filter((d) => isWorkingDay(d, staff, branchHolidays).isWorking).length / (workingDaysInMonth || 1)
+          : span.length / totalCalendarDays;
+        amt = roundCurrency(amt * fraction);
+      } else amt = roundCurrency((amt / (divisorUsed || 30)) * daysInPeriod);
     }
     return { id: a.id, name: a.name, amount: amt };
   });
@@ -285,6 +297,9 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
       effectiveBaseSalary: staff.baseSalary || 0,
       effectiveDailyRate: staff.dailySalaryRate || 0,
       termsEffectiveDate: staff.effectiveDate,
+      joiningDate: staff.joiningDate,
+      employmentNotes: excludedAttendanceDays > 0
+        ? [`${excludedAttendanceDays} attendance record(s) outside employment dates excluded. Verify joining/exit dates before finalizing.`] : [],
       exitDate: exitDate || undefined,
       workingDaysInMonth,
       calendarDaysInMonth: totalCalendarDays,
@@ -327,6 +342,9 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
       calculationDetails: {
         formula,
         divisorUsed,
+        payableDays: isMonthly ? payableDays : presentDays + paidLeaveDays + paidHolidayDays + paidWeeklyOffDays,
+        prorationDivisor: isMonthly ? prorationDivisor : undefined,
+        prorationDays: isMonthly ? payableDays : undefined,
         prorationApplied: isProrated,
         prorationFormula: isProrated ? prorationFormula : void 0,
         dailyRateUsed: isDaily ? (staff.dailySalaryRate || 0) : roundCurrency((staff.baseSalary || 0) / divisorUsed),

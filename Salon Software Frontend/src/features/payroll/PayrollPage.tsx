@@ -3,6 +3,7 @@ import { useAuth } from '../../context/AuthContext';
 import { salonService } from '../../services';
 import {
   PayrollRun,
+  PayrollRunType,
   PayslipRecord,
   StaffMember,
   CompensationType,
@@ -41,6 +42,16 @@ import { PayrollExtrasPanel, PayrollExtrasView } from './PayrollExtrasPanel';
 const plusExtras = (p: PayslipRecord) => (p.allowancesTotal ?? 0) + (p.holidayEarnings ?? 0);
 const minusExtras = (p: PayslipRecord) => (p.otherDeductions ?? 0) + (p.advanceRecoveryAmount ?? 0);
 const money = (n: number, sign: '+' | '-') => (n > 0 ? `${sign}Rs. ${n.toLocaleString()}` : '0');
+const BaseExplanation = ({ payslip: p }: { payslip: PayslipRecord }) => (
+  <div className="text-[11px] text-slate-500 mt-1 font-normal whitespace-normal min-w-44">
+    {p.joiningDate && <div>Joined: {p.joiningDate}{p.exitDate ? ` · Exit: ${p.exitDate}` : ''}</div>}
+    {p.calculationDetails?.payableDays !== undefined && (
+      <div>Eligible days: {p.calculationDetails.payableDays}{p.calculationDetails.prorationDivisor ? ` / ${p.calculationDetails.prorationDivisor}` : ''}</div>
+    )}
+    <div>{p.calculationDetails?.prorationFormula || (p.compensationType.startsWith('MONTHLY') ? 'Full eligible month: configured monthly salary' : '')}</div>
+    {p.employmentNotes?.map((note) => <div key={note} className="text-amber-700">{note}</div>)}
+  </div>
+);
 
 const VIEW_TABS: { id: 'RUNS' | PayrollExtrasView; label: string }[] = [
   { id: 'RUNS', label: 'Payroll Runs' },
@@ -71,6 +82,9 @@ export const PayrollPage: React.FC = () => {
     user.role === 'SUPER_ADMIN' ? (activeBranchId === 'ALL' ? (allBranches[0]?.id || '') : activeBranchId) : (user.branchId || '')
   );
   const [selectedMonth, setSelectedMonth] = useState<string>(initialMonth);
+  const [runType, setRunType] = useState<PayrollRunType>('MONTHLY');
+  const [startDate, setStartDate] = useState(demoDate || new Date().toISOString().slice(0, 10));
+  const [endDate, setEndDate] = useState(demoDate || new Date().toISOString().slice(0, 10));
   const [staffFilter, setStaffFilter] = useState<string>('ALL');
   const [compTypeFilter, setCompTypeFilter] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
@@ -197,7 +211,12 @@ export const PayrollPage: React.FC = () => {
         effectiveBranchId,
         selectedMonth,
         staffFilter !== 'ALL' ? staffFilter : undefined,
-        user
+        user,
+        {
+          runType,
+          compensationType: compTypeFilter as CompensationType | 'ALL',
+          ...(runType !== 'MONTHLY' ? { startDate, endDate: runType === 'DAILY' ? startDate : endDate } : {}),
+        }
       );
       setActiveDraft(preview);
       setShowPreviewModal(true);
@@ -348,6 +367,9 @@ export const PayrollPage: React.FC = () => {
       'Employee Code',
       'Staff Name',
       'Compensation Type',
+      'Period Type',
+      'From Date',
+      'To Date',
       'Base Earnings',
       'Leave Earnings',
       'Absence Deductions',
@@ -373,6 +395,9 @@ export const PayrollPage: React.FC = () => {
       p.employeeCode,
       `"${p.staffName}"`,
       p.compensationType,
+      run.runType || 'MONTHLY',
+      run.startDate || `${run.month}-01`,
+      run.endDate || run.month,
       p.baseEarnings,
       p.leaveEarnings,
       p.absenceDeductions,
@@ -555,7 +580,11 @@ export const PayrollPage: React.FC = () => {
             <input
               type="month"
               value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
+              onChange={(e) => {
+                setSelectedMonth(e.target.value);
+                setStartDate(`${e.target.value}-01`);
+                setEndDate(`${e.target.value}-${String(new Date(Number(e.target.value.slice(0, 4)), Number(e.target.value.slice(5, 7)), 0).getDate()).padStart(2, '0')}`);
+              }}
               className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
             />
           </div>
@@ -564,7 +593,15 @@ export const PayrollPage: React.FC = () => {
             <label className="block text-xs font-medium text-slate-600 mb-1">Employee</label>
             <select
               value={staffFilter}
-              onChange={(e) => setStaffFilter(e.target.value)}
+              onChange={(e) => {
+                setStaffFilter(e.target.value);
+                const selectedStaff = staffList.find((s) => s.id === e.target.value);
+                if (selectedStaff) {
+                  setCompTypeFilter('ALL');
+                  if (selectedStaff.compensationType.startsWith('DAILY')) setRunType('DAILY');
+                  else if (runType === 'DAILY') setRunType('MONTHLY');
+                }
+              }}
               className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
             >
               <option value="ALL">All Employees</option>
@@ -580,7 +617,11 @@ export const PayrollPage: React.FC = () => {
             <label className="block text-xs font-medium text-slate-600 mb-1">Compensation Type</label>
             <select
               value={compTypeFilter}
-              onChange={(e) => setCompTypeFilter(e.target.value)}
+              onChange={(e) => {
+                setCompTypeFilter(e.target.value);
+                if (e.target.value.startsWith('DAILY')) setRunType('DAILY');
+                else if (e.target.value !== 'ALL' && runType === 'DAILY') setRunType('MONTHLY');
+              }}
               className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
             >
               <option value="ALL">All Types</option>
@@ -592,6 +633,23 @@ export const PayrollPage: React.FC = () => {
             </select>
           </div>
 
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Payroll Period</label>
+            <select value={runType} onChange={(e) => setRunType(e.target.value as PayrollRunType)} className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50">
+              <option value="DAILY">Daily (one day)</option>
+              <option value="MONTHLY">Full month (monthly contracts)</option>
+              <option value="CUSTOM_RANGE">Custom dates within month</option>
+            </select>
+          </div>
+          {runType !== 'MONTHLY' && <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">{runType === 'DAILY' ? 'Payroll Date' : 'From Date'}</label>
+            <input type="date" value={startDate} min={`${selectedMonth}-01`} max={`${selectedMonth}-31`} onChange={(e) => setStartDate(e.target.value)} className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50" />
+          </div>}
+          {runType === 'CUSTOM_RANGE' && <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">To Date</label>
+            <input type="date" value={endDate} min={startDate} max={`${selectedMonth}-31`} onChange={(e) => setEndDate(e.target.value)} className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50" />
+            <p className="text-xs text-slate-500 mt-1">Monthly salary and recurring allowances are prorated using branch policy.</p>
+          </div>}
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">Run Status</label>
             <select
@@ -686,6 +744,9 @@ export const PayrollPage: React.FC = () => {
                     </span>
                   </div>
                   <p className="text-xs text-slate-500">
+                    Period: {run.startDate || run.month}{run.endDate && run.endDate !== run.startDate ? ` to ${run.endDate}` : ''} | {run.runType || 'MONTHLY'}
+                  </p>
+                  <p className="text-xs text-slate-500">
                     Divisor: /{run.policySnapshot.monthlyAbsenceDivisor} | Proration: {run.policySnapshot.prorationMethod} | Daily Paid Leave: {run.policySnapshot.dailyStaffPaidLeaveEligibility ? 'Eligible' : 'Not Eligible'}
                   </p>
                 </div>
@@ -744,11 +805,14 @@ export const PayrollPage: React.FC = () => {
                       <th className="py-3 px-4">Employee</th>
                       <th className="py-3 px-3">Comp Type</th>
                       <th className="py-3 px-3 text-right">Base Earned</th>
+                      <th className="py-3 px-3 text-right">Paid Leave</th>
                       <th className="py-3 px-3 text-right">Absence Ded.</th>
                       <th className="py-3 px-3 text-right">Late/Early</th>
                       <th className="py-3 px-3 text-right">Overtime</th>
-                      <th className="py-3 px-3 text-right">Allow./Bonus</th>
-                      <th className="py-3 px-3 text-right">Other Ded./Adv.</th>
+                      <th className="py-3 px-3 text-right">Allow./Bonus/Holiday</th>
+                      <th className="py-3 px-3 text-right">Commission</th>
+                      <th className="py-3 px-3 text-right">Other Ded.</th>
+                      <th className="py-3 px-3 text-right">Loan</th>
                       <th className="py-3 px-3 text-right font-bold">Net Payable</th>
                       <th className="py-3 px-3 text-right text-emerald-600">Paid</th>
                       <th className="py-3 px-3 text-right text-amber-600">Outstanding</th>
@@ -776,7 +840,9 @@ export const PayrollPage: React.FC = () => {
                           </td>
                           <td className="py-3 px-3 text-right text-slate-700 font-medium">
                             Rs. {ps.baseEarnings.toLocaleString()}
+                            <BaseExplanation payslip={ps} />
                           </td>
+                          <td className="py-3 px-3 text-right text-emerald-600">{money(ps.leaveEarnings, '+')}</td>
                           <td className="py-3 px-3 text-right text-rose-600">
                             {ps.absenceDeductions > 0 ? `-Rs. ${ps.absenceDeductions.toLocaleString()}` : '0'}
                           </td>
@@ -790,7 +856,9 @@ export const PayrollPage: React.FC = () => {
                             )}
                           </td>
                           <td className="py-3 px-3 text-right text-emerald-600">{money(plusExtras(ps), '+')}</td>
-                          <td className="py-3 px-3 text-right text-rose-600">{money(minusExtras(ps), '-')}</td>
+                          <td className="py-3 px-3 text-right text-emerald-600">{money(ps.commissionPayable ?? 0, '+')}</td>
+                          <td className="py-3 px-3 text-right text-rose-600">{money(ps.otherDeductions ?? 0, '-')}</td>
+                          <td className="py-3 px-3 text-right text-rose-600">{money(ps.advanceRecoveryAmount ?? 0, '-')}</td>
                           <td className="py-3 px-3 text-right font-bold text-slate-900">
                             Rs. {ps.netPayable.toLocaleString()}
                           </td>
@@ -878,7 +946,7 @@ export const PayrollPage: React.FC = () => {
       {/* ========================================================================= */}
       {showPreviewModal && activeDraft && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden">
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-[90rem] max-h-[90vh] flex flex-col overflow-hidden">
             {/* Modal Header */}
             <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
               <div className="flex items-center gap-3">
@@ -887,7 +955,7 @@ export const PayrollPage: React.FC = () => {
                 </div>
                 <div>
                   <h2 className="text-lg font-bold text-slate-900">
-                    Payroll Preview: {activeDraft.month} ({activeDraft.branchName})
+                    Payroll Preview: {activeDraft.startDate || activeDraft.month} {activeDraft.endDate && activeDraft.endDate !== activeDraft.startDate ? `to ${activeDraft.endDate}` : ''} ({activeDraft.branchName})
                   </h2>
                   <p className="text-xs text-slate-500">
                     Draft calculations based on finalized canonical attendance and approved overtime. Money does not move.
@@ -919,7 +987,8 @@ export const PayrollPage: React.FC = () => {
               )}
 
               {/* Table */}
-              <div className="border border-slate-200 rounded-2xl overflow-hidden">
+              <p className="text-xs text-slate-600">Base + Paid Leave/Holidays + OT + Allowances + Commission − Deductions − Loan = Net Payable. Finalization reserves commission; payment settles it.</p>
+              <div className="border border-slate-200 rounded-2xl overflow-x-auto">
                 <table className="w-full text-left">
                   <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
                     <tr>
@@ -927,11 +996,14 @@ export const PayrollPage: React.FC = () => {
                       <th className="py-2.5 px-3">Type</th>
                       <th className="py-2.5 px-2 text-center">Days (P/L/A)</th>
                       <th className="py-2.5 px-3 text-right">Base Earnings</th>
+                      <th className="py-2.5 px-3 text-right">Paid Leave</th>
                       <th className="py-2.5 px-3 text-right">Absence Ded.</th>
                       <th className="py-2.5 px-3 text-right">Penalties</th>
                       <th className="py-2.5 px-3 text-right">Overtime</th>
-                      <th className="py-2.5 px-3 text-right">Allow./Bonus</th>
-                      <th className="py-2.5 px-3 text-right">Other Ded./Adv.</th>
+                      <th className="py-2.5 px-3 text-right">Allow./Bonus/Holiday</th>
+                      <th className="py-2.5 px-3 text-right">Commission</th>
+                      <th className="py-2.5 px-3 text-right">Other Ded.</th>
+                      <th className="py-2.5 px-3 text-right">Loan</th>
                       <th className="py-2.5 px-3 text-right font-bold">Net Payable</th>
                       <th className="py-2.5 px-3 text-center">Status</th>
                     </tr>
@@ -957,7 +1029,8 @@ export const PayrollPage: React.FC = () => {
                         <td className="py-2.5 px-2 text-center font-mono">
                           {p.presentDays}/{p.paidLeaveDays}/{p.absentDays}
                         </td>
-                        <td className="py-2.5 px-3 text-right font-medium">Rs. {p.baseEarnings.toLocaleString()}</td>
+                        <td className="py-2.5 px-3 text-right font-medium">Rs. {p.baseEarnings.toLocaleString()}<BaseExplanation payslip={p} /></td>
+                        <td className="py-2.5 px-3 text-right text-emerald-600">{money(p.leaveEarnings, '+')}</td>
                         <td className="py-2.5 px-3 text-right text-rose-600">
                           {p.absenceDeductions > 0 ? `-Rs. ${p.absenceDeductions.toLocaleString()}` : '0'}
                         </td>
@@ -968,7 +1041,9 @@ export const PayrollPage: React.FC = () => {
                           {p.approvedOvertimeAmount > 0 ? `+Rs. ${p.approvedOvertimeAmount.toLocaleString()}` : '0'}
                         </td>
                         <td className="py-2.5 px-3 text-right text-emerald-600">{money(plusExtras(p), '+')}</td>
-                        <td className="py-2.5 px-3 text-right text-rose-600">{money(minusExtras(p), '-')}</td>
+                        <td className="py-2.5 px-3 text-right text-emerald-600">{money(p.commissionPayable ?? 0, '+')}</td>
+                        <td className="py-2.5 px-3 text-right text-rose-600">{money(p.otherDeductions ?? 0, '-')}</td>
+                        <td className="py-2.5 px-3 text-right text-rose-600">{money(p.advanceRecoveryAmount ?? 0, '-')}</td>
                         <td className="py-2.5 px-3 text-right font-bold text-slate-900">
                           Rs. {p.netPayable.toLocaleString()}
                         </td>
@@ -1013,6 +1088,10 @@ export const PayrollPage: React.FC = () => {
                         .reduce((sum, p) => sum + p.totalDeductions, 0)
                         .toLocaleString()}
                     </span>
+                  </div>
+                  <div className="flex justify-between text-slate-600">
+                    <span>Unpaid Commission:</span>
+                    <span className="font-semibold text-emerald-600">+Rs. {activeDraft.payslips.reduce((sum, p) => sum + (p.commissionPayable ?? 0), 0).toLocaleString()}</span>
                   </div>
                   <div className="border-t border-slate-200 pt-1.5 flex justify-between font-bold text-sm text-slate-900">
                     <span>Total Net Payable:</span>
@@ -1060,7 +1139,7 @@ export const PayrollPage: React.FC = () => {
                   Payslip Calculation: {selectedPayslip.staffName}
                 </h3>
                 <p className="text-xs text-slate-500">
-                  {selectedPayslip.payslipNumber} • Month: {selectedPayslip.month} • {selectedPayslip.compensationType}
+                  {selectedPayslip.payslipNumber} • Period: {selectedPayslip.startDate || selectedPayslip.month}{selectedPayslip.endDate && selectedPayslip.endDate !== selectedPayslip.startDate ? ` to ${selectedPayslip.endDate}` : ''} • {selectedPayslip.compensationType}
                 </p>
               </div>
               <button onClick={() => setShowDetailsModal(false)} className="text-slate-400 hover:text-slate-600">
@@ -1076,8 +1155,9 @@ export const PayrollPage: React.FC = () => {
                   {selectedPayslip.calculationDetails.formula}
                 </p>
                 <div className="grid grid-cols-2 gap-2 text-indigo-900">
-                  <div>Divisor Used: /{selectedPayslip.calculationDetails.divisorUsed}</div>
-                  <div>Daily Rate: Rs. {(selectedPayslip.calculationDetails.dailyRateUsed || 0).toFixed(2)}</div>
+                  <div>Absence Divisor: /{selectedPayslip.calculationDetails.divisorUsed}</div>
+                  <div>Deduction Rate: Rs. {(selectedPayslip.calculationDetails.dailyRateUsed || 0).toFixed(2)}</div>
+                  <div className="col-span-2"><BaseExplanation payslip={selectedPayslip} /></div>
                   {selectedPayslip.calculationDetails.prorationApplied && (
                     <div className="col-span-2 text-amber-700 font-medium">
                       ⚠️ {selectedPayslip.calculationDetails.prorationFormula || 'Proration applied (joined/left mid-month)'}
@@ -1735,7 +1815,7 @@ export const PayrollPage: React.FC = () => {
                 <h2 className="text-lg font-bold tracking-tight">SALON OS MANAGEMENT</h2>
                 <p className="text-xs text-slate-500">Official Monthly Salary Slip</p>
                 <div className="mt-2 inline-block px-3 py-1 bg-slate-100 rounded-full font-semibold text-slate-700">
-                  Period: {selectedPayslip.month}
+                  Period: {selectedPayslip.startDate || selectedPayslip.month}{selectedPayslip.endDate && selectedPayslip.endDate !== selectedPayslip.startDate ? ` to ${selectedPayslip.endDate}` : ''}
                 </div>
               </div>
 

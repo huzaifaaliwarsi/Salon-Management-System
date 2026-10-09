@@ -11,6 +11,7 @@ import { dateOnly, ymd } from '../../lib/dates.js';
 import { round2, toDec } from '../../lib/money.js';
 import { nextSequence } from '../../lib/sequence.js';
 import { num, opt, iso } from '../../lib/dto.js';
+import { lockStaffPayBranch, assertPayrollPeriodOpen } from '../../lib/hrTransactions.js';
 
 export const toOvertimeDTO = (o, staff) => ({
   id: o.id, overtimeNumber: o.overtimeNumber, staffId: o.staffId, staffName: staff?.name ?? '', employeeCode: staff?.employeeCode,
@@ -31,26 +32,32 @@ const withStaff = async (rows) => {
 
 const estimate = (minutes, rate) => round2(toDec(minutes).dividedBy(60).times(rate));
 
-export const listOvertime = async (actor, { branchId, staffId } = {}) => {
+export const listOvertime = async (actor, { branchId, staffId, date, startDate, endDate } = {}) => {
   if (actor.role === 'ACCOUNTANT') throw forbidden('FORBIDDEN', 'Access Denied: Accountants do not have permission to view overtime.');
   let sid = staffId;
   if (actor.role === 'STAFF') {
+    if (!actor.staffId) throw forbidden('FORBIDDEN', 'Staff record associated with the authenticated user could not be found.');
     if (staffId && staffId !== actor.staffId) throw forbidden('FORBIDDEN', 'Access Denied: Staff members can only view their own overtime records.');
     sid = actor.staffId;
   }
   const b = actor.role === 'STAFF' ? null : resolveReadBranch(actor, branchId);
   const rows = await prisma.overtimeRecord.findMany({
-    where: { ...(b ? { branchId: b } : {}), ...(sid ? { staffId: sid } : {}), ...(actor.role === 'STAFF' ? { status: 'APPROVED' } : {}) },
+    where: { ...(b ? { branchId: b } : {}), ...(sid ? { staffId: sid } : {}), ...(actor.role === 'STAFF' ? { status: 'APPROVED' } : {}),
+      ...(date || startDate || endDate ? { workDate: { ...(date ? { equals: dateOnly(date) } : {}), ...(startDate ? { gte: dateOnly(startDate) } : {}), ...(endDate ? { lte: dateOnly(endDate) } : {}) } } : {}) },
     orderBy: [{ workDate: 'desc' }, { enteredAt: 'desc' }],
   });
   return withStaff(rows);
 };
 
 const load = async (tx, actor, id, verb) => {
+  const header = await tx.overtimeRecord.findUnique({ where: { id } });
+  if (!header) throw notFound('OVERTIME_NOT_FOUND', `Overtime record '${id}' not found.`);
+  await lockStaffPayBranch(tx, header.branchId);
   const o = await tx.overtimeRecord.findUnique({ where: { id } });
   if (!o) throw notFound('OVERTIME_NOT_FOUND', `Overtime record '${id}' not found.`);
   assertBranchAccess(actor, o.branchId, `Access Denied: Cannot ${verb} overtime from another branch.`);
   if (o.payrollRunId) throw conflict('OVERTIME_LOCKED', `Cannot ${verb} overtime already linked to finalized payroll.`);
+  await assertPayrollPeriodOpen(tx, o.staffId, ymd(o.workDate));
   return o;
 };
 
@@ -62,8 +69,10 @@ const finish = async (tx, actor, action, o) => {
 export const createOvertime = async (input, actor) => {
   const branchId = resolveWriteBranch(actor, input.branchId, 'Access Denied: Cannot enter overtime for another branch.');
   return prisma.$transaction(async (tx) => {
+    await lockStaffPayBranch(tx, branchId);
     const staff = await tx.staff.findUnique({ where: { id: input.staffId } });
     if (!staff || !staff.isActive || staff.branchId !== branchId) throw badRequest('STAFF_INVALID', `Staff member '${input.staffId}' is inactive or not found in this branch.`);
+    await assertPayrollPeriodOpen(tx, staff.id, input.date);
     const dup = await tx.overtimeRecord.findFirst({
       where: { staffId: staff.id, workDate: dateOnly(input.date), status: { notIn: ['CANCELLED', 'REJECTED'] } },
     });

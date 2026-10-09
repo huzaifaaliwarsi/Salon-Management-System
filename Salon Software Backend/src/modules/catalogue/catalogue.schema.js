@@ -13,7 +13,7 @@ const serviceFields = {
   code:              z.string().trim().min(1, 'Unique service code is required.').transform((s) => s.toUpperCase()),
   name:              z.string().trim().min(1, 'Service name is required.'),
   category:          z.string().trim().min(1).default('General'),
-  durationMinutes:   z.number({ message: 'Duration must be a positive number of minutes.' }).positive('Duration must be a positive number of minutes.').transform(Math.round),
+  durationMinutes:   z.number({ message: 'Duration must be a positive number of minutes.' }).positive('Duration must be a positive number of minutes.').transform(Math.round).optional().default(30),
   price:             price('Selling price'),
   description:       z.string().trim().optional(),
   taxTreatment:      taxTreatment.default('BRANCH_DEFAULT'),
@@ -38,7 +38,7 @@ export const updateServiceSchema = z.object({
 const component = z.object({
   serviceId:            z.string().min(1),
   quantity:             z.number().int('Component quantity must be a positive whole number.').positive('Component quantity must be a positive whole number.').default(1),
-  allocationPercentage: z.number().min(0, 'Allocation percentage must be between 0% and 100%.').max(100, 'Allocation percentage must be between 0% and 100%.'),
+  allocationPercentage: z.number().min(0, 'Allocation percentage must be between 0% and 100%.').max(100, 'Allocation percentage must be between 0% and 100%.').optional(),
 }).passthrough(); // serviceCode/serviceName/unitPrice from the UI are ignored — always read from the catalogue
 
 const packageFields = {
