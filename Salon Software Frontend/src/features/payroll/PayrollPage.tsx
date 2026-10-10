@@ -747,7 +747,7 @@ export const PayrollPage: React.FC = () => {
                     Period: {run.startDate || run.month}{run.endDate && run.endDate !== run.startDate ? ` to ${run.endDate}` : ''} | {run.runType || 'MONTHLY'}
                   </p>
                   <p className="text-xs text-slate-500">
-                    Divisor: /{run.policySnapshot.monthlyAbsenceDivisor} | Proration: {run.policySnapshot.prorationMethod} | Daily Paid Leave: {run.policySnapshot.dailyStaffPaidLeaveEligibility ? 'Eligible' : 'Not Eligible'}
+                    Monthly divisor: /{run.payslips.find((p) => p.compensationType.startsWith('MONTHLY'))?.calculationDetails?.divisorUsed ?? run.policySnapshot.monthlyAbsenceDivisor} | Proration: {run.policySnapshot.prorationMethod} | Daily Paid Leave: {run.policySnapshot.dailyStaffPaidLeaveEligibility ? 'Eligible' : 'Not Eligible'}
                   </p>
                 </div>
 
@@ -1834,6 +1834,7 @@ export const PayrollPage: React.FC = () => {
 
               <div className="space-y-2">
                 {/* 1. Base Salary & Proration */}
+                <p className="text-xs text-slate-600">Divisor: /{selectedPayslip.calculationDetails?.divisorUsed}. {selectedPayslip.calculationDetails?.prorationFormula || selectedPayslip.calculationDetails?.formula}</p>
                 <div className="flex justify-between py-1 border-b border-slate-100">
                   <span className="text-slate-600">Contractual Base Salary</span>
                   <span className="font-semibold text-slate-900">Rs. {(selectedPayslip.effectiveBaseSalary ?? selectedPayslip.baseEarnings).toLocaleString()}</span>

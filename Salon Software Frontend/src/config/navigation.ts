@@ -101,6 +101,14 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
         description: 'Biometric & manual check-in verification',
       },
       {
+        id: 'leave-management',
+        label: 'Leave Management',
+        href: '/operations/leaves',
+        iconName: 'Calendar',
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN'],
+        description: 'Employee leave, entitlement and leave history',
+      },
+      {
         id: 'manual-overtime',
         label: 'Manual Overtime',
         href: '/operations/manual-overtime',
@@ -216,6 +224,7 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
         href: '/reports/income-expense',
         iconName: 'BarChart3',
         allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'],
+        description: 'Recognized business income and operating expenses',
       },
       {
         id: 'rep-sales-invoices',
@@ -223,13 +232,7 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
         href: '/reports/sales-invoices',
         iconName: 'FileSpreadsheet',
         allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'],
-      },
-      {
-        id: 'rep-unpaid-invoices',
-        label: 'Unpaid Invoices',
-        href: '/reports/unpaid-invoices',
-        iconName: 'AlertCircle',
-        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'],
+        description: 'Posted bills, discounts, tax, tips, payments and refunds',
       },
       {
         id: 'rep-payment-accounts',
@@ -237,13 +240,15 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
         href: '/reports/payment-accounts',
         iconName: 'Landmark',
         allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'],
+        description: 'Named bank and online accounts opening, cashflow and closing balance',
       },
       {
         id: 'rep-cash-drawer',
-        label: 'Cash Drawer Log',
+        label: 'Cash Drawer Logs',
         href: '/reports/cash-drawer',
         iconName: 'Wallet',
         allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'],
+        description: 'Physical cash custody by session: expected, counted and variance',
       },
       {
         id: 'rep-detailed-expenses',
@@ -251,6 +256,7 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
         href: '/reports/detailed-expenses',
         iconName: 'ListOrdered',
         allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'],
+        description: 'Itemized operational disbursements by category and source',
       },
       {
         id: 'rep-staff-salary',
@@ -258,6 +264,7 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
         href: '/reports/staff-salary',
         iconName: 'Banknote',
         allowedRoles: ['SUPER_ADMIN', 'ADMIN'], // Accountant excluded
+        description: 'Finalized monthly payroll, earnings, allowances and deductions',
       },
       {
         id: 'rep-staff-commission',
@@ -265,42 +272,31 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
         href: '/reports/staff-commission',
         iconName: 'Percent',
         allowedRoles: ['SUPER_ADMIN', 'ADMIN'], // Accountant excluded
+        description: 'Attributed net sales, rate snapshots, earned and paid commissions',
       },
       {
         id: 'rep-staff-performance',
         label: 'Staff Performance',
         href: '/reports/staff-performance',
-        iconName: 'TrendingUp',
+        iconName: 'Award',
         allowedRoles: ['SUPER_ADMIN', 'ADMIN'], // Accountant excluded
+        description: 'Completed visits, services performed and client rebookings',
       },
       {
-        id: 'rep-appointments',
-        label: 'Appointment Report',
-        href: '/reports/appointments',
-        iconName: 'CalendarRange',
-        allowedRoles: ['SUPER_ADMIN', 'ADMIN'], // Accountant excluded
-        description: 'Scheduled reservation velocity, quoted values and POS conversions',
-      },
-      {
-        id: 'rep-inventory-movement',
-        label: 'Inventory Movement',
+        id: 'rep-inventory',
+        label: 'Inventory Reports',
         href: '/reports/inventory-movement',
         iconName: 'Boxes',
         allowedRoles: ['SUPER_ADMIN', 'ADMIN'],
+        description: 'Valuation, stock movements, purchases, consumption and supplier khata',
       },
       {
         id: 'rep-attendance',
-        label: 'Attendance Report',
+        label: 'Attendance & Overtime',
         href: '/reports/attendance',
         iconName: 'CalendarCheck',
         allowedRoles: ['SUPER_ADMIN', 'ADMIN'], // Accountant excluded
-      },
-      {
-        id: 'rep-overtime',
-        label: 'Overtime Audit',
-        href: '/reports/overtime',
-        iconName: 'Clock3',
-        allowedRoles: ['SUPER_ADMIN', 'ADMIN'], // Accountant excluded
+        description: 'Daily check-in logs, shifts, leaves, lateness and authorized overtime audit',
       },
       {
         id: 'rep-operating-profit',
@@ -308,13 +304,7 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
         href: '/reports/operating-profit',
         iconName: 'TrendingUp',
         allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'],
-      },
-      {
-        id: 'rep-settlement-history',
-        label: 'Settlement History',
-        href: '/reports/settlement-history',
-        iconName: 'History',
-        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'],
+        description: 'Comprehensive P&L: net sales, COGS, consumption and operating margin',
       },
     ],
   },

@@ -50,3 +50,160 @@ const commissionQuery = z.object({
 });
 reportRoutes.get('/staff-salary', authorize('SUPER_ADMIN', 'ADMIN'), validate(salaryQuery, 'query'), send((req) => sp.staffSalaryReport(req.user, req.query)));
 reportRoutes.get('/staff-commission', authorize('SUPER_ADMIN', 'ADMIN'), validate(commissionQuery, 'query'), send((req) => sp.staffCommissionReport(req.user, req.query)));
+
+const salesInvoicesQuery = z.object({
+  branchId: z.string().optional(),
+  preset: z.string().optional(),
+  startDate: ymd.optional(),
+  endDate: ymd.optional(),
+  from: ymd.optional(),
+  to: ymd.optional(),
+  search: z.string().optional(),
+  paymentStatus: z.enum(['PAID', 'PARTIAL', 'UNPAID', 'ALL']).optional(),
+  lifecycle: z.enum(['ACTIVE', 'PARTIALLY_REFUNDED', 'REFUNDED', 'VOIDED', 'ALL']).optional(),
+  paymentMethod: z.string().optional(),
+  staffId: z.string().optional(),
+  clientId: z.string().optional(),
+});
+reportRoutes.get('/sales-invoices', authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'), validate(salesInvoicesQuery, 'query'), send((req) => r.salesInvoicesReport(req.user, req.query)));
+
+const incomeExpenseQuery = z.object({
+  branchId: z.string().optional(),
+  preset: z.string().optional(),
+  startDate: ymd.optional(),
+  endDate: ymd.optional(),
+  from: ymd.optional(),
+  to: ymd.optional(),
+  type: z.string().optional(),
+  category: z.string().optional(),
+  status: z.string().optional(),
+  paymentMethod: z.string().optional(),
+  search: z.string().optional(),
+});
+reportRoutes.get(
+  '/income-expense',
+  authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'),
+  validate(incomeExpenseQuery, 'query'),
+  send((req) => r.incomeExpenseReport(req.user, req.query))
+);
+
+const operatingProfitQuery = z.object({
+  branchId: z.string().optional(),
+  preset: z.string().optional(),
+  startDate: ymd.optional(),
+  endDate: ymd.optional(),
+  from: ymd.optional(),
+  to: ymd.optional(),
+});
+reportRoutes.get(
+  '/operating-profit',
+  authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'),
+  validate(operatingProfitQuery, 'query'),
+  send((req) => r.operatingProfitReport(req.user, req.query))
+);
+
+const paymentAccountsQuery = z.object({
+  branchId: z.string().optional(),
+  accountId: z.string().optional(),
+  preset: z.string().optional(),
+  startDate: ymd.optional(),
+  endDate: ymd.optional(),
+  from: ymd.optional(),
+  to: ymd.optional(),
+  transactionType: z.string().optional(),
+  direction: z.string().optional(),
+  sourceModule: z.string().optional(),
+  search: z.string().optional(),
+});
+reportRoutes.get(
+  '/payment-accounts',
+  authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'),
+  validate(paymentAccountsQuery, 'query'),
+  send((req) => r.paymentAccountsReport(req.user, req.query))
+);
+
+const cashDrawerQuery = z.object({
+  branchId: z.string().optional(),
+  preset: z.string().optional(),
+  startDate: ymd.optional(),
+  endDate: ymd.optional(),
+  from: ymd.optional(),
+  to: ymd.optional(),
+  custodianUserId: z.string().optional(),
+  status: z.enum(['OPEN', 'SETTLEMENT_PENDING', 'SETTLED', 'ALL']).optional(),
+  search: z.string().optional(),
+});
+reportRoutes.get(
+  '/cash-drawer',
+  authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'),
+  validate(cashDrawerQuery, 'query'),
+  send((req) => r.cashDrawerReport(req.user, req.query))
+);
+
+const detailedExpensesQuery = z.object({
+  branchId: z.string().optional(),
+  preset: z.string().optional(),
+  startDate: ymd.optional(),
+  endDate: ymd.optional(),
+  from: ymd.optional(),
+  to: ymd.optional(),
+  category: z.string().optional(),
+  status: z.enum(['POSTED', 'REVERSED', 'DRAFT', 'ALL']).optional(),
+  paymentSource: z.enum(['CASH_DRAWER', 'ONLINE_ACCOUNT', 'ALL']).optional(),
+  paymentAccountId: z.string().optional(),
+  createdByUserId: z.string().optional(),
+  search: z.string().optional(),
+});
+reportRoutes.get(
+  '/detailed-expenses',
+  authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'),
+  validate(detailedExpensesQuery, 'query'),
+  send((req) => r.detailedExpensesReport(req.user, req.query))
+);
+
+const inventoryReportQuery = z.object({
+  branchId: z.string().optional(),
+  type: z.enum(['valuation', 'movements', 'purchases', 'supplier-ledger', 'consumption', 'expiry', 'summary']).optional(),
+  preset: z.string().optional(),
+  startDate: ymd.optional(),
+  endDate: ymd.optional(),
+  from: ymd.optional(),
+  to: ymd.optional(),
+  supplierId: z.string().optional(),
+  itemId: z.string().optional(),
+  categoryId: z.string().optional(),
+  itemType: z.string().optional(),
+  movementType: z.string().optional(),
+  search: z.string().optional(),
+});
+reportRoutes.get(
+  '/inventory',
+  authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'),
+  validate(inventoryReportQuery, 'query'),
+  send((req) => r.inventoryReport(req.user, req.query))
+);
+
+const attendanceOvertimeQuery = z.object({
+  branchId: z.string().optional(),
+  staffId: z.string().optional(),
+  preset: z.string().optional(),
+  startDate: ymd.optional(),
+  endDate: ymd.optional(),
+  from: ymd.optional(),
+  to: ymd.optional(),
+  status: z.string().optional(),
+  otStatus: z.string().optional(),
+  search: z.string().optional(),
+});
+reportRoutes.get(
+  '/attendance-overtime',
+  authorize('SUPER_ADMIN', 'ADMIN'),
+  validate(attendanceOvertimeQuery, 'query'),
+  send((req) => r.attendanceOvertimeReport(req.user, req.query))
+);
+reportRoutes.get(
+  '/attendance',
+  authorize('SUPER_ADMIN', 'ADMIN'),
+  validate(attendanceOvertimeQuery, 'query'),
+  send((req) => r.attendanceOvertimeReport(req.user, req.query))
+);

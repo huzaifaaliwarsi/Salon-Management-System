@@ -234,10 +234,9 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
       ]);
     } else {
       const pkg = branchPackages.find((p) => p.id === itemId);
-      const defaultStaff = branchStaff.find((s) => s.id === defaultStaffId);
       const components = pkg?.components.map((c) => ({
         serviceId: c.serviceId,
-        staffId: defaultStaffId,
+        staffId: '',
       })) || [];
 
       setSelectedItems((prev) => [
@@ -246,10 +245,8 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
           lineInstanceId,
           type: 'PACKAGE',
           itemId,
-          staffId: defaultStaffId,
-          assignedStaff: defaultStaff
-            ? [{ staffId: defaultStaff.id, staffName: defaultStaff.name, staffCommissionRate: defaultStaff.commissionRate }]
-            : [],
+          staffId: '',
+          assignedStaff: [],
           packageComponents: components,
         },
       ]);
@@ -273,12 +270,12 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
     setSelectedItems((prev) =>
       prev.map((i) => {
         if (i.lineInstanceId !== lineInstanceId) return i;
-        const currentStaff = i.assignedStaff || (i.staffId ? [{ staffId: i.staffId, staffName: branchStaff.find((s) => s.id === i.staffId)?.name || 'Stylist', staffCommissionRate: branchStaff.find((s) => s.id === i.staffId)?.commissionRate || 0 }] : []);
+        const currentStaff = i.assignedStaff || [];
         if (currentStaff.some((s) => s.staffId === staffId)) return i;
         const updated = [...currentStaff, { staffId: staff.id, staffName: staff.name, staffCommissionRate: staff.commissionRate }];
         return {
           ...i,
-          staffId: updated[0]?.staffId || i.staffId,
+          staffId: updated[0]?.staffId || '',
           assignedStaff: updated,
         };
       })
@@ -290,11 +287,10 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
       prev.map((i) => {
         if (i.lineInstanceId !== lineInstanceId) return i;
         const currentStaff = i.assignedStaff || [];
-        if (currentStaff.length <= 1) return i;
         const updated = currentStaff.filter((s) => s.staffId !== staffId);
         return {
           ...i,
-          staffId: updated[0]?.staffId || i.staffId,
+          staffId: updated[0]?.staffId || '',
           assignedStaff: updated,
         };
       })
@@ -855,46 +851,39 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
                         <div className="space-y-2 pl-4 border-l-2 border-blue-400">
                           <div className="flex items-center justify-between">
                             <span className="text-[11px] font-semibold text-slate-700">
-                              Assigned Stylists ({item.assignedStaff?.length || 1}):
+                              Assigned Stylists ({item.assignedStaff?.length || 0}):
                             </span>
                             {item.assignedStaff && item.assignedStaff.length > 1 ? (
                               <span className="text-[10px] font-semibold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200/60">
                                 Equal Split ({(100 / item.assignedStaff.length).toFixed(1)}% each)
                               </span>
-                            ) : (
+                            ) : item.assignedStaff && item.assignedStaff.length === 1 ? (
                               <span className="text-[10px] text-slate-400">
                                 100% attributed
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200/60">
+                                No stylist assigned
                               </span>
                             )}
                           </div>
 
                           {/* Staff chips */}
                           <div className="flex flex-wrap gap-1.5 items-center">
-                            {(item.assignedStaff && item.assignedStaff.length > 0
-                              ? item.assignedStaff
-                              : [
-                                  {
-                                    staffId: item.staffId || branchStaff[0]?.id,
-                                    staffName: branchStaff.find((s) => s.id === item.staffId)?.name || 'Stylist',
-                                    staffCommissionRate: branchStaff.find((s) => s.id === item.staffId)?.commissionRate || 0,
-                                  },
-                                ]
-                            ).map((st) => (
+                            {(item.assignedStaff || []).map((st) => (
                               <span
                                 key={st.staffId}
                                 className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 hover:bg-slate-200/80 text-slate-800 rounded-md text-xs font-medium border border-slate-200 transition-colors"
                               >
                                 <span>{st.staffName}</span>
-                                {item.assignedStaff && item.assignedStaff.length > 1 && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRemoveStaffFromPackage(item.lineInstanceId, st.staffId)}
-                                    className="ml-1 text-slate-400 hover:text-rose-600 focus:outline-hidden"
-                                    title="Remove staff"
-                                  >
-                                    <X className="w-3 h-3" />
-                                  </button>
-                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveStaffFromPackage(item.lineInstanceId, st.staffId)}
+                                  className="ml-1 text-slate-400 hover:text-rose-600 focus:outline-hidden cursor-pointer"
+                                  title="Remove staff"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
                               </span>
                             ))}
 
@@ -906,7 +895,7 @@ export const BookingFormModal: React.FC<BookingFormModalProps> = ({
                               }}
                               className="px-2 py-1 bg-blue-50/60 border border-blue-200 rounded text-xs font-semibold text-[#2254E1] hover:bg-blue-100/60 cursor-pointer"
                             >
-                              <option value="">+ Add Staff...</option>
+                              <option value="">{(!item.assignedStaff || item.assignedStaff.length === 0) ? '+ Assign Staff...' : '+ Add Staff...'}</option>
                               {branchStaff
                                 .filter((s) => !item.assignedStaff?.some((as) => as.staffId === s.id))
                                 .map((st) => (

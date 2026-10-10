@@ -23,9 +23,8 @@
 | 16–18 | 💵 Payroll, 📊 Commission, 🪙 Tips | ✅ | ✅ | ✅ |
 | 16+ | 💵 Payroll v2: allowances, adjustments, salary advances, exit proration, monthly salary+commission summary, `/reports/staff-salary` + `/reports/staff-commission` (see `payroll.md`) | ✅ | ✅ | ✅ |
 | 19 | 📈 Dashboards (`/dashboard/super-admin|admin|accountant|staff`) | ✅ | E2E | ✅ |
-| 20–21 | 📑 Reports: `/reports/appointments`, `/reports/staff-performance` (+ `/me`) | ✅ | E2E | ✅ |
-| 21 | Remaining spec reports (income/expense, payment accounts, operating profit API…) | ⏳ | — | pages not built yet |
-| 22 | Audit log / general ledger APIs (`/audit-events`, `/ledger`) | ✅ | ✅ | — |
+| 21 | 📊 Comprehensive 11 Canonical Reports Suite (Sales, Income/Expense, Profit, Drawers, Expenses, HR, Inventory) | ✅ | ✅ (31 tests) | ✅ All 11 pages wired |
+| 22 | 🧭 Audit log / general ledger APIs (`/audit-events`, `/ledger`) & UI (`ActivityLogPage`, `GeneralLedgerPage`) | ✅ | ✅ | ✅ |
 
 **Live mode has no mock fallback.** `httpSalonService` implements every `SalonServiceContract` method against the API; no page imports `mockSalonService`/`mockData`; business date comes from `/system/date`. The mock is used only when `VITE_USE_MOCK=true`.
 

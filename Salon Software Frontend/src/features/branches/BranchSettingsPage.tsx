@@ -139,6 +139,8 @@ export const BranchSettingsPage: React.FC = () => {
   const [isAddAccountModalOpen, setIsAddAccountModalOpen] = useState(false);
   const [isEditAccountModalOpen, setIsEditAccountModalOpen] = useState(false);
   const [isAccountStatusAlertOpen, setIsAccountStatusAlertOpen] = useState(false);
+  const [isDeleteAccountAlertOpen, setIsDeleteAccountAlertOpen] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [selectedAccount, setSelectedAccount] = useState<PaymentAccount | null>(null);
   const [unmaskedAccountIds, setUnmaskedAccountIds] = useState<Record<string, boolean>>({});
 
@@ -361,6 +363,25 @@ export const BranchSettingsPage: React.FC = () => {
       const errMsg = err.message || 'Failed to change payment account status.';
       setErrorMessage(errMsg);
       toast.error(errMsg);
+    }
+  };
+
+  // Handler: Delete / Remove Payment Account
+  const handleDeleteAccount = async () => {
+    if (!selectedAccount) return;
+    try {
+      setIsDeletingAccount(true);
+      const result = await salonService.deletePaymentAccount(selectedAccount.id, user);
+      setSuccessMessage(result.message);
+      toast.success(result.message);
+      setIsDeleteAccountAlertOpen(false);
+      loadBranchSettings();
+    } catch (err: any) {
+      const errMsg = err.message || 'Failed to remove payment account.';
+      setErrorMessage(errMsg);
+      toast.error(errMsg);
+    } finally {
+      setIsDeletingAccount(false);
     }
   };
 
@@ -892,6 +913,17 @@ export const BranchSettingsPage: React.FC = () => {
                                       </>
                                     )}
                                   </DropdownMenuItem>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    onClick={() => {
+                                      setSelectedAccount(acc);
+                                      setIsDeleteAccountAlertOpen(true);
+                                    }}
+                                    className="text-xs cursor-pointer gap-2 text-rose-600 focus:text-rose-700 focus:bg-rose-50"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                                    Remove Account
+                                  </DropdownMenuItem>
                                 </DropdownMenuContent>
                               </DropdownMenu>
                             </TableCell>
@@ -1343,6 +1375,48 @@ export const BranchSettingsPage: React.FC = () => {
               }`}
             >
               {selectedAccount?.isActive ? 'Deactivate' : 'Activate'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* --- ALERT: REMOVE PAYMENT ACCOUNT --- */}
+      <AlertDialog open={isDeleteAccountAlertOpen} onOpenChange={setIsDeleteAccountAlertOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <div className="flex items-center gap-2 text-rose-600 mb-1">
+              <div className="w-8 h-8 rounded-lg bg-rose-100 flex items-center justify-center">
+                <Trash2 className="w-4 h-4 text-rose-600" />
+              </div>
+              <AlertDialogTitle className="text-base font-bold text-slate-900">
+                Remove Payment Account?
+              </AlertDialogTitle>
+            </div>
+            <AlertDialogDescription className="text-xs text-slate-500 leading-relaxed">
+              Are you sure you want to remove <strong>'{selectedAccount?.name}'</strong>?
+              <br /><br />
+              <span className="text-slate-600 block bg-slate-50 border border-slate-200 rounded p-2.5">
+                <strong>Financial Safety Rule:</strong> If this account has never recorded any transactions, it will be permanently deleted. If it has transaction history or an opening balance, it will be deactivated and archived to preserve your financial ledgers and audit records.
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeletingAccount} className="text-xs">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isDeletingAccount}
+              onClick={handleDeleteAccount}
+              className="text-xs bg-rose-600 hover:bg-rose-700 text-white gap-1.5"
+            >
+              {isDeletingAccount ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  Removing...
+                </>
+              ) : (
+                'Confirm Remove'
+              )}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

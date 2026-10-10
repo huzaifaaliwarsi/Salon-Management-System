@@ -182,6 +182,39 @@ export const togglePaymentAccount = async (id, actor) => {
   return updatePaymentAccount(id, { isActive: !account.isActive }, actor);
 };
 
+export const deletePaymentAccount = async (id, actor) => {
+  return prisma.$transaction(async (tx) => {
+    const account = await tx.paymentAccount.findUnique({ where: { id } });
+    if (!account) throw notFound('ACCOUNT_NOT_FOUND', `Payment account '${id}' not found.`);
+    assertBranchAccess(actor, account.branchId, 'Access Denied: Cannot delete payment account from another branch.');
+
+    const movementCount = await tx.accountMovement.count({ where: { accountId: id } });
+    const hasOpeningBalance = Number(account.openingBalance) !== 0;
+    if (movementCount > 0 || hasOpeningBalance) {
+      const updated = await tx.paymentAccount.update({
+        where: { id },
+        data: { isActive: false },
+      });
+      await audit(tx, actor, 'PAYMENT_ACCOUNT_ARCHIVED', 'PaymentAccount', id, account.branchId, account, updated);
+      return {
+        id,
+        deleted: false,
+        archived: true,
+        message: `Account '${account.name}' has balance or transaction movements and cannot be permanently deleted. It has been deactivated and archived instead.`,
+      };
+    }
+
+    await tx.paymentAccount.delete({ where: { id } });
+    await audit(tx, actor, 'PAYMENT_ACCOUNT_DELETED', 'PaymentAccount', id, account.branchId, account, null);
+    return {
+      id,
+      deleted: true,
+      archived: false,
+      message: `Payment account '${account.name}' removed successfully.`,
+    };
+  });
+};
+
 // ═══ EXPENSE CATEGORIES ═══════════════════════════════════════════════════════
 
 export const listExpenseCategories = async (actor, branchId) => {

@@ -51,7 +51,7 @@ const toPayslipDTO = (ps, run) => {
     ...ps.snapshot, id: ps.id, payrollRunId: ps.runId, payslipNumber: ps.payslipNumber, netPayable: net.toNumber(),
     salaryNetPayable: num(ps.netPayable), salaryPaidAmount: salaryPaid.toNumber(), commissionPayable: commission.toNumber(), combinedNetPayable: net.toNumber(),
     paidAmount: paid.toNumber(), outstandingAmount: outstanding.toNumber(), status,
-    calculationDetails: { ...snapshot.calculationDetails, formula },
+    calculationDetails: { ...snapshot.calculationDetails, formula: snapshot.calculationDetails?.monthlyCalculationVersion === 2 ? `${snapshot.calculationDetails.formula}; Commission (Rs. ${money(commission)}); Combined Net (Rs. ${money(net)})` : formula },
     payments: (ps.payments ?? []).sort((a, b) => a.paidAt - b.paidAt).map(toPaymentDTO),
   };
 };
@@ -114,8 +114,10 @@ const evaluateBranchMonth = async (tx, actor, branchId, month, staffId, options 
   });
 
   const alreadyFinalizedByStaff = new Map();
+  const finalizedBaseByStaff = new Map();
   for (const fr of finalizedRuns) {
     for (const ps of fr.payslips) {
+      finalizedBaseByStaff.set(ps.staffId, round2(toDec(finalizedBaseByStaff.get(ps.staffId) || 0).plus(ps.snapshot?.baseEarnings || 0)).toNumber());
       if (!alreadyFinalizedByStaff.has(ps.staffId)) {
         alreadyFinalizedByStaff.set(ps.staffId, new Set());
       }
@@ -184,6 +186,7 @@ const evaluateBranchMonth = async (tx, actor, branchId, month, staffId, options 
         endDate,
         runType,
         alreadyFinalizedDates: staffFinalizedDates,
+        alreadyFinalizedBaseEarnings: finalizedBaseByStaff.get(s.id) || 0,
       }
     );
 

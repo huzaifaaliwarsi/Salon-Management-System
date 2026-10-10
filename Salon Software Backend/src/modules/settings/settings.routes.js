@@ -27,6 +27,7 @@ paymentAccountRoutes.get('/',            authorize(...BACK_OFFICE), validate(v.b
 paymentAccountRoutes.post('/',           authorize(...ADMINS), validate(v.createPaymentAccountSchema), c.createPaymentAccount);
 paymentAccountRoutes.put('/:id',         authorize(...ADMINS), validate(v.updatePaymentAccountSchema), c.updatePaymentAccount);
 paymentAccountRoutes.post('/:id/toggle', authorize(...ADMINS), c.togglePaymentAccount);
+paymentAccountRoutes.delete('/:id',      authorize(...ADMINS), c.deletePaymentAccount);
 
 // ── /online-accounts (legacy read-only view of payment accounts) ─────────────
 export const onlineAccountRoutes = Router();

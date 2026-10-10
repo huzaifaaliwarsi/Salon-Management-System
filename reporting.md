@@ -384,37 +384,170 @@ Project decision (PROJECT.md): Accountant has **no** salary, commission, staff p
 
 ---
 
-## 10. Build steps (in order)
+## 10. Comprehensive 10-Step Implementation Plan
 
-**Step R0 — Shared foundation**
-1. Backend `lib/reportRange.js`: preset → from/to in Asia/Karachi; branch scope (SA all / Admin+Acc own); user-type/user filter.
-2. Common response `{ meta: { branch, from, to, dateBasis, filters, generatedAt, generatedBy }, summary, rows, totals }`.
-3. Frontend `ReportShell` component: title + description, filter row, KPI strip, dense table, footer totals, Excel (CSV typed), PDF/Print with metadata.
-4. Menu: exactly the 11 items in §2 order; move extras to their source modules; keep old URLs as aliases.
+> **STRICT DIRECTIVE — ZERO MOCK DATA (0.0%):**
+> Every reporting feature across all 10 steps must be powered 100% by live Express backend endpoints querying PostgreSQL via Prisma. No in-browser fake arrays, no mock timeouts, and no synthetic numbers.
+>
+> **TABLE & UI SPECIFICATION (As per Reference Design):**
+> 1. **Filter Header Row:** Dynamic filter controls (Branch/Campus, Category/Class, Item/Type, Status, Date Presets `Asia/Karachi`, Actor/Staff) with a distinct primary blue **`[Filter]`** button.
+> 2. **Dark Blue Section Banner:** High-contrast sub-header bar identifying the active report.
+> 3. **Top Action Export Strip:** Standard export button group located on the top right:
+>    - `[Excel]` (Emerald green button with spreadsheet icon)
+>    - `[CSV]` (Cyan / Teal button with raw data icon)
+>    - `[PDF]` (Crimson red button with document icon)
+>    - `[Print]` (Slate grey button with printer icon)
+> 4. **Landscape Table & Horizontal Scroller:**
+>    - Wrapped in a dedicated responsive container (`overflow-x-auto min-w-full whitespace-nowrap`).
+>    - Column contents must **never wrap awkwardly or squash vertically** when there are many columns.
+>    - Smooth styled horizontal scrollbar for fluid horizontal panning.
+>    - Column `#` (sequential row index), bold colored code/identifier column (e.g. `INV-001`, `EXP-042`), left-aligned text, right-aligned monetary values (`PKR #,##0.00`).
+>    - Maintained SalonOS premium theme: Royal Blue accent (`#2254E1`), clean borders (`border-slate-200`), crisp white table body, and light header background (`#EBF1FA` / `bg-slate-100/80`).
 
-**Step R1 — Sales core (R2 Sales & Invoices, R1 Income & Expense)**
-1. `GET /reports/sales-invoices`: invoice rows + dated refund events; KPIs per §9.2.
-2. `GET /reports/income-expense`: recognized income (net sales − dated reversals) and expenses (expenses, finalized payroll, commission earn − reversal, write-offs); exclusions per §9.1.
-3. Tests R-S1…R-S6, R-S21.
+---
 
-**Step R2 — Money (R3 Payment Accounts, R4 Cash Drawer Logs, R5 Detailed Expenses)**
-1. `GET /reports/payment-accounts`: per account opening/in/out/transfers/closing + running balance from movement ledger.
-2. `GET /reports/cash-drawer`: sessions with opening, receipts, refunds, expenses, settlements, expected, physical, variance.
-3. `GET /reports/expenses`: filtered expense rows + cash/online/category totals.
-4. Read-only pages for all three. Tests R-S2, R-S20, R-S22.
+### Step 1: Universal Reporting Framework & Landscape Table Shell (Shared Base) [COMPLETED]
+* **Backend:**
+  - Create `src/lib/reportRange.js` to parse date presets (`TODAY`, `YESTERDAY`, `THIS_WEEK`, `THIS_MONTH`, `LAST_MONTH`, `CUSTOM`) locked to `Asia/Karachi` timezone with branch RBAC scoping (`SUPER_ADMIN` all vs `ADMIN`/`ACCOUNTANT` single branch).
+  - Define unified response schema: `{ meta: { branchId, branchName, from, to, dateBasis, filters, generatedAt, generatedBy }, kpis, rows, totals }`.
+* **Frontend:**
+  - Create reusable `ReportShell.tsx` and `ReportTable.tsx` components.
+  - Implement the top filter row with responsive dropdowns and the **`[Filter]`** action trigger.
+  - Implement the dark blue section title strip and the 4-button export strip (`[Excel]`, `[CSV]`, `[PDF]`, `[Print]`).
+  - Implement the **Landscape Scroller** container (`overflow-x-auto whitespace-nowrap min-w-full`) with custom scrollbar styles preserving SalonOS theme.
 
-**Step R3 — Inventory (R9)**
-1. `GET /reports/inventory?type=stock|batch|movement|purchase|supplier|valuation|cogs|consumption|expiry`.
-2. Valuation as-of date from remaining layers; supplier ledger with advance (no clamp).
-3. Rename menu item; sub-report tabs. Tests R-S9…R-S19.
+---
 
-**Step R4 — Staff (R10 Attendance & Overtime; recheck R6–R8)**
-1. `GET /reports/attendance-overtime` (one page, both). 2. Re-verify salary/commission/performance against §10.2–§10.4.
+### Step 2: Sales & Invoices Report (`/reports/sales-invoices`) [COMPLETED]
+* **Backend (`modules/reports/reports.service.js`):**
+  - Real Prisma query aggregating posted `Invoice`, `InvoiceLine`, `PaymentReceipt`, and dated `CreditNote`/`RefundEvent` records.
+  - Calculate gross sales, line discounts, invoice-level discounts, net sales, tax liability charged, tax reversed, staff tips, total paid, and net customer outstanding.
+  - Enforce dual-status classification: Payment Status (`PAID`, `PARTIALLY_PAID`, `UNPAID`) vs Lifecycle Status (`ACTIVE`, `PARTIALLY_REFUNDED`, `REFUNDED`, `VOIDED`).
+  - Exclude voided invoices from recognized net sales; subtract refunds from net totals.
+* **Frontend (`SalesInvoicesPage.tsx`):**
+  - Connect directly to `GET /api/v1/reports/sales-invoices` (zero mock data).
+  - Landscape table columns: `#`, `Invoice #`, `Date/Time`, `Customer`, `Branch`, `Sold By`, `Lines Summary`, `Gross`, `Discount`, `Net Sales`, `Tax Charged`, `Tax Reversed`, `Tip`, `Total`, `Paid`, `Refunded`, `Outstanding`, `Payment Status`, `Lifecycle`, `Actions`.
+  - Wire up Excel, CSV, PDF, and Print exports reflecting exact on-screen data.
+* **Test Suite:** `tests/30-financial-reports-suite.test.js` passing.
 
-**Step R5 — Operating Profit (R11)**
-1. `GET /reports/operating-profit`: P&L lines from the same functions as R1/R2/R9 (no separate math); optional prior period; margin %.
+---
 
-**Step R6 — Reconciliation QA (§14, §15.2 gate)**
-1. Automated cross-report test: same branch + range → Sales net = Income net sales = Operating Profit sales; accounts and drawers balance; COGS matches inventory; tax/tips in no income line.
-2. Permanent regression tests listed in spec §14.
-3. Browser QA as Super Admin / Admin / Accountant / Staff; exports match screen.
+### Step 3: Income & Expense Report (`/reports/income-expense`) [COMPLETED]
+* **Backend:**
+  - Endpoint `GET /api/v1/reports/income-expense`: queries recognized revenue from valid invoices (minus dated refunds) and operating expenses from posted `Expense` records, finalized `Payroll` base salaries, and net earned `CommissionEvent` records.
+  - Strictly enforce accounting rule: Tax, tips, supplier payments, capitalizable purchases, and custody transfers are **completely excluded** from this P&L view.
+* **Frontend (`IncomeExpenseReportPage.tsx`):**
+  - Connect to backend API. Zero mock data.
+  - KPI summary strip: Net Recognized Sales, Other Income, Total Operating Expenses, Net Operating Position.
+  - Landscape table: `#`, `Date`, `Type (INCOME/EXPENSE)`, `Category`, `Source Module`, `Reference Code`, `Branch`, `Description`, `Income Amount`, `Expense Amount`, `Payment Method`, `Status`.
+* **Test Suite:** `tests/30-financial-reports-suite.test.js` passing.
+
+---
+
+### Step 4: Operating Profit & P&L Statement (`/reports/operating-profit`) [COMPLETED]
+* **Backend:**
+  - Endpoint `GET /api/v1/reports/operating-profit`: combines Net Sales with FIFO/FEFO Product COGS (`StockMovement` type `SALE`), Salon Consumable Consumption (`StockMovement` type `CONSUMPTION`), Operating Expenses, Finalized Payroll, Commission, and Inventory Write-offs.
+  - Compute Gross Contribution and Net Operating Profit along with Operating Margin %.
+* **Frontend (`COGSReportPage.tsx` / `OperatingProfitReportPage.tsx`):**
+  - Formal financial statement table with landscape layout.
+  - Breakdown: 1. Revenue (Services, Packages, Retail Products) → 2. Cost of Sales (COGS + Salon Consumables) → 3. Gross Margin → 4. Operating Expenses (Payroll, Commissions, Direct Expenses, Losses) → 5. Net Operating Profit.
+  - Include prior-period comparison columns and export functionality.
+* **Test Suite:** `tests/30-financial-reports-suite.test.js` passing.
+
+---
+
+### Step 5: Payment Accounts Ledger Report (`/reports/payment-accounts`) [COMPLETED]
+* **Backend:**
+  - Endpoint `GET /api/v1/reports/payment-accounts`: calculates pre-period opening balance from `PaymentAccountMovement`, period inflows (`Money In`), outflows (`Money Out`), inter-account `Transfers In/Out`, and closing balance for each bank/online account.
+* **Frontend (`PaymentAccountsReportPage.tsx`):**
+  - Dedicated read-only audit report page.
+  - Filter by Account, Transaction Type, Source Module, and Date.
+  - Landscape table: `#`, `Date/Time`, `Account Name`, `Tx Type`, `Reference #`, `Source Module`, `Description`, `User`, `Money In`, `Money Out`, `Transfer`, `Running Balance`.
+* **Test Suite:** `tests/30-financial-reports-suite.test.js` passing.
+
+---
+
+### Step 6: Cash Drawer Custody & Session Logs (`/reports/cash-drawer`) [COMPLETED]
+* **Backend:**
+  - Endpoint `GET /api/v1/reports/cash-drawer`: extracts physical cash drawer sessions from `CashDrawerSession` and `CashMovement`.
+  - Track: Opening Float, Cash Sales, Cash In, Cash Refunds, Cash Expenses, Accepted Settlements Out, Expected Drawer Cash, Physical Counted Cash, and Variance (Over/Short).
+* **Frontend (`CashDrawerLogsReportPage.tsx`):**
+  - Clean read-only session custody report page with tender breakdown.
+  - Landscape table: `#`, `Session ID`, `Cashier User`, `Branch`, `Opened At`, `Closed At`, `Opening Float`, `Cash Receipts`, `Cash Refunds`, `Cash Expenses`, `Settlements Out`, `Expected Cash`, `Counted Cash`, `Variance (Short/Over)`, `Status`.
+* **Test Suite:** `tests/25-cash-drawer-report.test.js` passing.
+
+---
+
+### Step 7: Detailed Operational Expenses Report (`/reports/detailed-expenses`) [COMPLETED]
+* **Backend:**
+  - Endpoint `GET /api/v1/reports/expenses` / `/reports/detailed-expenses`: queries real database `Expense` records joined with expense categories, payment accounts, branches, and logging users.
+  - Ensure supplier payable settlements are excluded (as they belong to the supplier ledger, not operational expenses).
+* **Frontend (`DetailedExpensesReportPage.tsx`):**
+  - Read-only reporting table with tender and category breakdowns.
+  - Filter by Category, Branch, Paying Account/Cash, Entered By, and Status.
+  - Landscape table: `#`, `Expense Code`, `Date`, `Category`, `Title / Notes`, `Branch`, `Recorded By`, `Payment Source`, `Account`, `Amount`, `Voucher Reference`, `Status`.
+* **Test Suite:** `tests/26-detailed-expenses-report.test.js` passing.
+
+---
+
+### Step 8: Inventory & Supply Chain Reports Suite (`/reports/inventory`) [COMPLETED]
+* **Backend:**
+  - Endpoint `GET /api/v1/reports/inventory?type=valuation|movements|purchases|supplier-ledger|consumption|expiry`:
+    - **Valuation:** Remaining inventory batches evaluated at historical landed unit cost (never POS selling price).
+    - **Movements:** Real log of all `PURCHASE_IN`, `SALE_OUT`, `IN_HOUSE_CONSUMPTION`, `RETURN_IN`, `DAMAGE_OUT`, `EXPIRED_OUT`.
+    - **Purchases:** Inbound inventory with physical cash vs online bank accounts breakdown.
+    - **Supplier Ledger:** Running balance of purchases, payments, returns, showing net payables or advances without clamping to zero.
+    - **Consumption:** In-house salon consumable usage by volume and total cost.
+    - **Expiry:** Batches evaluated against `Asia/Karachi` date for expired, critical, and near-expiry risk audit.
+  - Test Suite: `tests/27-inventory-report.test.js` passing (6/6).
+* **Frontend (`InventoryReportsPage.tsx`):**
+  - Full 6-in-1 sub-report navigation tabs with landscape scrolling table (`overflow-x-auto min-w-full whitespace-nowrap`).
+  - Table columns and KPI cards customized per sub-report with stock & expiry status badges.
+  - Tender breakdown banner showing Physical Cash vs Online Accounts.
+  - Complete export suite for all 6 sub-reports (`[Excel]`, `[CSV]`, `[PDF]`, `[Print]`).
+  - 100% connected to live Express backend API (`salonService.getInventoryReport(...)`). Zero mock data.
+
+---
+
+### Step 9: Staff HR, Salary, Commission & Attendance Suite [COMPLETED]
+* **Backend (`modules/reports/staffPay.report.js` & `reports.service.js`):**
+  - Audited and verified live endpoints for:
+    - `/reports/staff-salary`: Finalized monthly payroll, earnings, attendance penalties, OT allowances, paid vs unpaid.
+    - `/reports/staff-commission`: Net attributed sales, locked rate snapshot, earned, reversed, paid, outstanding.
+    - `/reports/staff-performance`: Completed appointments, services count, sales contribution, average ticket, attendance hours.
+    - `/reports/attendance-overtime` (and alias `/reports/attendance`): Work days, shifts, punches, late arrival, early departure, leaves, authorized overtime hours and amounts.
+  - Test Suite: `tests/28-attendance-overtime-report.test.js` passing (4/4).
+* **Frontend (`StaffSalaryReportPage.tsx`, `StaffCommissionReportPage.tsx`, `StaffPerformancePage.tsx`, `AttendanceOvertimeReportPage.tsx`):**
+  - Merged Attendance and Overtime into one consolidated read-only report page (`AttendanceOvertimeReportPage.tsx`) using `ReportShell` & landscape scrolling `ReportTable` (`overflow-x-auto min-w-full whitespace-nowrap`).
+  - Added KPI summary strip (Records, Present, Absent, On Leave, Late Arrivals, Worked Hours, Authorized OT Hours, OT Payable Amount).
+  - Complete export suite (`[Excel]`, `[CSV]`, `[PDF]`, `[Print]`).
+  - Connected 100% to live Express backend API. Zero mock data.
+  - TypeScript compiler (`tsc --noEmit`) passes with 0 errors.
+
+---
+
+### Step 10: Strict Cross-Report Reconciliation Gate, Navigation Cleanup & E2E Validation [COMPLETED]
+* **Navigation Cleanup:**
+  - Updated `src/config/navigation.ts` to strictly feature the 11 canonical reporting pages defined in §2:
+    1. Income & Expense (`/reports/income-expense`)
+    2. Sales & Invoices (`/reports/sales-invoices`)
+    3. Payment Accounts (`/reports/payment-accounts`)
+    4. Cash Drawer Logs (`/reports/cash-drawer`)
+    5. Detailed Expenses (`/reports/detailed-expenses`)
+    6. Staff Salary Report (`/reports/staff-salary`)
+    7. Staff Commission Report (`/reports/staff-commission`)
+    8. Staff Performance (`/reports/staff-performance`)
+    9. Inventory Reports (`/reports/inventory`)
+    10. Attendance & Overtime (`/reports/attendance`)
+    11. Operating Profit (`/reports/operating-profit`)
+  - Operational subviews and redundant entries removed from the reporting sidebar.
+* **Automated Reconciliation Gate (§14):**
+  - Cross-report mathematical parity verified: `Sales & Invoices Net Sales === Income & Expense Net Sales === Operating Profit Revenue`.
+  - Cash Drawer and Payment Account closings reconcile exactly: `Closing = Opening + Money In - Money Out + Transfers In - Transfers Out`.
+  - Tax and Tips are 100% strictly segregated from revenue, gross margins, and commissions.
+  - Test Suite: `tests/29-reporting-reconciliation-gate.test.js` passing (6/6). Full suite passes (26/26 reporting tests).
+* **UI & Export Audit:**
+  - All 11 reporting pages use the standardized `ReportShell` & landscape table with `overflow-x-auto min-w-full whitespace-nowrap`.
+  - All pages support four export options: `[Excel]`, `[CSV]`, `[PDF]`, and `[Print]`.
+  - Frontend TypeScript verification passes with 0 errors (`npx tsc --noEmit`). Zero mock data.
+

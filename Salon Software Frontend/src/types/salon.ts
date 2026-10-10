@@ -1859,6 +1859,351 @@ export interface StaffCommissionReportStaff {
   outstanding: number;
 }
 
+export type InvoiceLifecycle = 'ACTIVE' | 'PARTIALLY_REFUNDED' | 'REFUNDED' | 'VOIDED';
+
+export interface SalesInvoiceReportRow {
+  id: string;
+  invoiceNumber: string;
+  date: string;
+  time: string;
+  branchId: string;
+  branchName: string;
+  clientId?: string;
+  clientName: string;
+  clientPhone: string;
+  customerSource?: CustomerSource;
+  soldByUserId: string;
+  soldByName: string;
+  staffSummary: string;
+  linesSummary: string;
+  paymentMethod: string;
+  paymentStatus: InvoiceStatus;
+  lifecycle: InvoiceLifecycle;
+  gross: number;
+  discount: number;
+  netSales: number;
+  taxCharged: number;
+  taxReversed: number;
+  netTaxLiability: number;
+  tip: number;
+  total: number;
+  paid: number;
+  refunded: number;
+  outstanding: number;
+  notes?: string;
+  refundCount: number;
+}
+
+export interface SalesInvoicesReportKPIs {
+  totalInvoices: number;
+  grossSales: number;
+  totalDiscounts: number;
+  netSales: number;
+  taxCharged: number;
+  taxReversed: number;
+  netTaxLiability: number;
+  tipsCollected: number;
+  invoiceTotal: number;
+  totalPaid: number;
+  totalRefunded: number;
+  totalOutstanding: number;
+  activeCount: number;
+  partiallyRefundedCount: number;
+  refundedCount: number;
+  voidedCount: number;
+}
+
+export interface SalesInvoicesReportQuery {
+  branchId?: string;
+  preset?: string;
+  startDate?: string;
+  endDate?: string;
+  from?: string;
+  to?: string;
+  search?: string;
+  paymentStatus?: 'PAID' | 'PARTIAL' | 'UNPAID' | 'ALL';
+  lifecycle?: 'ACTIVE' | 'PARTIALLY_REFUNDED' | 'REFUNDED' | 'VOIDED' | 'ALL';
+  paymentMethod?: string;
+  staffId?: string;
+  clientId?: string;
+}
+
+export interface SalesInvoicesReport {
+  meta: {
+    branchId: string;
+    branchName: string;
+    from: string;
+    to: string;
+    preset: string;
+    dateBasis: string;
+    timezone: string;
+    generatedAt: string;
+    generatedBy: string;
+  };
+  kpis: SalesInvoicesReportKPIs;
+  tenderBreakdown?: TenderBreakdown;
+  rows: SalesInvoiceReportRow[];
+  totals: Record<string, number>;
+}
+
+export type IncomeExpenseItemType =
+  | 'INCOME'
+  | 'OPERATING_EXPENSE'
+  | 'SALARY_EXPENSE'
+  | 'COMMISSION_EXPENSE'
+  | 'INVENTORY_WRITEOFF';
+
+export interface IncomeExpenseReportRow {
+  id: string;
+  date: string;
+  type: IncomeExpenseItemType;
+  category: string;
+  source: 'POS_INVOICE' | 'INVOICE_REFUND' | 'EXPENSE_VOUCHER' | 'PAYROLL' | 'COMMISSION' | 'INVENTORY';
+  reference: string;
+  branchId: string;
+  branchName: string;
+  userOrPayee: string;
+  description: string;
+  income: number;
+  expense: number;
+  paymentMethod: string;
+  status: string;
+}
+
+export interface IncomeExpenseReportKPIs {
+  totalRecognizedIncome: number;
+  directExpenses: number;
+  salaryExpenses: number;
+  commissionExpenses: number;
+  inventoryLoss: number;
+  totalOperatingExpenses: number;
+  netOperatingPosition: number;
+  operatingMarginPercent: number;
+  totalTransactions: number;
+}
+
+export interface IncomeExpenseReportQuery {
+  branchId?: string;
+  preset?: string;
+  startDate?: string;
+  endDate?: string;
+  from?: string;
+  to?: string;
+  type?: string;
+  category?: string;
+  status?: string;
+  paymentMethod?: string;
+  search?: string;
+}
+
+export interface IncomeExpenseReport {
+  meta: {
+    branchId: string;
+    branchName: string;
+    from: string;
+    to: string;
+    preset: string;
+    dateBasis: string;
+    timezone: string;
+    generatedAt: string;
+    generatedBy: string;
+  };
+  kpis: IncomeExpenseReportKPIs;
+  rows: IncomeExpenseReportRow[];
+  totals: {
+    income: number;
+    expense: number;
+    net: number;
+  };
+  categories: string[];
+}
+
+export interface OperatingProfitStatementRow {
+  id: string;
+  name: string;
+  section: 'REVENUE' | 'COGS' | 'GROSS_PROFIT' | 'EXPENSE' | 'NET_PROFIT';
+  isHeader?: boolean;
+  isSubItem?: boolean;
+  isTotal?: boolean;
+  isMajorTotal?: boolean;
+  isFinalNet?: boolean;
+  isDeduction?: boolean;
+  currentAmount: number;
+  percentOfRevenue: number;
+  priorAmount: number;
+  growthPercent: number | null;
+}
+
+export interface OperatingProfitDetailRow {
+  id: string;
+  accountName: string;
+  classification: string;
+  department: string;
+  currentAmount: number;
+  percentOfRevenue: number;
+  priorAmount: number;
+  varianceAmount: number;
+  growthPercent: number | null;
+  notes: string;
+}
+
+export interface OperatingProfitKPIs {
+  totalNetRevenue: number;
+  serviceSales: number;
+  packageSales: number;
+  productSales: number;
+  totalCostOfSales: number;
+  productCogs: number;
+  materialConsumption: number;
+  grossContribution: number;
+  grossMarginPercent: number;
+  totalOperatingExpenses: number;
+  directExpenses: number;
+  salaryExpenses: number;
+  commissionExpenses: number;
+  inventoryLoss: number;
+  netOperatingProfit: number;
+  operatingMarginPercent: number;
+  priorNetRevenue: number;
+  priorGrossContribution: number;
+  priorOperatingProfit: number;
+  revenueGrowthPercent: number | null;
+  profitGrowthPercent: number | null;
+}
+
+export interface OperatingProfitReportQuery {
+  branchId?: string;
+  preset?: string;
+  startDate?: string;
+  endDate?: string;
+  from?: string;
+  to?: string;
+}
+
+export interface OperatingProfitReport {
+  meta: {
+    branchId: string;
+    branchName: string;
+    from: string;
+    to: string;
+    preset: string;
+    dateBasis: string;
+    timezone: string;
+    generatedAt: string;
+    generatedBy: string;
+    priorFrom: string;
+    priorTo: string;
+  };
+  kpis: OperatingProfitKPIs;
+  statementRows: OperatingProfitStatementRow[];
+  rows: OperatingProfitDetailRow[];
+  totals: {
+    revenue: number;
+    costOfSales: number;
+    grossMargin: number;
+    operatingExpenses: number;
+    netProfit: number;
+  };
+}
+
+export interface PaymentAccountSummaryItem {
+  accountId: string;
+  accountName: string;
+  accountType: 'BANK' | 'EASYPAISA' | 'JAZZCASH' | 'OTHER';
+  providerName: string;
+  accountHolder: string;
+  accountIdentifier?: string | null;
+  branchId: string;
+  branchName: string;
+  openingBalance: number;
+  moneyIn: number;
+  moneyOut: number;
+  transfersIn: number;
+  transfersOut: number;
+  netMovement: number;
+  closingBalance: number;
+  transactionCount: number;
+}
+
+export interface PaymentAccountMovementRow {
+  id: string;
+  date: string;
+  time: string;
+  createdAt: string;
+  accountId: string;
+  accountName: string;
+  accountType: string;
+  providerName: string;
+  branchId: string;
+  branchName: string;
+  type: string;
+  direction: 'IN' | 'OUT';
+  reference: string;
+  sourceModule: string;
+  description: string;
+  userName: string;
+  moneyIn: number;
+  moneyOut: number;
+  transfer: number;
+  amount: number;
+  runningBalance: number;
+}
+
+export interface PaymentAccountsReportKPIs {
+  totalOpeningBalance: number;
+  totalMoneyIn: number;
+  totalMoneyOut: number;
+  totalTransfersIn: number;
+  totalTransfersOut: number;
+  totalClosingBalance: number;
+  netMovement: number;
+  transactionCount: number;
+  accountsCount: number;
+}
+
+export interface PaymentAccountsReportQuery {
+  branchId?: string;
+  accountId?: string;
+  preset?: string;
+  startDate?: string;
+  endDate?: string;
+  from?: string;
+  to?: string;
+  transactionType?: string;
+  direction?: string;
+  sourceModule?: string;
+  search?: string;
+}
+
+export interface PaymentAccountsReport {
+  meta: {
+    branchId: string;
+    branchName: string;
+    from: string;
+    to: string;
+    preset: string;
+    dateBasis: string;
+    timezone: string;
+    generatedAt: string;
+    generatedBy: string;
+  };
+  kpis: PaymentAccountsReportKPIs;
+  rows: PaymentAccountMovementRow[];
+  accountsSummary: PaymentAccountSummaryItem[];
+  totals: {
+    opening: number;
+    moneyIn: number;
+    moneyOut: number;
+    transferIn: number;
+    transferOut: number;
+    closing: number;
+    netMovement: number;
+  };
+}
+
+
+
+
 export interface StaffCommissionReport {
   filters: Record<string, string | undefined>;
   dateBasis: string;
@@ -2185,3 +2530,451 @@ export interface TipsStatementSummary {
   allocationsCount: number;
   payoutsCount: number;
 }
+
+export interface OnlineAccountBreakdownItem {
+  accountId?: string;
+  accountName: string;
+  accountType?: string;
+  providerName?: string;
+  amount: number;
+  count?: number;
+}
+
+export interface TenderBreakdown {
+  totalCash: number;
+  totalOnline: number;
+  grandTotal: number;
+  onlineAccounts: OnlineAccountBreakdownItem[];
+}
+
+export interface CashDrawerReportKPIs {
+  totalSessions: number;
+  openSessionsCount: number;
+  settledSessionsCount: number;
+  pendingSessionsCount: number;
+  totalOpeningFloat: number;
+  totalCashSales: number;
+  totalDuesCollected: number;
+  totalCashTips: number;
+  totalCashIn: number;
+  totalCashRefunds: number;
+  totalCashExpenses: number;
+  totalSettlementsOut: number;
+  totalCashOut: number;
+  totalExpectedCash: number;
+  totalCountedCash: number;
+  totalVariance: number;
+  totalPhysicalCashCollected: number;
+  totalOnlineCollected: number;
+  grandTotalCollections: number;
+}
+
+export interface CashDrawerReportRow {
+  id: string;
+  sessionCode: string;
+  branchId: string;
+  branchName: string;
+  kind: string;
+  custodianUserId: string | null;
+  custodianName: string;
+  date: string;
+  openedAt: string;
+  closedAt: string | null;
+  status: 'OPEN' | 'SETTLEMENT_PENDING' | 'SETTLED';
+  openingFloat: number;
+  cashSales: number;
+  duesCollected: number;
+  cashTips: number;
+  otherCashIn: number;
+  totalCashIn: number;
+  cashRefunds: number;
+  cashExpenses: number;
+  settlementsOut: number;
+  otherCashOut: number;
+  totalCashOut: number;
+  expectedCash: number;
+  countedCash: number | null;
+  variance: number;
+  onlineTotal: number;
+  onlineBreakdown: { accountName: string; amount: number }[];
+  latestSettlement?: {
+    id: string;
+    status: string;
+    handoverAmount: number;
+    retainedFloat: number;
+    reviewedByName?: string;
+  } | null;
+  movementCount: number;
+}
+
+export interface CashDrawerReportQuery {
+  branchId?: string;
+  preset?: string;
+  startDate?: string;
+  endDate?: string;
+  from?: string;
+  to?: string;
+  custodianUserId?: string;
+  status?: string;
+  search?: string;
+}
+
+export interface CashDrawerReport {
+  meta: {
+    branchId: string;
+    branchName: string;
+    from: string;
+    to: string;
+    preset: string;
+    dateBasis: string;
+    timezone: string;
+    generatedAt: string;
+    generatedBy: string;
+  };
+  kpis: CashDrawerReportKPIs;
+  tenderBreakdown: TenderBreakdown;
+  rows: CashDrawerReportRow[];
+  totals: {
+    openingFloat: number;
+    cashSales: number;
+    cashIn: number;
+    cashRefunds: number;
+    cashExpenses: number;
+    settlementsOut: number;
+    cashOut: number;
+    expectedCash: number;
+    countedCash: number;
+    variance: number;
+    onlineTotal: number;
+  };
+}
+
+export interface DetailedExpenseCategoryItem {
+  categoryName: string;
+  amount: number;
+}
+
+export interface DetailedExpensesReportKPIs {
+  totalExpenses: number;
+  cashExpenses: number;
+  onlineExpenses: number;
+  totalVouchersCount: number;
+  postedCount: number;
+  reversedCount: number;
+  draftCount: number;
+  categoryCount: number;
+}
+
+export interface DetailedExpenseRow {
+  id: string;
+  voucherNumber: string;
+  date: string;
+  time: string;
+  branchId: string;
+  branchName: string;
+  category: string;
+  title: string;
+  payee: string;
+  description: string;
+  amount: number;
+  paymentSource: 'CASH_DRAWER' | 'ONLINE_ACCOUNT' | string;
+  paymentAccountId?: string | null;
+  paymentAccountName?: string | null;
+  status: 'DRAFT' | 'POSTED' | 'REVERSED';
+  externalReference: string;
+  notes: string;
+  createdByUserId: string;
+  createdByName: string;
+  paidByName: string;
+  isReversalRecord: boolean;
+  reversalReason: string;
+  reversedByName: string;
+}
+
+export interface DetailedExpensesReportQuery {
+  branchId?: string;
+  preset?: string;
+  startDate?: string;
+  endDate?: string;
+  from?: string;
+  to?: string;
+  category?: string;
+  status?: string;
+  paymentSource?: string;
+  paymentAccountId?: string;
+  createdByUserId?: string;
+  search?: string;
+}
+
+export interface DetailedExpensesReport {
+  meta: {
+    branchId: string;
+    branchName: string;
+    from: string;
+    to: string;
+    preset: string;
+    dateBasis: string;
+    timezone: string;
+    generatedAt: string;
+    generatedBy: string;
+  };
+  kpis: DetailedExpensesReportKPIs;
+  tenderBreakdown: TenderBreakdown;
+  categoryBreakdown: DetailedExpenseCategoryItem[];
+  categories: string[];
+  rows: DetailedExpenseRow[];
+  totals: {
+    amount: number;
+    cash: number;
+    online: number;
+  };
+}
+
+export type InventorySubReportType = 'valuation' | 'movements' | 'purchases' | 'supplier-ledger' | 'consumption' | 'expiry' | 'summary';
+
+export interface InventoryReportQuery {
+  branchId?: string;
+  type?: InventorySubReportType;
+  preset?: string;
+  startDate?: string;
+  endDate?: string;
+  from?: string;
+  to?: string;
+  supplierId?: string;
+  itemId?: string;
+  categoryId?: string;
+  itemType?: string;
+  movementType?: string;
+  search?: string;
+}
+
+export interface InventoryValuationRow {
+  id: string;
+  batchId: string;
+  batchNumber: string;
+  itemId: string;
+  itemName: string;
+  sku: string;
+  category: string;
+  itemType: string;
+  branchId: string;
+  branchName: string;
+  supplierName: string;
+  receivedDate: string;
+  expiryDate: string | null;
+  remainingQuantity: number;
+  unitCost: number;
+  costValue: number;
+  sellingPrice: number;
+  retailValue: number;
+  potentialProfit: number;
+  potentialMargin: number;
+  stockStatus: 'IN_STOCK' | 'LOW_STOCK' | 'OUT_OF_STOCK';
+  expiryStatus: 'VALID' | 'NEAR_EXPIRY' | 'EXPIRED';
+}
+
+export interface InventoryMovementRow {
+  id: string;
+  movementNumber: string;
+  date: string;
+  time: string;
+  createdAt: string;
+  branchId: string;
+  branchName: string;
+  itemId: string;
+  itemName: string;
+  sku: string;
+  category: string;
+  batchNumber: string;
+  movementType: string;
+  direction: 'IN' | 'OUT';
+  quantity: number;
+  unitCost: number;
+  totalCost: number;
+  sourceReferenceType: string;
+  sourceReferenceNumber: string;
+  reason: string;
+  notes: string;
+  userName: string;
+}
+
+export interface InventoryPurchaseRow {
+  id: string;
+  purchaseNumber: string;
+  purchaseDate: string;
+  supplierId: string;
+  supplierName: string;
+  supplierInvoiceNumber: string;
+  branchId: string;
+  branchName: string;
+  linesCount: number;
+  totalQuantity: number;
+  subtotal: number;
+  discount: number;
+  netAmount: number;
+  paidAmount: number;
+  balanceDue: number;
+  paymentMethod: string;
+  paymentStatus: string;
+  paymentAccountName: string | null;
+  createdByName: string;
+  status: string;
+}
+
+export interface InventorySupplierLedgerRow {
+  id: string;
+  date: string;
+  supplierId: string;
+  supplierName: string;
+  branchId: string;
+  branchName: string;
+  entryType: string;
+  referenceType: string;
+  referenceNumber: string;
+  description: string;
+  debit: number;
+  credit: number;
+  runningBalance: number;
+  userName: string;
+}
+
+export interface InventoryConsumptionRow {
+  id: string;
+  movementNumber: string;
+  date: string;
+  time: string;
+  branchId: string;
+  branchName: string;
+  itemId: string;
+  itemName: string;
+  sku: string;
+  category: string;
+  batchNumber: string;
+  quantity: number;
+  unitCost: number;
+  totalCost: number;
+  reason: string;
+  notes: string;
+  sourceReferenceNumber: string;
+  userName: string;
+}
+
+export interface InventoryExpiryRow {
+  id: string;
+  batchNumber: string;
+  itemId: string;
+  itemName: string;
+  sku: string;
+  category: string;
+  branchId: string;
+  branchName: string;
+  supplierName: string;
+  receivedDate: string;
+  expiryDate: string;
+  daysRemaining: number;
+  remainingQuantity: number;
+  unitCost: number;
+  costAtRisk: number;
+  status: 'EXPIRED' | 'CRITICAL' | 'NEAR_EXPIRY' | 'VALID';
+}
+
+export interface InventoryReportData {
+  meta: {
+    branchId: string;
+    branchName: string;
+    from: string;
+    to: string;
+    preset: string;
+    dateBasis: string;
+    timezone: string;
+    generatedAt: string;
+    generatedBy: string;
+  };
+  type: InventorySubReportType;
+  kpis: Record<string, any>;
+  tenderBreakdown?: TenderBreakdown;
+  categoryBreakdown?: Array<{ categoryName: string; amount: number }>;
+  categories?: string[];
+  suppliers?: Array<{ id: string; name: string; code: string }>;
+  rows: any[];
+  totals: Record<string, any>;
+}
+
+export interface AttendanceOvertimeReportRow {
+  id: string;
+  date: string;
+  staffId: string;
+  staffName: string;
+  employeeCode: string;
+  designation: string;
+  branchId: string;
+  branchName: string;
+  shift: string;
+  checkIn: string;
+  checkOut: string;
+  scheduledHours: number;
+  workedHours: number;
+  lateMinutes: number;
+  earlyExitMinutes: number;
+  isLate: boolean;
+  status: string;
+  source: string;
+  otMinutes: number;
+  otHours: number;
+  otAmount: number;
+  otStatus: string;
+  otReason: string;
+  otApprovedBy: string;
+  notes: string;
+}
+
+export interface AttendanceOvertimeReportKPIs {
+  totalRecords: number;
+  presentCount: number;
+  absentCount: number;
+  leaveCount: number;
+  lateCount: number;
+  totalWorkedHours: number;
+  authorizedOtHours: number;
+  authorizedOtAmount: number;
+}
+
+export interface AttendanceOvertimeReportTotals {
+  scheduledHours: number;
+  workedHours: number;
+  lateMinutes: number;
+  otMinutes: number;
+  otHours: number;
+  otAmount: number;
+}
+
+export interface AttendanceOvertimeReportQuery {
+  branchId?: string;
+  staffId?: string;
+  preset?: string;
+  startDate?: string;
+  endDate?: string;
+  from?: string;
+  to?: string;
+  status?: string;
+  otStatus?: string;
+  search?: string;
+}
+
+export interface AttendanceOvertimeReport {
+  meta: {
+    branchId: string;
+    branchName: string;
+    from: string;
+    to: string;
+    preset: string;
+    dateBasis: string;
+    timezone: string;
+    generatedAt: string;
+    generatedBy: string;
+  };
+  kpis: AttendanceOvertimeReportKPIs;
+  rows: AttendanceOvertimeReportRow[];
+  totals: AttendanceOvertimeReportTotals;
+}
+

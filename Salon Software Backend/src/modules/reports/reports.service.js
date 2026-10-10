@@ -7,9 +7,11 @@
 import prisma from '../../config/prisma.js';
 import { forbidden, notFound } from '../../lib/AppError.js';
 import { resolveReadBranch } from '../../lib/scope.js';
-import { dateOnly, getBusinessDate, ymd } from '../../lib/dates.js';
+import { dateOnly, getBusinessDate, ymd, startOfDay, endOfDay, toDateString, toTimeString } from '../../lib/dates.js';
 import { round2, toDec } from '../../lib/money.js';
 import { listAppointments } from '../appointments/appointments.service.js';
+import { inventorySummary } from '../inventory/inventory.service.js';
+import { resolveReportContext, formatReportResponse } from '../../lib/reportRange.js';
 
 const n = (d) => round2(d ?? 0).toNumber();
 const range = (startDate, endDate) => ({ gte: dateOnly(startDate), lte: dateOnly(endDate) });
@@ -267,3 +269,2772 @@ export const personalPerformance = async (actor, q = {}) => {
   const endDate = q.endDate || today;
   return (await computePerformance([staff], startDate, endDate))[0];
 };
+
+// ═══ SALES & INVOICES REPORT (Spec §9.2) ═════════════════════════════════════
+
+export const salesInvoicesReport = async (actor, q = {}) => {
+  if (actor.role === 'STAFF') throw forbidden('FORBIDDEN', 'Access Denied: Staff members cannot access sales & invoices report.');
+
+  const ctx = await resolveReportContext(actor, q, 'INVOICE_POSTING');
+
+  const dateRange = { gte: dateOnly(ctx.fromStr), lte: dateOnly(ctx.toStr) };
+  const where = {
+    date: dateRange,
+    ...(ctx.branchId ? { branchId: ctx.branchId } : {}),
+  };
+
+  if (q.paymentStatus && q.paymentStatus !== 'ALL') {
+    where.status = q.paymentStatus;
+  }
+
+  if (q.lifecycle && q.lifecycle !== 'ALL') {
+    where.lifecycle = q.lifecycle;
+  }
+
+  if (q.paymentMethod && q.paymentMethod !== 'ALL') {
+    where.paymentMethod = q.paymentMethod;
+  }
+
+  if (q.staffId && q.staffId !== 'ALL') {
+    where.OR = [
+      { staffId: q.staffId },
+      { lines: { some: { staffId: q.staffId } } },
+    ];
+  }
+
+  if (q.clientId) {
+    where.clientId = q.clientId;
+  }
+
+  if (q.search && q.search.trim()) {
+    const s = q.search.trim();
+    where.AND = [
+      ...(where.AND || []),
+      {
+        OR: [
+          { invoiceNumber: { contains: s, mode: 'insensitive' } },
+          { clientName: { contains: s, mode: 'insensitive' } },
+          { clientPhone: { contains: s, mode: 'insensitive' } },
+        ],
+      },
+    ];
+  }
+
+  const invoices = await prisma.invoice.findMany({
+    where,
+    include: {
+      lines: {
+        select: {
+          id: true,
+          name: true,
+          type: true,
+          staffId: true,
+          staffName: true,
+          quantity: true,
+          unitPrice: true,
+          discountAllocated: true,
+          netSales: true,
+          tax: true,
+          total: true,
+        },
+      },
+      payments: {
+        select: {
+          id: true,
+          amount: true,
+          method: true,
+          paymentAccountId: true,
+          paymentAccountName: true,
+          date: true,
+        },
+      },
+      refunds: {
+        select: {
+          id: true,
+          refundNumber: true,
+          type: true,
+          refundDate: true,
+          netReversed: true,
+          taxReversed: true,
+          tipReversed: true,
+          cashOut: true,
+          receivableCancelled: true,
+          reason: true,
+        },
+      },
+    },
+    orderBy: [
+      { date: 'desc' },
+      { createdAt: 'desc' },
+    ],
+  });
+
+  const branches = await prisma.branch.findMany({
+    select: { id: true, name: true },
+  });
+  const branchMap = new Map(branches.map((b) => [b.id, b.name]));
+
+  let totalGross = toDec(0);
+  let totalDiscount = toDec(0);
+  let totalNetSales = toDec(0);
+  let totalTaxCharged = toDec(0);
+  let totalTaxReversed = toDec(0);
+  let totalTips = toDec(0);
+  let totalInvoiceAmount = toDec(0);
+  let totalPaid = toDec(0);
+  let totalRefunded = toDec(0);
+  let totalOutstanding = toDec(0);
+
+  let activeCount = 0;
+  let partiallyRefundedCount = 0;
+  let refundedCount = 0;
+  let voidedCount = 0;
+
+  let totalCashCollected = toDec(0);
+  let totalOnlineCollected = toDec(0);
+  const onlineAccountsMap = new Map();
+
+  for (const inv of invoices) {
+    for (const p of inv.payments) {
+      const amt = toDec(p.amount);
+      if (p.method === 'CASH') {
+        totalCashCollected = totalCashCollected.plus(amt);
+      } else {
+        totalOnlineCollected = totalOnlineCollected.plus(amt);
+        const accName = p.paymentAccountName || 'Online Account';
+        const accId = p.paymentAccountId || 'online';
+        const existing = onlineAccountsMap.get(accName) || { accountId: accId, accountName: accName, amount: toDec(0), count: 0 };
+        existing.amount = existing.amount.plus(amt);
+        existing.count += 1;
+        onlineAccountsMap.set(accName, existing);
+      }
+    }
+  }
+
+  const onlineAccountsBreakdown = Array.from(onlineAccountsMap.values()).map((a) => ({
+    accountId: a.accountId,
+    accountName: a.accountName,
+    amount: n(a.amount),
+    count: a.count,
+  }));
+
+  const rows = invoices.map((inv) => {
+    const gross = toDec(inv.subtotal);
+    const discount = toDec(inv.discount);
+    const netSales = toDec(inv.netSales);
+    const taxCharged = toDec(inv.tax);
+    const tip = toDec(inv.tip);
+    const total = toDec(inv.total);
+    const paid = toDec(inv.amountPaid);
+    const outstanding = toDec(inv.amountDue);
+
+    const refundedNet = inv.refunds.reduce((sum, r) => sum.plus(r.netReversed), toDec(0));
+    const refundedTax = inv.refunds.reduce((sum, r) => sum.plus(r.taxReversed), toDec(0));
+    const refundedTip = inv.refunds.reduce((sum, r) => sum.plus(r.tipReversed), toDec(0));
+    const totalRefund = refundedNet.plus(refundedTax).plus(refundedTip);
+
+    if (inv.lifecycle !== 'VOIDED') {
+      totalGross = totalGross.plus(gross);
+      totalDiscount = totalDiscount.plus(discount);
+      totalNetSales = totalNetSales.plus(netSales).minus(refundedNet);
+      totalTaxCharged = totalTaxCharged.plus(taxCharged).minus(refundedTax);
+      totalTaxReversed = totalTaxReversed.plus(refundedTax);
+      totalTips = totalTips.plus(tip).minus(refundedTip);
+      totalInvoiceAmount = totalInvoiceAmount.plus(total).minus(totalRefund);
+      totalPaid = totalPaid.plus(paid).minus(totalRefund);
+      totalOutstanding = totalOutstanding.plus(outstanding);
+    }
+    totalRefunded = totalRefunded.plus(totalRefund);
+
+    if (inv.lifecycle === 'ACTIVE') activeCount++;
+    else if (inv.lifecycle === 'PARTIALLY_REFUNDED') partiallyRefundedCount++;
+    else if (inv.lifecycle === 'REFUNDED') refundedCount++;
+    else if (inv.lifecycle === 'VOIDED') voidedCount++;
+
+    const linesSummary = inv.lines.map((l) => `${l.name} (${Number(l.quantity)})`).join(', ') || 'General';
+    const staffSummary = [...new Set(inv.lines.map((l) => l.staffName).filter(Boolean))].join(', ') || inv.staffName || 'Unassigned';
+
+    let rowCash = toDec(0);
+    let rowOnline = toDec(0);
+    for (const p of inv.payments) {
+      if (p.method === 'CASH') rowCash = rowCash.plus(toDec(p.amount));
+      else rowOnline = rowOnline.plus(toDec(p.amount));
+    }
+
+    return {
+      id: inv.id,
+      invoiceNumber: inv.invoiceNumber,
+      date: ymd(inv.date),
+      time: inv.time,
+      branchId: inv.branchId,
+      branchName: branchMap.get(inv.branchId) || 'Branch',
+      clientId: inv.clientId,
+      clientName: inv.clientName,
+      clientPhone: inv.clientPhone,
+      customerSource: inv.customerSource,
+      soldByUserId: inv.processedByUserId,
+      soldByName: inv.processedByName,
+      staffSummary,
+      linesSummary,
+      paymentMethod: inv.paymentMethod,
+      paymentStatus: inv.status,
+      lifecycle: inv.lifecycle,
+      gross: n(gross),
+      discount: n(discount),
+      netSales: n(netSales),
+      taxCharged: n(taxCharged),
+      taxReversed: n(refundedTax),
+      netTaxLiability: n(taxCharged.minus(refundedTax)),
+      tip: n(tip),
+      total: n(total),
+      paid: n(paid),
+      refunded: n(totalRefund),
+      outstanding: n(outstanding),
+      cashPaid: n(rowCash),
+      onlinePaid: n(rowOnline),
+      payments: inv.payments.map((p) => ({
+        id: p.id,
+        amount: n(p.amount),
+        method: p.method,
+        paymentAccountId: p.paymentAccountId,
+        paymentAccountName: p.paymentAccountName,
+        date: ymd(p.date),
+      })),
+      notes: inv.notes,
+      refundCount: inv.refunds.length,
+    };
+  });
+
+  const netTaxLiability = totalTaxCharged.minus(totalTaxReversed);
+
+  const kpis = {
+    totalInvoices: invoices.length,
+    grossSales: n(totalGross),
+    totalDiscounts: n(totalDiscount),
+    netSales: n(totalNetSales),
+    taxCharged: n(totalTaxCharged),
+    taxReversed: n(totalTaxReversed),
+    netTaxLiability: n(netTaxLiability),
+    tipsCollected: n(totalTips),
+    invoiceTotal: n(totalInvoiceAmount),
+    totalPaid: n(totalPaid),
+    totalRefunded: n(totalRefunded),
+    totalOutstanding: n(totalOutstanding),
+    totalCashCollected: n(totalCashCollected),
+    totalOnlineCollected: n(totalOnlineCollected),
+    activeCount,
+    partiallyRefundedCount,
+    refundedCount,
+    voidedCount,
+  };
+
+  const tenderBreakdown = {
+    totalCash: n(totalCashCollected),
+    totalOnline: n(totalOnlineCollected),
+    grandTotal: n(totalCashCollected.plus(totalOnlineCollected)),
+    onlineAccounts: onlineAccountsBreakdown,
+  };
+
+  const totals = {
+    gross: n(totalGross),
+    discount: n(totalDiscount),
+    netSales: n(totalNetSales),
+    taxCharged: n(totalTaxCharged),
+    taxReversed: n(totalTaxReversed),
+    netTaxLiability: n(netTaxLiability),
+    tip: n(totalTips),
+    total: n(totalInvoiceAmount),
+    paid: n(totalPaid),
+    refunded: n(totalRefunded),
+    outstanding: n(totalOutstanding),
+    cashCollected: n(totalCashCollected),
+    onlineCollected: n(totalOnlineCollected),
+  };
+
+  return formatReportResponse(ctx.meta, { kpis, tenderBreakdown, rows, totals });
+};
+
+// ═══ INCOME & EXPENSE REPORT ══════════════════════════════════════════════════
+
+export const incomeExpenseReport = async (actor, query = {}) => {
+  const ctx = await resolveReportContext(actor, query, 'RECOGNITION');
+  const dateRange = { gte: dateOnly(ctx.fromStr), lte: dateOnly(ctx.toStr) };
+  const utcRange = { gte: ctx.fromDate, lte: ctx.toDate };
+  const branchFilter = ctx.branchId ? { branchId: ctx.branchId } : {};
+
+  const [branches, staffMembers, invoices, refunds, expenses, payrollRuns, commissionEvents, inventoryLosses] = await Promise.all([
+    prisma.branch.findMany({ select: { id: true, name: true, city: true } }),
+    prisma.staff.findMany({ select: { id: true, name: true, employeeCode: true } }),
+    // 1. Valid non-voided POS Invoices
+    prisma.invoice.findMany({
+      where: {
+        date: dateRange,
+        lifecycle: { not: 'VOIDED' },
+        ...branchFilter,
+      },
+      select: {
+        id: true,
+        invoiceNumber: true,
+        date: true,
+        time: true,
+        branchId: true,
+        clientId: true,
+        clientName: true,
+        subtotal: true,
+        discount: true,
+        netSales: true,
+        paymentMethod: true,
+        status: true,
+        lifecycle: true,
+        processedByName: true,
+        notes: true,
+      },
+    }),
+    // 2. Sales Refunds (Dated Reversal Events reducing recognized income)
+    prisma.invoiceRefund.findMany({
+      where: {
+        refundDate: dateRange,
+        invoice: ctx.branchId ? { branchId: ctx.branchId } : undefined,
+      },
+      select: {
+        id: true,
+        refundNumber: true,
+        refundDate: true,
+        netReversed: true,
+        method: true,
+        reason: true,
+        byName: true,
+        invoice: { select: { id: true, invoiceNumber: true, branchId: true } },
+      },
+    }),
+    // 3. Operating Expenses (excludes DRAFT unless explicitly requested)
+    prisma.expense.findMany({
+      where: {
+        expenseDate: dateRange,
+        ...branchFilter,
+        ...(query.status && query.status !== 'ALL'
+          ? { status: query.status }
+          : { status: { not: 'DRAFT' } }),
+      },
+      select: {
+        id: true,
+        voucherNumber: true,
+        expenseDate: true,
+        time: true,
+        title: true,
+        payee: true,
+        description: true,
+        category: true,
+        amount: true,
+        paymentSource: true,
+        paymentAccountName: true,
+        status: true,
+        isReversalRecord: true,
+        paidByName: true,
+        createdByName: true,
+        branchId: true,
+      },
+    }),
+    // 4. Finalized Payroll Runs (Recognized salary expense)
+    prisma.payrollRun.findMany({
+      where: {
+        status: 'FINALIZED',
+        ...branchFilter,
+        finalizedAt: utcRange,
+      },
+      include: {
+        payslips: true,
+      },
+    }),
+    // 5. Commission Events (Earn & Reversal)
+    prisma.commissionEvent.findMany({
+      where: {
+        eventDate: dateRange,
+        ...branchFilter,
+      },
+      select: {
+        id: true,
+        branchId: true,
+        staffId: true,
+        invoiceId: true,
+        invoiceNumber: true,
+        type: true,
+        attributedNet: true,
+        rate: true,
+        amount: true,
+        eventDate: true,
+        consumedByRunId: true,
+      },
+    }),
+    // 6. Inventory Write-offs / Shrinkage Losses
+    prisma.stockMovement.findMany({
+      where: {
+        createdAt: utcRange,
+        movementType: { in: ['EXPIRED_OUT', 'DAMAGED_OUT', 'NEGATIVE_ADJUSTMENT'] },
+        ...branchFilter,
+      },
+      include: {
+        item: { select: { name: true, sku: true } },
+      },
+    }),
+  ]);
+
+  const branchMap = new Map(branches.map((b) => [b.id, b.name]));
+  const staffMap = new Map(staffMembers.map((s) => [s.id, `${s.name} (${s.employeeCode})`]));
+
+  // Build unified item rows
+  const rawRows = [];
+
+  // Invoices -> Recognized Income
+  for (const inv of invoices) {
+    const net = toDec(inv.netSales);
+    rawRows.push({
+      id: `inv-${inv.id}`,
+      date: ymd(inv.date),
+      type: 'INCOME',
+      category: 'Sales & Services',
+      source: 'POS_INVOICE',
+      reference: inv.invoiceNumber,
+      branchId: inv.branchId,
+      branchName: branchMap.get(inv.branchId) || 'Branch',
+      userOrPayee: inv.processedByName || 'Staff',
+      description: `Invoice ${inv.invoiceNumber} - ${inv.clientName || 'Walk-in'} (Gross: ${n(toDec(inv.subtotal))}, Disc: ${n(toDec(inv.discount))})`,
+      income: n(net),
+      expense: 0,
+      paymentMethod: inv.paymentMethod,
+      status: inv.status,
+    });
+  }
+
+  // Refunds -> Recognized Income Reversal (Negative Income)
+  for (const ref of refunds) {
+    const reversedNet = toDec(ref.netReversed);
+    const bId = ref.invoice?.branchId || '';
+    rawRows.push({
+      id: `ref-${ref.id}`,
+      date: ymd(ref.refundDate),
+      type: 'INCOME',
+      category: 'Sales Refund / Reversal',
+      source: 'INVOICE_REFUND',
+      reference: ref.refundNumber,
+      branchId: bId,
+      branchName: branchMap.get(bId) || 'Branch',
+      userOrPayee: ref.byName || 'Admin',
+      description: `Refund for ${ref.invoice?.invoiceNumber || 'Invoice'} (${ref.reason || 'Client Refund'})`,
+      income: -n(reversedNet),
+      expense: 0,
+      paymentMethod: ref.method,
+      status: 'REFUNDED',
+    });
+  }
+
+  // Expenses -> Operating Expenses
+  for (const exp of expenses) {
+    const amt = toDec(exp.amount);
+    const signedAmt = exp.isReversalRecord ? -amt : amt;
+    rawRows.push({
+      id: `exp-${exp.id}`,
+      date: ymd(exp.expenseDate),
+      type: 'OPERATING_EXPENSE',
+      category: exp.category || 'General Operational',
+      source: 'EXPENSE_VOUCHER',
+      reference: exp.voucherNumber,
+      branchId: exp.branchId,
+      branchName: branchMap.get(exp.branchId) || 'Branch',
+      userOrPayee: `${exp.payee}${exp.paidByName ? ` (Paid by ${exp.paidByName})` : ''}`,
+      description: `${exp.title}${exp.description ? ` — ${exp.description}` : ''}`,
+      income: 0,
+      expense: n(signedAmt),
+      paymentMethod: exp.paymentSource === 'CASH_DRAWER' ? 'CASH' : (exp.paymentAccountName || 'ONLINE'),
+      status: exp.status,
+    });
+  }
+
+  // Finalized Payroll -> Salary Expense
+  for (const run of payrollRuns) {
+    for (const p of run.payslips) {
+      const snap = typeof p.snapshot === 'string' ? JSON.parse(p.snapshot) : p.snapshot || {};
+      const staffLabel = snap.staffName || staffMap.get(p.staffId) || 'Staff';
+      const salAmt = toDec(p.netPayable || p.grossPayable || 0);
+      rawRows.push({
+        id: `psl-${p.id}`,
+        date: ymd(run.finalizedAt || run.generatedAt),
+        type: 'SALARY_EXPENSE',
+        category: 'Payroll & Salaries',
+        source: 'PAYROLL',
+        reference: p.payslipNumber !== 'DRAFT' ? p.payslipNumber : run.payrollNumber,
+        branchId: run.branchId,
+        branchName: branchMap.get(run.branchId) || 'Branch',
+        userOrPayee: staffLabel,
+        description: `Finalized Salary for ${staffLabel} (${run.month})`,
+        income: 0,
+        expense: n(salAmt),
+        paymentMethod: 'PAYROLL_TRANSFER',
+        status: 'FINALIZED',
+      });
+    }
+  }
+
+  // Commission Events -> Commission Expense
+  for (const evt of commissionEvents) {
+    const commAmt = toDec(evt.amount);
+    const signedAmt = evt.type === 'EARN' ? commAmt : -commAmt;
+    const staffLabel = staffMap.get(evt.staffId) || 'Staff';
+    rawRows.push({
+      id: `com-${evt.id}`,
+      date: ymd(evt.eventDate),
+      type: 'COMMISSION_EXPENSE',
+      category: 'Staff Commission',
+      source: 'COMMISSION',
+      reference: evt.invoiceNumber || `COM-${evt.id.slice(0, 8)}`,
+      branchId: evt.branchId,
+      branchName: branchMap.get(evt.branchId) || 'Branch',
+      userOrPayee: staffLabel,
+      description: `Commission ${evt.type === 'EARN' ? 'Earned' : 'Reversal'} on Invoice ${evt.invoiceNumber} (${n(toDec(evt.rate))}% on ${n(toDec(evt.attributedNet))})`,
+      income: 0,
+      expense: n(signedAmt),
+      paymentMethod: 'COMMISSION_ACCRUAL',
+      status: evt.consumedByRunId ? 'FINALIZED' : 'ACCRUED',
+    });
+  }
+
+  // Inventory Write-offs -> Losses
+  for (const m of inventoryLosses) {
+    rawRows.push({
+      id: `loss-${m.id}`,
+      date: ymd(m.createdAt),
+      type: 'INVENTORY_WRITEOFF',
+      category: 'Inventory Write-off & Loss',
+      source: 'INVENTORY',
+      reference: m.movementNumber,
+      branchId: m.branchId,
+      branchName: branchMap.get(m.branchId) || 'Branch',
+      userOrPayee: m.userName || 'Custodian',
+      description: `Stock Loss: ${m.item?.name || 'Item'} (${m.reason || m.movementType})`,
+      income: 0,
+      expense: n(toDec(m.totalCost)),
+      paymentMethod: 'NON_CASH',
+      status: 'WRITTEN_OFF',
+    });
+  }
+
+  // Sort chronologically descending
+  rawRows.sort((a, b) => {
+    const dDiff = (b.date || '').localeCompare(a.date || '');
+    if (dDiff !== 0) return dDiff;
+    return (b.reference || '').localeCompare(a.reference || '');
+  });
+
+  // Apply filters
+  const typeFilter = query.type && query.type !== 'ALL' ? query.type : null;
+  const categoryFilter = query.category && query.category !== 'ALL' ? query.category : null;
+  const statusFilter = query.status && query.status !== 'ALL' ? query.status : null;
+  const paymentMethodFilter = query.paymentMethod && query.paymentMethod !== 'ALL' ? query.paymentMethod : null;
+  const searchFilter = query.search?.trim().toLowerCase();
+
+  const filteredRows = rawRows.filter((r) => {
+    if (typeFilter && r.type !== typeFilter) return false;
+    if (categoryFilter && r.category !== categoryFilter) return false;
+    if (statusFilter && r.status !== statusFilter) return false;
+    if (paymentMethodFilter && r.paymentMethod !== paymentMethodFilter) return false;
+    if (searchFilter) {
+      const match =
+        (r.reference && r.reference.toLowerCase().includes(searchFilter)) ||
+        (r.description && r.description.toLowerCase().includes(searchFilter)) ||
+        (r.userOrPayee && r.userOrPayee.toLowerCase().includes(searchFilter)) ||
+        (r.category && r.category.toLowerCase().includes(searchFilter)) ||
+        (r.branchName && r.branchName.toLowerCase().includes(searchFilter));
+      if (!match) return false;
+    }
+    return true;
+  });
+
+  // Calculate KPIs and Totals across filtered rows
+  let totalIncome = toDec(0);
+  let totalDirectExpenses = toDec(0);
+  let totalSalaryExpenses = toDec(0);
+  let totalCommissionExpenses = toDec(0);
+  let totalInventoryLoss = toDec(0);
+
+  const categoryMap = new Map();
+
+  for (const r of filteredRows) {
+    if (r.income) {
+      totalIncome = totalIncome.plus(r.income);
+    }
+    if (r.expense) {
+      if (r.type === 'OPERATING_EXPENSE') totalDirectExpenses = totalDirectExpenses.plus(r.expense);
+      else if (r.type === 'SALARY_EXPENSE') totalSalaryExpenses = totalSalaryExpenses.plus(r.expense);
+      else if (r.type === 'COMMISSION_EXPENSE') totalCommissionExpenses = totalCommissionExpenses.plus(r.expense);
+      else if (r.type === 'INVENTORY_WRITEOFF') totalInventoryLoss = totalInventoryLoss.plus(r.expense);
+    }
+
+    const cat = r.category || 'Other';
+    const netImpact = toDec(r.income).minus(r.expense);
+    const existing = categoryMap.get(cat) || toDec(0);
+    categoryMap.set(cat, existing.plus(netImpact));
+  }
+
+  const totalOperatingExpenses = totalDirectExpenses
+    .plus(totalSalaryExpenses)
+    .plus(totalCommissionExpenses)
+    .plus(totalInventoryLoss);
+
+  const netOperatingPosition = totalIncome.minus(totalOperatingExpenses);
+  const operatingMarginPercent = totalIncome.greaterThan(0)
+    ? round2(netOperatingPosition.dividedBy(totalIncome).times(100)).toNumber()
+    : 0;
+
+  // Extract distinct categories for filter dropdown
+  const allCategories = [...new Set(rawRows.map((r) => r.category).filter(Boolean))].sort();
+
+  const kpis = {
+    totalRecognizedIncome: n(totalIncome),
+    directExpenses: n(totalDirectExpenses),
+    salaryExpenses: n(totalSalaryExpenses),
+    commissionExpenses: n(totalCommissionExpenses),
+    inventoryLoss: n(totalInventoryLoss),
+    totalOperatingExpenses: n(totalOperatingExpenses),
+    netOperatingPosition: n(netOperatingPosition),
+    operatingMarginPercent,
+    totalTransactions: filteredRows.length,
+  };
+
+  const totals = {
+    income: n(totalIncome),
+    expense: n(totalOperatingExpenses),
+    net: n(netOperatingPosition),
+  };
+
+  return formatReportResponse(ctx.meta, {
+    kpis,
+    rows: filteredRows,
+    totals,
+    categories: allCategories,
+  });
+};
+
+// ═══ OPERATING PROFIT & P&L REPORT ════════════════════════════════════════════
+
+const resolvePriorPeriodDates = (fromStr, toStr) => {
+  const [fy, fm, fd] = fromStr.split('-').map(Number);
+  const [ty, tm, td] = toStr.split('-').map(Number);
+  const fromD = new Date(fy, fm - 1, fd);
+  const toD = new Date(ty, tm - 1, td);
+  const daysDiff = Math.max(1, Math.round((toD.getTime() - fromD.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+
+  const priorToD = new Date(fromD);
+  priorToD.setDate(priorToD.getDate() - 1);
+  const priorFromD = new Date(priorToD);
+  priorFromD.setDate(priorFromD.getDate() - (daysDiff - 1));
+
+  const pFromStr = `${priorFromD.getFullYear()}-${String(priorFromD.getMonth() + 1).padStart(2, '0')}-${String(priorFromD.getDate()).padStart(2, '0')}`;
+  const pToStr = `${priorToD.getFullYear()}-${String(priorToD.getMonth() + 1).padStart(2, '0')}-${String(priorToD.getDate()).padStart(2, '0')}`;
+  return {
+    priorFromStr: pFromStr,
+    priorToStr: pToStr,
+    priorFromDate: startOfDay(pFromStr),
+    priorToDate: endOfDay(pToStr),
+  };
+};
+
+const max0 = (d) => (d.isNegative() ? toDec(0) : d);
+
+const computePeriodMetrics = async (branchId, fromStr, toStr, fromDate, toDate) => {
+  const branchFilter = branchId ? { branchId } : {};
+  const dateRange = { gte: dateOnly(fromStr), lte: dateOnly(toStr) };
+  const utcRange = { gte: fromDate, lte: toDate };
+
+  const [invoices, refunds, movements, expenses, payrollRuns, commissionEvents] = await Promise.all([
+    prisma.invoice.findMany({
+      where: {
+        date: dateRange,
+        lifecycle: { not: 'VOIDED' },
+        ...branchFilter,
+      },
+      select: {
+        id: true,
+        subtotal: true,
+        discount: true,
+        netSales: true,
+        lines: {
+          select: {
+            type: true,
+            unitPrice: true,
+            quantity: true,
+            discountAllocated: true,
+            netSales: true,
+          },
+        },
+      },
+    }),
+    prisma.invoiceRefund.findMany({
+      where: {
+        refundDate: dateRange,
+        invoice: branchId ? { branchId } : undefined,
+      },
+      select: {
+        netReversed: true,
+      },
+    }),
+    prisma.stockMovement.findMany({
+      where: {
+        createdAt: utcRange,
+        ...branchFilter,
+        movementType: {
+          in: [
+            'POS_SALE_OUT',
+            'POS_RETURN_IN',
+            'SALES_RETURN_IN',
+            'SALON_CONSUMPTION_OUT',
+            'INTERNAL_USE_OUT',
+            'EXPIRED_OUT',
+            'DAMAGED_OUT',
+            'NEGATIVE_ADJUSTMENT',
+          ],
+        },
+      },
+      select: {
+        movementType: true,
+        totalCost: true,
+      },
+    }),
+    prisma.expense.findMany({
+      where: {
+        expenseDate: dateRange,
+        status: 'POSTED',
+        ...branchFilter,
+      },
+      select: {
+        category: true,
+        amount: true,
+        isReversalRecord: true,
+      },
+    }),
+    prisma.payrollRun.findMany({
+      where: {
+        status: 'FINALIZED',
+        finalizedAt: utcRange,
+        ...branchFilter,
+      },
+      include: {
+        payslips: {
+          select: {
+            netPayable: true,
+            grossPayable: true,
+          },
+        },
+      },
+    }),
+    prisma.commissionEvent.findMany({
+      where: {
+        eventDate: dateRange,
+        ...branchFilter,
+      },
+      select: {
+        type: true,
+        amount: true,
+      },
+    }),
+  ]);
+
+  // 1. Turnover by streams
+  let serviceSales = toDec(0);
+  let packageSales = toDec(0);
+  let productSales = toDec(0);
+
+  for (const inv of invoices) {
+    for (const l of inv.lines) {
+      const lineNet = toDec(l.netSales);
+      if (l.type === 'SERVICE') serviceSales = serviceSales.plus(lineNet);
+      else if (l.type === 'PACKAGE') packageSales = packageSales.plus(lineNet);
+      else if (l.type === 'PRODUCT') productSales = productSales.plus(lineNet);
+      else serviceSales = serviceSales.plus(lineNet);
+    }
+  }
+
+  let totalRefunds = toDec(0);
+  for (const r of refunds) {
+    totalRefunds = totalRefunds.plus(r.netReversed);
+  }
+
+  const grossSales = serviceSales.plus(packageSales).plus(productSales);
+  const totalNetSales = max0(grossSales.minus(totalRefunds));
+
+  // 2. Direct Material Costs (COGS & Consumables)
+  let productCogs = toDec(0);
+  let materialConsumption = toDec(0);
+  let inventoryLoss = toDec(0);
+
+  for (const m of movements) {
+    const cost = toDec(m.totalCost);
+    if (m.movementType === 'POS_SALE_OUT') {
+      productCogs = productCogs.plus(cost);
+    } else if (m.movementType === 'POS_RETURN_IN' || m.movementType === 'SALES_RETURN_IN') {
+      productCogs = productCogs.minus(cost);
+    } else if (m.movementType === 'SALON_CONSUMPTION_OUT' || m.movementType === 'INTERNAL_USE_OUT') {
+      materialConsumption = materialConsumption.plus(cost);
+    } else if (
+      m.movementType === 'EXPIRED_OUT' ||
+      m.movementType === 'DAMAGED_OUT' ||
+      m.movementType === 'NEGATIVE_ADJUSTMENT'
+    ) {
+      inventoryLoss = inventoryLoss.plus(cost);
+    }
+  }
+  productCogs = max0(productCogs);
+  materialConsumption = max0(materialConsumption);
+  inventoryLoss = max0(inventoryLoss);
+
+  const totalCostOfSales = productCogs.plus(materialConsumption);
+  const grossContribution = totalNetSales.minus(totalCostOfSales);
+  const grossMarginPercent = totalNetSales.greaterThan(0)
+    ? round2(grossContribution.dividedBy(totalNetSales).times(100)).toNumber()
+    : 0;
+
+  // 3. Operating Overheads
+  let directExpenses = toDec(0);
+  const expensesByCategory = new Map();
+
+  for (const e of expenses) {
+    const amt = toDec(e.amount);
+    const signed = e.isReversalRecord ? amt.negated() : amt;
+    directExpenses = directExpenses.plus(signed);
+
+    const cat = e.category || 'General Operational';
+    const curr = expensesByCategory.get(cat) || toDec(0);
+    expensesByCategory.set(cat, curr.plus(signed));
+  }
+
+  let salaryExpenses = toDec(0);
+  for (const run of payrollRuns) {
+    for (const p of run.payslips) {
+      salaryExpenses = salaryExpenses.plus(p.netPayable || p.grossPayable || 0);
+    }
+  }
+
+  let commissionExpenses = toDec(0);
+  for (const c of commissionEvents) {
+    const amt = toDec(c.amount);
+    commissionExpenses = c.type === 'EARN' ? commissionExpenses.plus(amt) : commissionExpenses.minus(amt);
+  }
+  commissionExpenses = max0(commissionExpenses);
+
+  const totalOperatingExpenses = directExpenses
+    .plus(salaryExpenses)
+    .plus(commissionExpenses)
+    .plus(inventoryLoss);
+
+  const netOperatingProfit = grossContribution.minus(totalOperatingExpenses);
+  const operatingMarginPercent = totalNetSales.greaterThan(0)
+    ? round2(netOperatingProfit.dividedBy(totalNetSales).times(100)).toNumber()
+    : 0;
+
+  return {
+    serviceSales: n(serviceSales),
+    packageSales: n(packageSales),
+    productSales: n(productSales),
+    totalRefunds: n(totalRefunds),
+    totalNetSales: n(totalNetSales),
+    productCogs: n(productCogs),
+    materialConsumption: n(materialConsumption),
+    totalCostOfSales: n(totalCostOfSales),
+    grossContribution: n(grossContribution),
+    grossMarginPercent,
+    directExpenses: n(directExpenses),
+    salaryExpenses: n(salaryExpenses),
+    commissionExpenses: n(commissionExpenses),
+    inventoryLoss: n(inventoryLoss),
+    totalOperatingExpenses: n(totalOperatingExpenses),
+    netOperatingProfit: n(netOperatingProfit),
+    operatingMarginPercent,
+    expensesByCategory: Object.fromEntries(
+      [...expensesByCategory.entries()].map(([k, v]) => [k, n(v)])
+    ),
+  };
+};
+
+export const operatingProfitReport = async (actor, query = {}) => {
+  const ctx = await resolveReportContext(actor, query, 'RECOGNITION');
+  const prior = resolvePriorPeriodDates(ctx.fromStr, ctx.toStr);
+
+  const [currentMetrics, priorMetrics] = await Promise.all([
+    computePeriodMetrics(ctx.branchId, ctx.fromStr, ctx.toStr, ctx.fromDate, ctx.toDate),
+    computePeriodMetrics(ctx.branchId, prior.priorFromStr, prior.priorToStr, prior.priorFromDate, prior.priorToDate),
+  ]);
+
+  const rev = currentMetrics.totalNetSales;
+  const calcPct = (amt) => (rev > 0 ? round2(toDec(amt).dividedBy(rev).times(100)).toNumber() : 0);
+  const calcGrowth = (cur, pri) => {
+    if (!pri || pri === 0) return null;
+    return round2(toDec(cur - pri).dividedBy(Math.abs(pri)).times(100)).toNumber();
+  };
+
+  // Structured Financial Statement Rows
+  const statementRows = [
+    // ── SECTION 1: REVENUE ──
+    { id: 'sec-rev', name: '1. OPERATING REVENUE / TURNOVER', section: 'REVENUE', isHeader: true, currentAmount: 0, percentOfRevenue: 0, priorAmount: 0, growthPercent: null },
+    { id: 'rev-services', name: 'Service Sales (Hair, Beauty, Spa)', section: 'REVENUE', isSubItem: true, currentAmount: currentMetrics.serviceSales, percentOfRevenue: calcPct(currentMetrics.serviceSales), priorAmount: priorMetrics.serviceSales, growthPercent: calcGrowth(currentMetrics.serviceSales, priorMetrics.serviceSales) },
+    { id: 'rev-packages', name: 'Package Sales (Bundled Services)', section: 'REVENUE', isSubItem: true, currentAmount: currentMetrics.packageSales, percentOfRevenue: calcPct(currentMetrics.packageSales), priorAmount: priorMetrics.packageSales, growthPercent: calcGrowth(currentMetrics.packageSales, priorMetrics.packageSales) },
+    { id: 'rev-products', name: 'Retail Product Sales', section: 'REVENUE', isSubItem: true, currentAmount: currentMetrics.productSales, percentOfRevenue: calcPct(currentMetrics.productSales), priorAmount: priorMetrics.productSales, growthPercent: calcGrowth(currentMetrics.productSales, priorMetrics.productSales) },
+    { id: 'rev-refunds', name: 'Less: Sales Refunds & Reversals', section: 'REVENUE', isSubItem: true, isDeduction: true, currentAmount: -currentMetrics.totalRefunds, percentOfRevenue: calcPct(-currentMetrics.totalRefunds), priorAmount: -priorMetrics.totalRefunds, growthPercent: calcGrowth(currentMetrics.totalRefunds, priorMetrics.totalRefunds) },
+    { id: 'tot-rev', name: 'TOTAL NET REVENUE', section: 'REVENUE', isTotal: true, currentAmount: currentMetrics.totalNetSales, percentOfRevenue: 100, priorAmount: priorMetrics.totalNetSales, growthPercent: calcGrowth(currentMetrics.totalNetSales, priorMetrics.totalNetSales) },
+
+    // ── SECTION 2: COST OF SALES ──
+    { id: 'sec-cos', name: '2. COST OF SALES (DIRECT MATERIAL COSTS)', section: 'COGS', isHeader: true, currentAmount: 0, percentOfRevenue: 0, priorAmount: 0, growthPercent: null },
+    { id: 'cos-cogs', name: 'Retail Products COGS (FIFO/FEFO Landed)', section: 'COGS', isSubItem: true, currentAmount: currentMetrics.productCogs, percentOfRevenue: calcPct(currentMetrics.productCogs), priorAmount: priorMetrics.productCogs, growthPercent: calcGrowth(currentMetrics.productCogs, priorMetrics.productCogs) },
+    { id: 'cos-cons', name: 'Salon Consumable Material Consumption', section: 'COGS', isSubItem: true, currentAmount: currentMetrics.materialConsumption, percentOfRevenue: calcPct(currentMetrics.materialConsumption), priorAmount: priorMetrics.materialConsumption, growthPercent: calcGrowth(currentMetrics.materialConsumption, priorMetrics.materialConsumption) },
+    { id: 'tot-cos', name: 'TOTAL COST OF SALES', section: 'COGS', isTotal: true, currentAmount: currentMetrics.totalCostOfSales, percentOfRevenue: calcPct(currentMetrics.totalCostOfSales), priorAmount: priorMetrics.totalCostOfSales, growthPercent: calcGrowth(currentMetrics.totalCostOfSales, priorMetrics.totalCostOfSales) },
+
+    // ── SECTION 3: GROSS CONTRIBUTION ──
+    { id: 'sec-gc', name: '3. GROSS CONTRIBUTION (GROSS MARGIN)', section: 'GROSS_PROFIT', isMajorTotal: true, currentAmount: currentMetrics.grossContribution, percentOfRevenue: currentMetrics.grossMarginPercent, priorAmount: priorMetrics.grossContribution, growthPercent: calcGrowth(currentMetrics.grossContribution, priorMetrics.grossContribution) },
+
+    // ── SECTION 4: OPERATING EXPENSES ──
+    { id: 'sec-opex', name: '4. OPERATING OVERHEADS & EXPENSES', section: 'EXPENSE', isHeader: true, currentAmount: 0, percentOfRevenue: 0, priorAmount: 0, growthPercent: null },
+    { id: 'exp-salaries', name: 'Salaries & Wages (Finalized Payroll)', section: 'EXPENSE', isSubItem: true, currentAmount: currentMetrics.salaryExpenses, percentOfRevenue: calcPct(currentMetrics.salaryExpenses), priorAmount: priorMetrics.salaryExpenses, growthPercent: calcGrowth(currentMetrics.salaryExpenses, priorMetrics.salaryExpenses) },
+    { id: 'exp-comm', name: 'Staff Commissions (Earned Attribution)', section: 'EXPENSE', isSubItem: true, currentAmount: currentMetrics.commissionExpenses, percentOfRevenue: calcPct(currentMetrics.commissionExpenses), priorAmount: priorMetrics.commissionExpenses, growthPercent: calcGrowth(currentMetrics.commissionExpenses, priorMetrics.commissionExpenses) },
+    { id: 'exp-direct', name: 'Direct Operating Expenses (Rent, Utilities, etc.)', section: 'EXPENSE', isSubItem: true, currentAmount: currentMetrics.directExpenses, percentOfRevenue: calcPct(currentMetrics.directExpenses), priorAmount: priorMetrics.directExpenses, growthPercent: calcGrowth(currentMetrics.directExpenses, priorMetrics.directExpenses) },
+    { id: 'exp-loss', name: 'Inventory Shrinkage & Write-offs (Damage/Loss)', section: 'EXPENSE', isSubItem: true, currentAmount: currentMetrics.inventoryLoss, percentOfRevenue: calcPct(currentMetrics.inventoryLoss), priorAmount: priorMetrics.inventoryLoss, growthPercent: calcGrowth(currentMetrics.inventoryLoss, priorMetrics.inventoryLoss) },
+    { id: 'tot-opex', name: 'TOTAL OPERATING EXPENSES', section: 'EXPENSE', isTotal: true, currentAmount: currentMetrics.totalOperatingExpenses, percentOfRevenue: calcPct(currentMetrics.totalOperatingExpenses), priorAmount: priorMetrics.totalOperatingExpenses, growthPercent: calcGrowth(currentMetrics.totalOperatingExpenses, priorMetrics.totalOperatingExpenses) },
+
+    // ── SECTION 5: NET OPERATING PROFIT ──
+    { id: 'sec-net', name: '5. NET OPERATING PROFIT / (LOSS)', section: 'NET_PROFIT', isFinalNet: true, currentAmount: currentMetrics.netOperatingProfit, percentOfRevenue: currentMetrics.operatingMarginPercent, priorAmount: priorMetrics.netOperatingProfit, growthPercent: calcGrowth(currentMetrics.netOperatingProfit, priorMetrics.netOperatingProfit) },
+  ];
+
+  // Detailed Landscape Rows for table panning
+  const detailedRows = [
+    {
+      id: 'd-1',
+      accountName: 'Service Sales Turnover',
+      classification: 'REVENUE',
+      department: 'Salon Floor / Styling',
+      currentAmount: currentMetrics.serviceSales,
+      percentOfRevenue: calcPct(currentMetrics.serviceSales),
+      priorAmount: priorMetrics.serviceSales,
+      varianceAmount: currentMetrics.serviceSales - priorMetrics.serviceSales,
+      growthPercent: calcGrowth(currentMetrics.serviceSales, priorMetrics.serviceSales),
+      notes: 'Net service appointments & walk-in billings after discounts',
+    },
+    {
+      id: 'd-2',
+      accountName: 'Bundled Package Sales',
+      classification: 'REVENUE',
+      department: 'Salon Floor / Packages',
+      currentAmount: currentMetrics.packageSales,
+      percentOfRevenue: calcPct(currentMetrics.packageSales),
+      priorAmount: priorMetrics.packageSales,
+      varianceAmount: currentMetrics.packageSales - priorMetrics.packageSales,
+      growthPercent: calcGrowth(currentMetrics.packageSales, priorMetrics.packageSales),
+      notes: 'Bundled service packages sold at POS',
+    },
+    {
+      id: 'd-3',
+      accountName: 'Retail Product Sales',
+      classification: 'REVENUE',
+      department: 'Retail Counter',
+      currentAmount: currentMetrics.productSales,
+      percentOfRevenue: calcPct(currentMetrics.productSales),
+      priorAmount: priorMetrics.productSales,
+      varianceAmount: currentMetrics.productSales - priorMetrics.productSales,
+      growthPercent: calcGrowth(currentMetrics.productSales, priorMetrics.productSales),
+      notes: 'Over-the-counter retail hair, skin & cosmetic product sales',
+    },
+    {
+      id: 'd-4',
+      accountName: 'Sales Refunds & Customer Credits',
+      classification: 'REVENUE_REVERSAL',
+      department: 'Billing & Front Desk',
+      currentAmount: -currentMetrics.totalRefunds,
+      percentOfRevenue: calcPct(-currentMetrics.totalRefunds),
+      priorAmount: -priorMetrics.totalRefunds,
+      varianceAmount: -(currentMetrics.totalRefunds - priorMetrics.totalRefunds),
+      growthPercent: calcGrowth(currentMetrics.totalRefunds, priorMetrics.totalRefunds),
+      notes: 'Dated customer refunds and voided invoice reversals',
+    },
+    {
+      id: 'd-5',
+      accountName: 'Retail Cost of Goods Sold (COGS)',
+      classification: 'COST_OF_SALES',
+      department: 'Inventory Asset Layer',
+      currentAmount: currentMetrics.productCogs,
+      percentOfRevenue: calcPct(currentMetrics.productCogs),
+      priorAmount: priorMetrics.productCogs,
+      varianceAmount: currentMetrics.productCogs - priorMetrics.productCogs,
+      growthPercent: calcGrowth(currentMetrics.productCogs, priorMetrics.productCogs),
+      notes: 'Historical landed cost from stock layers consumed on POS product sales',
+    },
+    {
+      id: 'd-6',
+      accountName: 'Salon Consumable Material Consumption',
+      classification: 'COST_OF_SALES',
+      department: 'Backbar / Dispensary',
+      currentAmount: currentMetrics.materialConsumption,
+      percentOfRevenue: calcPct(currentMetrics.materialConsumption),
+      priorAmount: priorMetrics.materialConsumption,
+      varianceAmount: currentMetrics.materialConsumption - priorMetrics.materialConsumption,
+      growthPercent: calcGrowth(currentMetrics.materialConsumption, priorMetrics.materialConsumption),
+      notes: 'Internal stock consumption for salon treatments (colors, foils, developers)',
+    },
+    {
+      id: 'd-7',
+      accountName: 'Staff Basic Salaries & Allowances',
+      classification: 'OPERATING_EXPENSE',
+      department: 'Human Resources / Payroll',
+      currentAmount: currentMetrics.salaryExpenses,
+      percentOfRevenue: calcPct(currentMetrics.salaryExpenses),
+      priorAmount: priorMetrics.salaryExpenses,
+      varianceAmount: currentMetrics.salaryExpenses - priorMetrics.salaryExpenses,
+      growthPercent: calcGrowth(currentMetrics.salaryExpenses, priorMetrics.salaryExpenses),
+      notes: 'Finalized monthly staff payslips (Basic + OT + Allowances - Deductions)',
+    },
+    {
+      id: 'd-8',
+      accountName: 'Staff Performance Commissions',
+      classification: 'OPERATING_EXPENSE',
+      department: 'Human Resources / Commission',
+      currentAmount: currentMetrics.commissionExpenses,
+      percentOfRevenue: calcPct(currentMetrics.commissionExpenses),
+      priorAmount: priorMetrics.commissionExpenses,
+      varianceAmount: currentMetrics.commissionExpenses - priorMetrics.commissionExpenses,
+      growthPercent: calcGrowth(currentMetrics.commissionExpenses, priorMetrics.commissionExpenses),
+      notes: 'Staff-attributed net sales commissions earned across services/packages',
+    },
+    ...Object.entries(currentMetrics.expensesByCategory).map(([cat, amt], idx) => {
+      const priorAmt = priorMetrics.expensesByCategory[cat] || 0;
+      return {
+        id: `d-exp-${idx}`,
+        accountName: `Direct Expense: ${cat}`,
+        classification: 'OPERATING_EXPENSE',
+        department: 'Operations & Facilities',
+        currentAmount: amt,
+        percentOfRevenue: calcPct(amt),
+        priorAmount: priorAmt,
+        varianceAmount: amt - priorAmt,
+        growthPercent: calcGrowth(amt, priorAmt),
+        notes: `Operational disbursements and bank payment vouchers for ${cat}`,
+      };
+    }),
+    {
+      id: 'd-loss',
+      accountName: 'Inventory Losses & Expiry Write-Offs',
+      classification: 'OPERATING_EXPENSE',
+      department: 'Stock Custody',
+      currentAmount: currentMetrics.inventoryLoss,
+      percentOfRevenue: calcPct(currentMetrics.inventoryLoss),
+      priorAmount: priorMetrics.inventoryLoss,
+      varianceAmount: currentMetrics.inventoryLoss - priorMetrics.inventoryLoss,
+      growthPercent: calcGrowth(currentMetrics.inventoryLoss, priorMetrics.inventoryLoss),
+      notes: 'Stock damaged, expired or adjusted downward at historical landed cost',
+    },
+  ];
+
+  const kpis = {
+    totalNetRevenue: currentMetrics.totalNetSales,
+    serviceSales: currentMetrics.serviceSales,
+    packageSales: currentMetrics.packageSales,
+    productSales: currentMetrics.productSales,
+    totalCostOfSales: currentMetrics.totalCostOfSales,
+    productCogs: currentMetrics.productCogs,
+    materialConsumption: currentMetrics.materialConsumption,
+    grossContribution: currentMetrics.grossContribution,
+    grossMarginPercent: currentMetrics.grossMarginPercent,
+    totalOperatingExpenses: currentMetrics.totalOperatingExpenses,
+    directExpenses: currentMetrics.directExpenses,
+    salaryExpenses: currentMetrics.salaryExpenses,
+    commissionExpenses: currentMetrics.commissionExpenses,
+    inventoryLoss: currentMetrics.inventoryLoss,
+    netOperatingProfit: currentMetrics.netOperatingProfit,
+    operatingMarginPercent: currentMetrics.operatingMarginPercent,
+    // Prior period comparisons
+    priorNetRevenue: priorMetrics.totalNetSales,
+    priorGrossContribution: priorMetrics.grossContribution,
+    priorOperatingProfit: priorMetrics.netOperatingProfit,
+    revenueGrowthPercent: calcGrowth(currentMetrics.totalNetSales, priorMetrics.totalNetSales),
+    profitGrowthPercent: calcGrowth(currentMetrics.netOperatingProfit, priorMetrics.netOperatingProfit),
+  };
+
+  const totals = {
+    revenue: currentMetrics.totalNetSales,
+    costOfSales: currentMetrics.totalCostOfSales,
+    grossMargin: currentMetrics.grossContribution,
+    operatingExpenses: currentMetrics.totalOperatingExpenses,
+    netProfit: currentMetrics.netOperatingProfit,
+  };
+
+  const metaWithPrior = {
+    ...ctx.meta,
+    priorFrom: prior.priorFromStr,
+    priorTo: prior.priorToStr,
+  };
+
+  return formatReportResponse(metaWithPrior, {
+    kpis,
+    statementRows,
+    rows: detailedRows,
+    totals,
+  });
+};
+
+// ═══ PAYMENT ACCOUNTS LEDGER REPORT ══════════════════════════════════════════
+
+export const paymentAccountsReport = async (actor, query = {}) => {
+  const ctx = await resolveReportContext(actor, query, 'MOVEMENT_TIMESTAMP');
+  const branchFilter = ctx.branchId ? { branchId: ctx.branchId } : {};
+
+  // 1. Fetch matching payment accounts
+  const accountWhere = {
+    ...branchFilter,
+    ...(query.accountId && query.accountId !== 'ALL' ? { id: query.accountId } : {}),
+  };
+
+  const accounts = await prisma.paymentAccount.findMany({
+    where: accountWhere,
+    include: {
+      branch: { select: { id: true, name: true, city: true } },
+    },
+    orderBy: [{ name: 'asc' }],
+  });
+
+  const accountIds = accounts.map((a) => a.id);
+
+  if (!accountIds.length) {
+    const kpis = {
+      totalOpeningBalance: 0,
+      totalMoneyIn: 0,
+      totalMoneyOut: 0,
+      totalTransfersIn: 0,
+      totalTransfersOut: 0,
+      totalClosingBalance: 0,
+      netMovement: 0,
+      transactionCount: 0,
+      accountsCount: 0,
+    };
+    const totals = {
+      opening: 0,
+      moneyIn: 0,
+      moneyOut: 0,
+      transfer: 0,
+      closing: 0,
+    };
+    return formatReportResponse(ctx.meta, {
+      kpis,
+      rows: [],
+      totals,
+      accountsSummary: [],
+    });
+  }
+
+  // 2. Compute pre-period movements strictly before ctx.fromDate
+  const preMovementsSums = await prisma.accountMovement.groupBy({
+    by: ['accountId', 'direction'],
+    where: {
+      accountId: { in: accountIds },
+      createdAt: { lt: ctx.fromDate },
+    },
+    _sum: { amount: true },
+  });
+
+  // Calculate opening balance for each account as of ctx.fromDate
+  const openingBalanceMap = new Map();
+  for (const a of accounts) {
+    const inBefore = preMovementsSums.find((s) => s.accountId === a.id && s.direction === 'IN')?._sum.amount ?? 0;
+    const outBefore = preMovementsSums.find((s) => s.accountId === a.id && s.direction === 'OUT')?._sum.amount ?? 0;
+    const opening = toDec(a.openingBalance).plus(toDec(inBefore)).minus(toDec(outBefore));
+    openingBalanceMap.set(a.id, opening);
+  }
+
+  // 3. Fetch movements within range [ctx.fromDate, ctx.toDate]
+  const movementWhere = {
+    accountId: { in: accountIds },
+    createdAt: { gte: ctx.fromDate, lte: ctx.toDate },
+    ...(query.transactionType && query.transactionType !== 'ALL' ? { type: query.transactionType } : {}),
+    ...(query.direction && query.direction !== 'ALL' ? { direction: query.direction } : {}),
+    ...(query.sourceModule && query.sourceModule !== 'ALL' ? { sourceModule: query.sourceModule } : {}),
+  };
+
+  const movements = await prisma.accountMovement.findMany({
+    where: movementWhere,
+    include: {
+      account: {
+        select: {
+          id: true,
+          name: true,
+          accountType: true,
+          providerName: true,
+          accountIdentifier: true,
+          branchId: true,
+          branch: { select: { id: true, name: true } },
+        },
+      },
+    },
+    orderBy: [{ createdAt: 'asc' }],
+  });
+
+  // 4. Calculate Running Balance per Account
+  const runningMap = new Map();
+  for (const a of accounts) {
+    runningMap.set(a.id, openingBalanceMap.get(a.id));
+  }
+
+  const rawRows = [];
+  for (const m of movements) {
+    const prevBal = runningMap.get(m.accountId) || toDec(0);
+    const amt = toDec(m.amount);
+    const isTransfer = m.type === 'TRANSFER_IN' || m.type === 'TRANSFER_OUT';
+    const isMoneyIn = m.direction === 'IN' && !isTransfer;
+    const isMoneyOut = m.direction === 'OUT' && !isTransfer;
+
+    let newBal;
+    if (m.direction === 'IN') {
+      newBal = prevBal.plus(amt);
+    } else {
+      newBal = prevBal.minus(amt);
+    }
+    runningMap.set(m.accountId, newBal);
+
+    const mDate = toDateString(m.createdAt);
+    const mTime = toTimeString(m.createdAt);
+
+    rawRows.push({
+      id: m.id,
+      date: mDate,
+      time: mTime,
+      createdAt: m.createdAt.toISOString(),
+      accountId: m.accountId,
+      accountName: m.account.name,
+      accountType: m.account.accountType,
+      providerName: m.account.providerName,
+      branchId: m.account.branchId,
+      branchName: m.account.branch?.name || 'Branch',
+      type: m.type,
+      direction: m.direction,
+      reference: m.reference || 'REF-N/A',
+      sourceModule: m.sourceModule,
+      description: m.description || '',
+      userName: m.userName || 'System',
+      moneyIn: isMoneyIn ? n(amt) : 0,
+      moneyOut: isMoneyOut ? n(amt) : 0,
+      transfer: m.type === 'TRANSFER_IN' ? n(amt) : m.type === 'TRANSFER_OUT' ? -n(amt) : 0,
+      amount: n(amt),
+      runningBalance: n(newBal),
+    });
+  }
+
+  // Apply optional search filter
+  const search = query.search?.trim().toLowerCase();
+  const filteredRows = search
+    ? rawRows.filter((r) =>
+        (r.reference && r.reference.toLowerCase().includes(search)) ||
+        (r.description && r.description.toLowerCase().includes(search)) ||
+        (r.userName && r.userName.toLowerCase().includes(search)) ||
+        (r.accountName && r.accountName.toLowerCase().includes(search)) ||
+        (r.sourceModule && r.sourceModule.toLowerCase().includes(search)) ||
+        (r.type && r.type.toLowerCase().includes(search))
+      )
+    : rawRows;
+
+  // 5. Account Summaries (Portfolio Breakdown)
+  const accountsSummary = accounts.map((a) => {
+    const opening = openingBalanceMap.get(a.id) || toDec(0);
+    const accRows = rawRows.filter((r) => r.accountId === a.id);
+
+    let mIn = toDec(0);
+    let mOut = toDec(0);
+    let tIn = toDec(0);
+    let tOut = toDec(0);
+
+    for (const r of accRows) {
+      if (r.direction === 'IN' && r.type !== 'TRANSFER_IN') mIn = mIn.plus(r.amount);
+      else if (r.direction === 'OUT' && r.type !== 'TRANSFER_OUT') mOut = mOut.plus(r.amount);
+      else if (r.type === 'TRANSFER_IN') tIn = tIn.plus(r.amount);
+      else if (r.type === 'TRANSFER_OUT') tOut = tOut.plus(r.amount);
+    }
+
+    const netMove = mIn.plus(tIn).minus(mOut).minus(tOut);
+    const closing = opening.plus(netMove);
+
+    return {
+      accountId: a.id,
+      accountName: a.name,
+      accountType: a.accountType,
+      providerName: a.providerName,
+      accountHolder: a.accountHolder,
+      accountIdentifier: a.accountIdentifier,
+      branchId: a.branchId,
+      branchName: a.branch?.name || 'Branch',
+      openingBalance: n(opening),
+      moneyIn: n(mIn),
+      moneyOut: n(mOut),
+      transfersIn: n(tIn),
+      transfersOut: n(tOut),
+      netMovement: n(netMove),
+      closingBalance: n(closing),
+      transactionCount: accRows.length,
+    };
+  });
+
+  // 6. KPIs & Totals
+  let totalOpening = toDec(0);
+  let totalMoneyIn = toDec(0);
+  let totalMoneyOut = toDec(0);
+  let totalTransfersIn = toDec(0);
+  let totalTransfersOut = toDec(0);
+  let totalClosing = toDec(0);
+
+  for (const s of accountsSummary) {
+    totalOpening = totalOpening.plus(s.openingBalance);
+    totalMoneyIn = totalMoneyIn.plus(s.moneyIn);
+    totalMoneyOut = totalMoneyOut.plus(s.moneyOut);
+    totalTransfersIn = totalTransfersIn.plus(s.transfersIn);
+    totalTransfersOut = totalTransfersOut.plus(s.transfersOut);
+    totalClosing = totalClosing.plus(s.closingBalance);
+  }
+
+  const kpis = {
+    totalOpeningBalance: n(totalOpening),
+    totalMoneyIn: n(totalMoneyIn),
+    totalMoneyOut: n(totalMoneyOut),
+    totalTransfersIn: n(totalTransfersIn),
+    totalTransfersOut: n(totalTransfersOut),
+    totalClosingBalance: n(totalClosing),
+    netMovement: n(totalClosing.minus(totalOpening)),
+    transactionCount: filteredRows.length,
+    accountsCount: accounts.length,
+  };
+
+  const totals = {
+    opening: n(totalOpening),
+    moneyIn: n(totalMoneyIn),
+    moneyOut: n(totalMoneyOut),
+    transferIn: n(totalTransfersIn),
+    transferOut: n(totalTransfersOut),
+    closing: n(totalClosing),
+    netMovement: n(totalClosing.minus(totalOpening)),
+  };
+
+  return formatReportResponse(ctx.meta, {
+    kpis,
+    rows: filteredRows,
+    totals,
+    accountsSummary,
+  });
+};
+
+// ═══ CASH DRAWER CUSTODY & SESSION REPORT ══════════════════════════════════
+
+export const cashDrawerReport = async (actor, query = {}) => {
+  const ctx = await resolveReportContext(actor, query, 'CUSTODY');
+  const dateRange = { gte: dateOnly(ctx.fromStr), lte: dateOnly(ctx.toStr) };
+  const branchFilter = ctx.branchId ? { branchId: ctx.branchId } : {};
+
+  // 1. Fetch cash drawers
+  const drawerWhere = {
+    ...branchFilter,
+    date: dateRange,
+    ...(query.status && query.status !== 'ALL' ? { status: query.status } : {}),
+    ...(query.custodianUserId && query.custodianUserId !== 'ALL' ? { custodianUserId: query.custodianUserId } : {}),
+  };
+
+  const drawers = await prisma.cashDrawer.findMany({
+    where: drawerWhere,
+    include: {
+      movements: {
+        orderBy: { createdAt: 'asc' },
+      },
+      settlements: {
+        select: {
+          id: true,
+          status: true,
+          handoverAmount: true,
+          retainedFloat: true,
+          notes: true,
+          reviewedAt: true,
+          receivedByName: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      },
+    },
+    orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
+  });
+
+  const branches = await prisma.branch.findMany({ select: { id: true, name: true } });
+  const branchMap = new Map(branches.map((b) => [b.id, b.name]));
+
+  // 2. Fetch invoice payments in this range for digital tender breakdown (Cash vs Online accounts)
+  const invoicePayments = await prisma.invoicePayment.findMany({
+    where: {
+      ...branchFilter,
+      date: dateRange,
+    },
+    select: {
+      id: true,
+      amount: true,
+      method: true,
+      paymentAccountId: true,
+      paymentAccountName: true,
+      drawerId: true,
+      processedByUserId: true,
+      processedByName: true,
+      date: true,
+    },
+  });
+
+  // Fetch active payment accounts for this scope to list all accounts (even if 0)
+  const paymentAccounts = await prisma.paymentAccount.findMany({
+    where: { ...branchFilter, isActive: true },
+    select: { id: true, name: true, accountType: true, providerName: true },
+    orderBy: { name: 'asc' },
+  });
+
+  let overallCashReceipts = toDec(0);
+  let overallOnlineReceipts = toDec(0);
+  const onlineAccountMap = new Map();
+
+  for (const acc of paymentAccounts) {
+    onlineAccountMap.set(acc.name, {
+      accountId: acc.id,
+      accountName: acc.name,
+      accountType: acc.accountType,
+      providerName: acc.providerName,
+      amount: toDec(0),
+      count: 0,
+    });
+  }
+
+  for (const ip of invoicePayments) {
+    const amt = toDec(ip.amount);
+    if (ip.method === 'CASH') {
+      overallCashReceipts = overallCashReceipts.plus(amt);
+    } else {
+      overallOnlineReceipts = overallOnlineReceipts.plus(amt);
+      const accName = ip.paymentAccountName || 'Online Account';
+      const existing = onlineAccountMap.get(accName) || {
+        accountId: ip.paymentAccountId || '',
+        accountName: accName,
+        accountType: 'ONLINE',
+        providerName: '',
+        amount: toDec(0),
+        count: 0,
+      };
+      existing.amount = existing.amount.plus(amt);
+      existing.count += 1;
+      onlineAccountMap.set(accName, existing);
+    }
+  }
+
+  const onlineAccountsBreakdown = Array.from(onlineAccountMap.values()).map((a) => ({
+    accountId: a.accountId,
+    accountName: a.accountName,
+    accountType: a.accountType,
+    providerName: a.providerName,
+    amount: n(a.amount),
+    count: a.count,
+  }));
+
+  // Map online collections per drawer (by drawerId or by custodianUserId + date)
+  const onlineByDrawer = new Map();
+  for (const ip of invoicePayments) {
+    if (ip.method === 'ONLINE_ACCOUNT') {
+      const amt = toDec(ip.amount);
+      const key = ip.drawerId || `${ip.processedByUserId}_${ymd(ip.date)}`;
+      const current = onlineByDrawer.get(key) || { total: toDec(0), accounts: new Map() };
+      current.total = current.total.plus(amt);
+      const accName = ip.paymentAccountName || 'Online Account';
+      current.accounts.set(accName, (current.accounts.get(accName) || toDec(0)).plus(amt));
+      onlineByDrawer.set(key, current);
+    }
+  }
+
+  // 3. Aggregate drawers
+  let totalOpeningFloat = toDec(0);
+  let totalCashSales = toDec(0);
+  let totalDuesCollected = toDec(0);
+  let totalCashTips = toDec(0);
+  let totalCashIn = toDec(0);
+  let totalCashRefunds = toDec(0);
+  let totalCashExpenses = toDec(0);
+  let totalSettlementsOut = toDec(0);
+  let totalOtherCashOut = toDec(0);
+  let totalCashOut = toDec(0);
+  let totalExpectedCash = toDec(0);
+  let totalCountedCash = toDec(0);
+  let totalVariance = toDec(0);
+
+  const rawRows = drawers.map((d) => {
+    let openingFloat = toDec(0);
+    let cashSales = toDec(0);
+    let duesCollected = toDec(0);
+    let cashTips = toDec(0);
+    let otherCashIn = toDec(0);
+    let cashIn = toDec(0);
+
+    let cashRefunds = toDec(0);
+    let cashExpenses = toDec(0);
+    let settlementsOut = toDec(0);
+    let otherCashOut = toDec(0);
+    let cashOut = toDec(0);
+
+    for (const m of d.movements) {
+      const amt = toDec(m.amount);
+      if (m.direction === 'IN') {
+        cashIn = cashIn.plus(amt);
+        if (m.type === 'OPENING_FLOAT') openingFloat = openingFloat.plus(amt);
+        else if (m.type === 'CASH_SALE') cashSales = cashSales.plus(amt);
+        else if (m.type === 'DUES_COLLECTION') duesCollected = duesCollected.plus(amt);
+        else if (m.type === 'CASH_TIP') cashTips = cashTips.plus(amt);
+        else otherCashIn = otherCashIn.plus(amt);
+      } else {
+        cashOut = cashOut.plus(amt);
+        if (m.type === 'CASH_REFUND') cashRefunds = cashRefunds.plus(amt);
+        else if (m.type === 'EXPENSE') cashExpenses = cashExpenses.plus(amt);
+        else if (m.type === 'SETTLEMENT_OUT') settlementsOut = settlementsOut.plus(amt);
+        else otherCashOut = otherCashOut.plus(amt);
+      }
+    }
+
+    const expectedCash = cashIn.minus(cashOut);
+    const countedCash =
+      d.lastCountedCash !== null && d.lastCountedCash !== undefined
+        ? toDec(d.lastCountedCash)
+        : (d.status === 'SETTLED' ? expectedCash : null);
+    const variance =
+      d.lastVariance !== null && d.lastVariance !== undefined
+        ? toDec(d.lastVariance)
+        : (countedCash !== null ? countedCash.minus(expectedCash) : toDec(0));
+
+    totalOpeningFloat = totalOpeningFloat.plus(openingFloat);
+    totalCashSales = totalCashSales.plus(cashSales);
+    totalDuesCollected = totalDuesCollected.plus(duesCollected);
+    totalCashTips = totalCashTips.plus(cashTips);
+    totalCashIn = totalCashIn.plus(cashIn);
+    totalCashRefunds = totalCashRefunds.plus(cashRefunds);
+    totalCashExpenses = totalCashExpenses.plus(cashExpenses);
+    totalSettlementsOut = totalSettlementsOut.plus(settlementsOut);
+    totalOtherCashOut = totalOtherCashOut.plus(otherCashOut);
+    totalCashOut = totalCashOut.plus(cashOut);
+    totalExpectedCash = totalExpectedCash.plus(expectedCash);
+    if (countedCash !== null) totalCountedCash = totalCountedCash.plus(countedCash);
+    totalVariance = totalVariance.plus(variance);
+
+    // Online breakdown for this drawer
+    const onlineInfo = onlineByDrawer.get(d.id) || onlineByDrawer.get(`${d.custodianUserId}_${ymd(d.date)}`);
+    const drawerOnlineTotal = onlineInfo ? onlineInfo.total : toDec(0);
+    const drawerOnlineBreakdown = onlineInfo
+      ? Array.from(onlineInfo.accounts.entries()).map(([name, amt]) => ({ accountName: name, amount: n(amt) }))
+      : [];
+
+    const latestSettlement = d.settlements[0];
+
+    return {
+      id: d.id,
+      sessionCode: `DRW-${d.id.slice(0, 8).toUpperCase()}`,
+      branchId: d.branchId,
+      branchName: branchMap.get(d.branchId) || 'Branch',
+      kind: d.kind,
+      custodianUserId: d.custodianUserId,
+      custodianName: d.custodianName,
+      date: ymd(d.date),
+      openedAt: d.createdAt.toISOString(),
+      closedAt: d.closedAt ? d.closedAt.toISOString() : null,
+      status: d.status,
+      openingFloat: n(openingFloat),
+      cashSales: n(cashSales),
+      duesCollected: n(duesCollected),
+      cashTips: n(cashTips),
+      otherCashIn: n(otherCashIn),
+      totalCashIn: n(cashIn),
+      cashRefunds: n(cashRefunds),
+      cashExpenses: n(cashExpenses),
+      settlementsOut: n(settlementsOut),
+      otherCashOut: n(otherCashOut),
+      totalCashOut: n(cashOut),
+      expectedCash: n(expectedCash),
+      countedCash: countedCash !== null ? n(countedCash) : null,
+      variance: n(variance),
+      onlineTotal: n(drawerOnlineTotal),
+      onlineBreakdown: drawerOnlineBreakdown,
+      latestSettlement: latestSettlement
+        ? {
+            id: latestSettlement.id,
+            status: latestSettlement.status,
+            handoverAmount: n(latestSettlement.handoverAmount),
+            retainedFloat: n(latestSettlement.retainedFloat),
+            reviewedByName: latestSettlement.receivedByName,
+          }
+        : null,
+      movementCount: d.movements.length,
+    };
+  });
+
+  let filteredRows = rawRows;
+  if (query.search && query.search.trim()) {
+    const s = query.search.toLowerCase().trim();
+    filteredRows = rawRows.filter(
+      (r) =>
+        r.sessionCode.toLowerCase().includes(s) ||
+        r.custodianName.toLowerCase().includes(s) ||
+        r.branchName.toLowerCase().includes(s)
+    );
+  }
+
+  const kpis = {
+    totalSessions: drawers.length,
+    openSessionsCount: drawers.filter((d) => d.status === 'OPEN').length,
+    settledSessionsCount: drawers.filter((d) => d.status === 'SETTLED').length,
+    pendingSessionsCount: drawers.filter((d) => d.status === 'SETTLEMENT_PENDING').length,
+    totalOpeningFloat: n(totalOpeningFloat),
+    totalCashSales: n(totalCashSales),
+    totalDuesCollected: n(totalDuesCollected),
+    totalCashTips: n(totalCashTips),
+    totalCashIn: n(totalCashIn),
+    totalCashRefunds: n(totalCashRefunds),
+    totalCashExpenses: n(totalCashExpenses),
+    totalSettlementsOut: n(totalSettlementsOut),
+    totalCashOut: n(totalCashOut),
+    totalExpectedCash: n(totalExpectedCash),
+    totalCountedCash: n(totalCountedCash),
+    totalVariance: n(totalVariance),
+    totalPhysicalCashCollected: n(overallCashReceipts.greaterThan(0) ? overallCashReceipts : totalCashSales.plus(totalDuesCollected).plus(totalCashTips)),
+    totalOnlineCollected: n(overallOnlineReceipts),
+    grandTotalCollections: n(
+      (overallCashReceipts.greaterThan(0) ? overallCashReceipts : totalCashSales.plus(totalDuesCollected).plus(totalCashTips)).plus(overallOnlineReceipts)
+    ),
+  };
+
+  const tenderBreakdown = {
+    totalCash: kpis.totalPhysicalCashCollected,
+    totalOnline: kpis.totalOnlineCollected,
+    grandTotal: kpis.grandTotalCollections,
+    onlineAccounts: onlineAccountsBreakdown,
+  };
+
+  const totals = {
+    openingFloat: n(totalOpeningFloat),
+    cashSales: n(totalCashSales),
+    cashIn: n(totalCashIn),
+    cashRefunds: n(totalCashRefunds),
+    cashExpenses: n(totalCashExpenses),
+    settlementsOut: n(totalSettlementsOut),
+    cashOut: n(totalCashOut),
+    expectedCash: n(totalExpectedCash),
+    countedCash: n(totalCountedCash),
+    variance: n(totalVariance),
+    onlineTotal: n(overallOnlineReceipts),
+  };
+
+  return formatReportResponse(ctx.meta, {
+    kpis,
+    tenderBreakdown,
+    rows: filteredRows,
+    totals,
+  });
+};
+
+// ═══ DETAILED OPERATIONAL EXPENSES REPORT ══════════════════════════════════
+
+export const detailedExpensesReport = async (actor, query = {}) => {
+  const ctx = await resolveReportContext(actor, query, 'RECOGNITION');
+  const dateRange = { gte: dateOnly(ctx.fromStr), lte: dateOnly(ctx.toStr) };
+  const branchFilter = ctx.branchId ? { branchId: ctx.branchId } : {};
+
+  const where = {
+    expenseDate: dateRange,
+    ...branchFilter,
+    ...(query.category && query.category !== 'ALL' ? { category: query.category } : {}),
+    ...(query.status && query.status !== 'ALL'
+      ? { status: query.status }
+      : { status: { not: 'DRAFT' } }),
+    ...(query.paymentSource && query.paymentSource !== 'ALL' ? { paymentSource: query.paymentSource } : {}),
+    ...(query.paymentAccountId && query.paymentAccountId !== 'ALL' ? { paymentAccountId: query.paymentAccountId } : {}),
+    ...(query.createdByUserId && query.createdByUserId !== 'ALL' ? { createdByUserId: query.createdByUserId } : {}),
+  };
+
+  const [expenses, branches, categories, paymentAccounts] = await Promise.all([
+    prisma.expense.findMany({
+      where,
+      orderBy: [{ expenseDate: 'desc' }, { createdAt: 'desc' }],
+    }),
+    prisma.branch.findMany({ select: { id: true, name: true } }),
+    prisma.expenseCategory.findMany({
+      where: { ...branchFilter, isActive: true },
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
+    }),
+    prisma.paymentAccount.findMany({
+      where: { ...branchFilter, isActive: true },
+      select: { id: true, name: true, accountType: true },
+      orderBy: { name: 'asc' },
+    }),
+  ]);
+
+  const branchMap = new Map(branches.map((b) => [b.id, b.name]));
+
+  let totalExpenses = toDec(0);
+  let totalCashExpenses = toDec(0);
+  let totalOnlineExpenses = toDec(0);
+  let postedCount = 0;
+  let reversedCount = 0;
+  let draftCount = 0;
+
+  const categoryMap = new Map();
+  const onlineAccountMap = new Map();
+
+  for (const acc of paymentAccounts) {
+    onlineAccountMap.set(acc.name, {
+      accountId: acc.id,
+      accountName: acc.name,
+      amount: toDec(0),
+      count: 0,
+    });
+  }
+
+  const rawRows = expenses.map((exp) => {
+    const amt = toDec(exp.amount);
+    const isPosted = exp.status === 'POSTED';
+    const isReversed = exp.status === 'REVERSED';
+    const isDraft = exp.status === 'DRAFT';
+
+    if (isPosted) postedCount++;
+    else if (isReversed) reversedCount++;
+    else if (isDraft) draftCount++;
+
+    if (isPosted) {
+      totalExpenses = totalExpenses.plus(amt);
+      if (exp.paymentSource === 'CASH_DRAWER') {
+        totalCashExpenses = totalCashExpenses.plus(amt);
+      } else {
+        totalOnlineExpenses = totalOnlineExpenses.plus(amt);
+        const accName = exp.paymentAccountName || 'Online Account';
+        const existing = onlineAccountMap.get(accName) || {
+          accountId: exp.paymentAccountId || '',
+          accountName: accName,
+          amount: toDec(0),
+          count: 0,
+        };
+        existing.amount = existing.amount.plus(amt);
+        existing.count += 1;
+        onlineAccountMap.set(accName, existing);
+      }
+
+      const catName = exp.category || 'General';
+      categoryMap.set(catName, (categoryMap.get(catName) || toDec(0)).plus(amt));
+    }
+
+    return {
+      id: exp.id,
+      voucherNumber: exp.voucherNumber,
+      date: ymd(exp.expenseDate),
+      time: exp.time,
+      branchId: exp.branchId,
+      branchName: branchMap.get(exp.branchId) || 'Branch',
+      category: exp.category,
+      title: exp.title,
+      payee: exp.payee,
+      description: exp.description || '',
+      amount: n(amt),
+      paymentSource: exp.paymentSource,
+      paymentAccountId: exp.paymentAccountId,
+      paymentAccountName: exp.paymentAccountName,
+      status: exp.status,
+      externalReference: exp.externalReference || '',
+      notes: exp.notes || '',
+      createdByUserId: exp.createdByUserId,
+      createdByName: exp.createdByName,
+      paidByName: exp.paidByName || '',
+      isReversalRecord: exp.isReversalRecord,
+      reversalReason: exp.reversalReason || '',
+      reversedByName: exp.reversedByName || '',
+    };
+  });
+
+  let filteredRows = rawRows;
+  if (query.search && query.search.trim()) {
+    const s = query.search.toLowerCase().trim();
+    filteredRows = rawRows.filter(
+      (r) =>
+        r.voucherNumber.toLowerCase().includes(s) ||
+        r.title.toLowerCase().includes(s) ||
+        r.payee.toLowerCase().includes(s) ||
+        r.category.toLowerCase().includes(s) ||
+        r.branchName.toLowerCase().includes(s) ||
+        r.createdByName.toLowerCase().includes(s) ||
+        r.externalReference.toLowerCase().includes(s)
+    );
+  }
+
+  const categoryBreakdown = Array.from(categoryMap.entries()).map(([name, sum]) => ({
+    categoryName: name,
+    amount: n(sum),
+  })).sort((a, b) => b.amount - a.amount);
+
+  const onlineAccountsBreakdown = Array.from(onlineAccountMap.values()).map((a) => ({
+    accountId: a.accountId,
+    accountName: a.accountName,
+    amount: n(a.amount),
+    count: a.count,
+  }));
+
+  const kpis = {
+    totalExpenses: n(totalExpenses),
+    cashExpenses: n(totalCashExpenses),
+    onlineExpenses: n(totalOnlineExpenses),
+    totalVouchersCount: expenses.length,
+    postedCount,
+    reversedCount,
+    draftCount,
+    categoryCount: categoryMap.size,
+  };
+
+  const tenderBreakdown = {
+    totalCash: n(totalCashExpenses),
+    totalOnline: n(totalOnlineExpenses),
+    grandTotal: n(totalExpenses),
+    onlineAccounts: onlineAccountsBreakdown,
+  };
+
+  const totals = {
+    amount: n(totalExpenses),
+    cash: n(totalCashExpenses),
+    online: n(totalOnlineExpenses),
+  };
+
+  return formatReportResponse(ctx.meta, {
+    kpis,
+    tenderBreakdown,
+    categoryBreakdown,
+    categories: categories.map((c) => c.name),
+    rows: filteredRows,
+    totals,
+  });
+};
+
+// ═══ INVENTORY & SUPPLY CHAIN REPORTS SUITE ══════════════════════════════════
+export const inventoryReport = async (actor, query = {}) => {
+  if (actor.role === 'STAFF') {
+    throw forbidden('FORBIDDEN', 'Access Denied: Staff members cannot access inventory reports.');
+  }
+
+  const subType = query.type || 'valuation';
+  const ctx = await resolveReportContext(actor, query, subType === 'valuation' || subType === 'expiry' ? 'AS_OF' : 'TRANSACTION');
+
+  const branches = await prisma.branch.findMany({ select: { id: true, name: true, code: true } });
+  const branchMap = new Map(branches.map((b) => [b.id, b.name]));
+
+  const accounts = await prisma.paymentAccount.findMany({ select: { id: true, name: true } });
+  const accountMap = new Map(accounts.map((a) => [a.id, a.name]));
+
+  const branchFilter = ctx.branchId ? { branchId: ctx.branchId } : {};
+
+  if (subType === 'valuation') {
+    const [items, batches] = await Promise.all([
+      prisma.inventoryItem.findMany({
+        where: {
+          ...(query.itemType && query.itemType !== 'ALL' ? { itemType: query.itemType } : {}),
+          ...(query.categoryId && query.categoryId !== 'ALL' ? { category: query.categoryId } : {}),
+        },
+        orderBy: { name: 'asc' },
+      }),
+      prisma.inventoryBatch.findMany({
+        where: {
+          ...branchFilter,
+          remainingQuantity: { gt: 0 },
+        },
+        include: {
+          item: true,
+        },
+        orderBy: [{ receivedDate: 'asc' }, { batchNumber: 'asc' }],
+      }),
+    ]);
+
+    const today = await getBusinessDate();
+    const todayStr = dateOnly(today);
+
+    let totalCostVal = toDec(0);
+    let totalRetailVal = toDec(0);
+    let lowStockCount = 0;
+    let outOfStockCount = 0;
+    let expiredBatchesCount = 0;
+    let nearExpiryBatchesCount = 0;
+
+    const itemStockMap = new Map();
+    for (const b of batches) {
+      const cur = itemStockMap.get(b.itemId) || toDec(0);
+      itemStockMap.set(b.itemId, cur.plus(b.remainingQuantity));
+    }
+
+    const rows = [];
+    for (const b of batches) {
+      const item = b.item;
+      if (query.itemType && query.itemType !== 'ALL' && item.itemType !== query.itemType) continue;
+      if (query.categoryId && query.categoryId !== 'ALL' && item.category !== query.categoryId) continue;
+
+      const remQty = toDec(b.remainingQuantity);
+      const unitCost = toDec(b.unitCost);
+      const costVal = remQty.times(unitCost);
+      const sellingPrice = toDec(item.sellingPrice || 0);
+      const retailVal = remQty.times(sellingPrice);
+
+      totalCostVal = totalCostVal.plus(costVal);
+      totalRetailVal = totalRetailVal.plus(retailVal);
+
+      const expDateStr = b.expiryDate ? dateOnly(b.expiryDate) : null;
+      let expStatus = 'VALID';
+      if (expDateStr && expDateStr < todayStr) {
+        expStatus = 'EXPIRED';
+        expiredBatchesCount++;
+      } else if (expDateStr) {
+        const days = Math.round((new Date(expDateStr).getTime() - new Date(todayStr).getTime()) / (1000 * 3600 * 24));
+        if (days <= (item.nearExpiryAlertDays || 60)) {
+          expStatus = 'NEAR_EXPIRY';
+          nearExpiryBatchesCount++;
+        }
+      }
+
+      const totalItemStock = itemStockMap.get(item.id) || toDec(0);
+      let stockStatus = 'IN_STOCK';
+      if (totalItemStock.lessThanOrEqualTo(0)) {
+        stockStatus = 'OUT_OF_STOCK';
+      } else if (totalItemStock.lessThanOrEqualTo(item.minStockLevel || 0)) {
+        stockStatus = 'LOW_STOCK';
+      }
+
+      rows.push({
+        id: b.id,
+        batchId: b.id,
+        batchNumber: b.batchNumber,
+        itemId: item.id,
+        itemName: item.name,
+        sku: item.sku,
+        category: item.category,
+        itemType: item.itemType,
+        branchId: b.branchId,
+        branchName: branchMap.get(b.branchId) || 'Branch',
+        supplierName: b.supplierName || 'N/A',
+        receivedDate: ymd(b.receivedDate),
+        expiryDate: b.expiryDate ? ymd(b.expiryDate) : null,
+        remainingQuantity: n(remQty),
+        unitCost: n(unitCost),
+        costValue: n(costVal),
+        sellingPrice: n(sellingPrice),
+        retailValue: n(retailVal),
+        potentialProfit: n(retailVal.minus(costVal)),
+        potentialMargin: retailVal.greaterThan(0) ? n(retailVal.minus(costVal).dividedBy(retailVal).times(100)) : 0,
+        stockStatus,
+        expiryStatus: expStatus,
+      });
+    }
+
+    for (const item of items) {
+      const stock = itemStockMap.get(item.id) || toDec(0);
+      if (stock.lessThanOrEqualTo(0)) outOfStockCount++;
+      else if (stock.lessThanOrEqualTo(item.minStockLevel || 0)) lowStockCount++;
+    }
+
+    let filteredRows = rows;
+    if (query.search && query.search.trim()) {
+      const s = query.search.toLowerCase().trim();
+      filteredRows = rows.filter(
+        (r) =>
+          r.itemName.toLowerCase().includes(s) ||
+          r.sku.toLowerCase().includes(s) ||
+          r.batchNumber.toLowerCase().includes(s) ||
+          r.category.toLowerCase().includes(s)
+      );
+    }
+
+    const categories = [...new Set(items.map((i) => i.category))];
+
+    const kpis = {
+      totalCostValue: n(totalCostVal),
+      totalRetailValue: n(totalRetailVal),
+      potentialGrossProfit: n(totalRetailVal.minus(totalCostVal)),
+      totalBatchesCount: rows.length,
+      totalItemsCount: items.length,
+      lowStockCount,
+      outOfStockCount,
+      expiredBatchesCount,
+      nearExpiryBatchesCount,
+    };
+
+    const totals = {
+      remainingQuantity: n(filteredRows.reduce((acc, r) => acc + r.remainingQuantity, 0)),
+      costValue: n(totalCostVal),
+      retailValue: n(totalRetailVal),
+      potentialProfit: n(totalRetailVal.minus(totalCostVal)),
+    };
+
+    return formatReportResponse(ctx.meta, {
+      type: subType,
+      kpis,
+      rows: filteredRows,
+      totals,
+      categories,
+    });
+  }
+
+  if (subType === 'movements') {
+    const movements = await prisma.stockMovement.findMany({
+      where: {
+        ...branchFilter,
+        createdAt: {
+          gte: ctx.fromDate,
+          lte: ctx.toDate,
+        },
+        ...(query.itemId ? { itemId: query.itemId } : {}),
+        ...(query.movementType && query.movementType !== 'ALL' ? { movementType: query.movementType } : {}),
+      },
+      include: {
+        item: true,
+        batch: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    let totalInQty = toDec(0);
+    let totalOutQty = toDec(0);
+    let totalInCost = toDec(0);
+    let totalOutCost = toDec(0);
+
+    const rows = movements.map((m) => {
+      const qtyVal = toDec(m.quantity);
+      const costVal = toDec(m.totalCost);
+      const isIncoming = m.direction === 'IN';
+
+      if (isIncoming) {
+        totalInQty = totalInQty.plus(qtyVal);
+        totalInCost = totalInCost.plus(costVal);
+      } else {
+        totalOutQty = totalOutQty.plus(qtyVal);
+        totalOutCost = totalOutCost.plus(costVal);
+      }
+
+      return {
+        id: m.id,
+        movementNumber: m.movementNumber,
+        date: toDateString(m.createdAt),
+        time: toTimeString(m.createdAt),
+        createdAt: m.createdAt.toISOString(),
+        branchId: m.branchId,
+        branchName: branchMap.get(m.branchId) || 'Branch',
+        itemId: m.itemId,
+        itemName: m.item?.name || 'Item',
+        sku: m.item?.sku || 'SKU',
+        category: m.item?.category || 'General',
+        batchNumber: m.batch?.batchNumber || 'N/A',
+        movementType: m.movementType,
+        direction: m.direction,
+        quantity: n(qtyVal),
+        unitCost: n(m.unitCost),
+        totalCost: n(costVal),
+        sourceReferenceType: m.sourceReferenceType,
+        sourceReferenceNumber: m.sourceReferenceNumber,
+        reason: m.reason || '',
+        notes: m.notes || '',
+        userName: m.userName || 'System',
+      };
+    });
+
+    let filteredRows = rows;
+    if (query.search && query.search.trim()) {
+      const s = query.search.toLowerCase().trim();
+      filteredRows = rows.filter(
+        (r) =>
+          r.movementNumber.toLowerCase().includes(s) ||
+          r.itemName.toLowerCase().includes(s) ||
+          r.sku.toLowerCase().includes(s) ||
+          r.batchNumber.toLowerCase().includes(s) ||
+          r.sourceReferenceNumber.toLowerCase().includes(s) ||
+          r.reason.toLowerCase().includes(s)
+      );
+    }
+
+    const kpis = {
+      totalMovementsCount: movements.length,
+      totalInQuantity: n(totalInQty),
+      totalOutQuantity: n(totalOutQty),
+      netQuantityChange: n(totalInQty.minus(totalOutQty)),
+      totalInCostValue: n(totalInCost),
+      totalOutCostValue: n(totalOutCost),
+    };
+
+    const totals = {
+      inQuantity: n(totalInQty),
+      outQuantity: n(totalOutQty),
+      inCostValue: n(totalInCost),
+      outCostValue: n(totalOutCost),
+    };
+
+    return formatReportResponse(ctx.meta, {
+      type: subType,
+      kpis,
+      rows: filteredRows,
+      totals,
+    });
+  }
+
+  if (subType === 'purchases') {
+    const purchases = await prisma.purchase.findMany({
+      where: {
+        ...branchFilter,
+        purchaseDate: {
+          gte: dateOnly(ctx.fromStr),
+          lte: dateOnly(ctx.toStr),
+        },
+        ...(query.supplierId ? { supplierId: query.supplierId } : {}),
+      },
+      include: {
+        supplier: true,
+        lines: true,
+      },
+      orderBy: { purchaseDate: 'desc' },
+    });
+
+    let totalNet = toDec(0);
+    let totalPaid = toDec(0);
+    let totalDue = toDec(0);
+    let totalCashPaid = toDec(0);
+    let totalOnlinePaid = toDec(0);
+    const onlineAccountMap = new Map();
+
+    const rows = purchases.map((p) => {
+      const net = toDec(p.netAmount);
+      const paid = toDec(p.paidAmount);
+      const due = toDec(p.balanceDue);
+
+      totalNet = totalNet.plus(net);
+      totalPaid = totalPaid.plus(paid);
+      totalDue = totalDue.plus(due);
+
+      if (paid.greaterThan(0)) {
+        if (p.paymentMethod === 'CASH') {
+          totalCashPaid = totalCashPaid.plus(paid);
+        } else {
+          totalOnlinePaid = totalOnlinePaid.plus(paid);
+          const accName = accountMap.get(p.paymentAccountId) || 'Online Account';
+          const existing = onlineAccountMap.get(accName) || {
+            accountId: p.paymentAccountId || '',
+            accountName: accName,
+            amount: toDec(0),
+            count: 0,
+          };
+          existing.amount = existing.amount.plus(paid);
+          existing.count += 1;
+          onlineAccountMap.set(accName, existing);
+        }
+      }
+
+      const totalQty = p.lines.reduce((s, l) => s + Number(l.quantity || 0), 0);
+
+      return {
+        id: p.id,
+        purchaseNumber: p.purchaseNumber,
+        purchaseDate: ymd(p.purchaseDate),
+        supplierId: p.supplierId,
+        supplierName: p.supplierName || p.supplier?.name || 'Supplier',
+        supplierInvoiceNumber: p.supplierInvoiceNumber || '',
+        branchId: p.branchId,
+        branchName: branchMap.get(p.branchId) || 'Branch',
+        linesCount: p.lines.length,
+        totalQuantity: totalQty,
+        subtotal: n(p.subtotal),
+        discount: n(p.discount),
+        netAmount: n(net),
+        paidAmount: n(paid),
+        balanceDue: n(due),
+        paymentMethod: p.paymentMethod,
+        paymentStatus: p.paymentStatus,
+        paymentAccountName: accountMap.get(p.paymentAccountId) || null,
+        createdByName: p.createdByName,
+        status: p.status,
+      };
+    });
+
+    let filteredRows = rows;
+    if (query.search && query.search.trim()) {
+      const s = query.search.toLowerCase().trim();
+      filteredRows = rows.filter(
+        (r) =>
+          r.purchaseNumber.toLowerCase().includes(s) ||
+          r.supplierName.toLowerCase().includes(s) ||
+          r.supplierInvoiceNumber.toLowerCase().includes(s)
+      );
+    }
+
+    const onlineAccountsBreakdown = Array.from(onlineAccountMap.values()).map((a) => ({
+      accountId: a.accountId,
+      accountName: a.accountName,
+      amount: n(a.amount),
+      count: a.count,
+    }));
+
+    const tenderBreakdown = {
+      totalCash: n(totalCashPaid),
+      totalOnline: n(totalOnlinePaid),
+      grandTotal: n(totalPaid),
+      onlineAccounts: onlineAccountsBreakdown,
+    };
+
+    const kpis = {
+      totalPurchasesCount: purchases.length,
+      totalPurchasedValue: n(totalNet),
+      totalPaidAmount: n(totalPaid),
+      totalBalanceDue: n(totalDue),
+    };
+
+    const totals = {
+      netAmount: n(totalNet),
+      paidAmount: n(totalPaid),
+      balanceDue: n(totalDue),
+    };
+
+    return formatReportResponse(ctx.meta, {
+      type: subType,
+      kpis,
+      tenderBreakdown,
+      rows: filteredRows,
+      totals,
+    });
+  }
+
+  if (subType === 'supplier-ledger') {
+    const suppliers = await prisma.supplier.findMany({
+      where: {
+        ...(query.supplierId ? { id: query.supplierId } : {}),
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    const fromDate = dateOnly(ctx.fromStr);
+    const priorEntries = await prisma.supplierLedger.groupBy({
+      by: ['supplierId'],
+      where: {
+        date: { lt: fromDate },
+        ...(query.supplierId ? { supplierId: query.supplierId } : {}),
+        ...branchFilter,
+      },
+      _sum: {
+        credit: true,
+        debit: true,
+      },
+    });
+
+    const priorMap = new Map();
+    for (const p of priorEntries) {
+      const c = toDec(p._sum.credit ?? 0);
+      const d = toDec(p._sum.debit ?? 0);
+      priorMap.set(p.supplierId, c.minus(d));
+    }
+
+    const periodEntries = await prisma.supplierLedger.findMany({
+      where: {
+        date: {
+          gte: fromDate,
+          lte: dateOnly(ctx.toStr),
+        },
+        ...(query.supplierId ? { supplierId: query.supplierId } : {}),
+        ...branchFilter,
+      },
+      include: {
+        supplier: true,
+      },
+      orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    const supplierRunning = new Map();
+    let totalOpeningPayable = toDec(0);
+    for (const s of suppliers) {
+      const prior = priorMap.get(s.id) || toDec(0);
+      const open = toDec(s.openingPayable || 0).plus(prior);
+      supplierRunning.set(s.id, open);
+      totalOpeningPayable = totalOpeningPayable.plus(open);
+    }
+
+    let totalPeriodDebit = toDec(0);
+    let totalPeriodCredit = toDec(0);
+
+    const rows = [];
+    for (const e of periodEntries) {
+      const prev = supplierRunning.get(e.supplierId) || toDec(0);
+      const dr = toDec(e.debit);
+      const cr = toDec(e.credit);
+
+      totalPeriodDebit = totalPeriodDebit.plus(dr);
+      totalPeriodCredit = totalPeriodCredit.plus(cr);
+
+      const next = prev.plus(cr).minus(dr);
+      supplierRunning.set(e.supplierId, next);
+
+      rows.push({
+        id: e.id,
+        date: ymd(e.date),
+        supplierId: e.supplierId,
+        supplierName: e.supplier?.name || 'Supplier',
+        branchId: e.branchId,
+        branchName: branchMap.get(e.branchId) || 'Branch',
+        entryType: e.entryType,
+        referenceType: e.referenceType,
+        referenceNumber: e.referenceNumber,
+        description: e.description,
+        debit: n(dr),
+        credit: n(cr),
+        runningBalance: n(next),
+        userName: e.userName,
+      });
+    }
+
+    let closingPayable = toDec(0);
+    for (const val of supplierRunning.values()) {
+      closingPayable = closingPayable.plus(val);
+    }
+
+    let filteredRows = rows;
+    if (query.search && query.search.trim()) {
+      const s = query.search.toLowerCase().trim();
+      filteredRows = rows.filter(
+        (r) =>
+          r.supplierName.toLowerCase().includes(s) ||
+          r.referenceNumber.toLowerCase().includes(s) ||
+          r.description.toLowerCase().includes(s)
+      );
+    }
+
+    const kpis = {
+      openingPayable: n(totalOpeningPayable),
+      periodPurchasesCredit: n(totalPeriodCredit),
+      periodPaymentsDebit: n(totalPeriodDebit),
+      closingPayable: n(closingPayable),
+      activeSuppliersCount: suppliers.length,
+    };
+
+    const totals = {
+      debit: n(totalPeriodDebit),
+      credit: n(totalPeriodCredit),
+    };
+
+    return formatReportResponse(ctx.meta, {
+      type: subType,
+      kpis,
+      rows: filteredRows,
+      totals,
+      suppliers: suppliers.map((s) => ({ id: s.id, name: s.name, code: s.supplierCode })),
+    });
+  }
+
+  if (subType === 'consumption') {
+    const movements = await prisma.stockMovement.findMany({
+      where: {
+        ...branchFilter,
+        movementType: { in: ['SALON_CONSUMPTION_OUT', 'INTERNAL_USE_OUT'] },
+        createdAt: {
+          gte: ctx.fromDate,
+          lte: ctx.toDate,
+        },
+        ...(query.itemId ? { itemId: query.itemId } : {}),
+      },
+      include: {
+        item: true,
+        batch: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    let totalQty = toDec(0);
+    let totalCost = toDec(0);
+    const categoryCostMap = new Map();
+
+    const rows = movements.map((m) => {
+      const q = toDec(m.quantity);
+      const c = toDec(m.totalCost);
+
+      totalQty = totalQty.plus(q);
+      totalCost = totalCost.plus(c);
+
+      const cat = m.item?.category || 'Consumable';
+      categoryCostMap.set(cat, (categoryCostMap.get(cat) || toDec(0)).plus(c));
+
+      return {
+        id: m.id,
+        movementNumber: m.movementNumber,
+        date: toDateString(m.createdAt),
+        time: toTimeString(m.createdAt),
+        branchId: m.branchId,
+        branchName: branchMap.get(m.branchId) || 'Branch',
+        itemId: m.itemId,
+        itemName: m.item?.name || 'Item',
+        sku: m.item?.sku || 'SKU',
+        category: cat,
+        batchNumber: m.batch?.batchNumber || 'N/A',
+        quantity: n(q),
+        unitCost: n(m.unitCost),
+        totalCost: n(c),
+        reason: m.reason || 'Salon Consumption',
+        notes: m.notes || '',
+        sourceReferenceNumber: m.sourceReferenceNumber || '',
+        userName: m.userName || 'Staff',
+      };
+    });
+
+    let filteredRows = rows;
+    if (query.search && query.search.trim()) {
+      const s = query.search.toLowerCase().trim();
+      filteredRows = rows.filter(
+        (r) =>
+          r.movementNumber.toLowerCase().includes(s) ||
+          r.itemName.toLowerCase().includes(s) ||
+          r.sku.toLowerCase().includes(s) ||
+          r.reason.toLowerCase().includes(s)
+      );
+    }
+
+    const categoryBreakdown = Array.from(categoryCostMap.entries()).map(([name, sum]) => ({
+      categoryName: name,
+      amount: n(sum),
+    })).sort((a, b) => b.amount - a.amount);
+
+    const kpis = {
+      totalConsumptionCount: movements.length,
+      totalConsumedQuantity: n(totalQty),
+      totalMaterialCost: n(totalCost),
+      categoryCount: categoryCostMap.size,
+    };
+
+    const totals = {
+      quantity: n(totalQty),
+      totalCost: n(totalCost),
+    };
+
+    return formatReportResponse(ctx.meta, {
+      type: subType,
+      kpis,
+      categoryBreakdown,
+      rows: filteredRows,
+      totals,
+    });
+  }
+
+  if (subType === 'expiry') {
+    const today = await getBusinessDate();
+    const todayStr = dateOnly(today);
+
+    const batches = await prisma.inventoryBatch.findMany({
+      where: {
+        ...branchFilter,
+        expiryDate: { not: null },
+        remainingQuantity: { gt: 0 },
+      },
+      include: {
+        item: true,
+      },
+      orderBy: { expiryDate: 'asc' },
+    });
+
+    let expiredCost = toDec(0);
+    let criticalCost = toDec(0);
+    let nearExpiryCost = toDec(0);
+    let expiredCount = 0;
+    let criticalCount = 0;
+    let nearExpiryCount = 0;
+
+    const rows = [];
+    for (const b of batches) {
+      const expDateStr = dateOnly(b.expiryDate);
+      const days = Math.round((new Date(expDateStr).getTime() - new Date(todayStr).getTime()) / (1000 * 3600 * 24));
+      const rem = toDec(b.remainingQuantity);
+      const cost = rem.times(b.unitCost);
+
+      let status = 'VALID';
+      if (days < 0) {
+        status = 'EXPIRED';
+        expiredCount++;
+        expiredCost = expiredCost.plus(cost);
+      } else if (days <= 30) {
+        status = 'CRITICAL';
+        criticalCount++;
+        criticalCost = criticalCost.plus(cost);
+      } else if (days <= (b.item.nearExpiryAlertDays || 60)) {
+        status = 'NEAR_EXPIRY';
+        nearExpiryCount++;
+        nearExpiryCost = nearExpiryCost.plus(cost);
+      }
+
+      rows.push({
+        id: b.id,
+        batchNumber: b.batchNumber,
+        itemId: b.itemId,
+        itemName: b.item.name,
+        sku: b.item.sku,
+        category: b.item.category,
+        branchId: b.branchId,
+        branchName: branchMap.get(b.branchId) || 'Branch',
+        supplierName: b.supplierName || 'N/A',
+        receivedDate: ymd(b.receivedDate),
+        expiryDate: expDateStr,
+        daysRemaining: days,
+        remainingQuantity: n(rem),
+        unitCost: n(b.unitCost),
+        costAtRisk: n(cost),
+        status,
+      });
+    }
+
+    let filteredRows = rows;
+    if (query.search && query.search.trim()) {
+      const s = query.search.toLowerCase().trim();
+      filteredRows = rows.filter(
+        (r) =>
+          r.itemName.toLowerCase().includes(s) ||
+          r.sku.toLowerCase().includes(s) ||
+          r.batchNumber.toLowerCase().includes(s)
+      );
+    }
+
+    const kpis = {
+      totalTrackedBatches: batches.length,
+      expiredBatchesCount: expiredCount,
+      expiredCostLoss: n(expiredCost),
+      criticalBatchesCount: criticalCount,
+      criticalCostAtRisk: n(criticalCost),
+      nearExpiryBatchesCount: nearExpiryCount,
+      nearExpiryCostAtRisk: n(nearExpiryCost),
+    };
+
+    const totals = {
+      remainingQuantity: n(filteredRows.reduce((acc, r) => acc + r.remainingQuantity, 0)),
+      costAtRisk: n(filteredRows.reduce((acc, r) => acc + r.costAtRisk, 0)),
+    };
+
+    return formatReportResponse(ctx.meta, {
+      type: subType,
+      kpis,
+      rows: filteredRows,
+      totals,
+    });
+  }
+
+  const summaryData = await inventorySummary(actor, ctx.branchId);
+  return formatReportResponse(ctx.meta, {
+    type: 'summary',
+    kpis: summaryData,
+    rows: [],
+    totals: {},
+  });
+};
+
+// ═══ ATTENDANCE & OVERTIME REPORT ═════════════════════════════════════════════
+export const attendanceOvertimeReport = async (actor, query = {}) => {
+  denyNonAdmins(actor, 'staff attendance or overtime reports');
+
+  const ctx = await resolveReportContext(actor, query, 'WORK_DATE');
+  const branchFilter = ctx.branchId ? { branchId: ctx.branchId } : {};
+  const staffFilter = query.staffId && query.staffId !== 'ALL' ? { staffId: query.staffId } : {};
+
+  const [staffList, branches] = await Promise.all([
+    prisma.staff.findMany({
+      where: {
+        ...branchFilter,
+        ...(query.staffId && query.staffId !== 'ALL' ? { id: query.staffId } : {}),
+      },
+      select: {
+        id: true,
+        name: true,
+        employeeCode: true,
+        designation: true,
+        branchId: true,
+        startTime: true,
+        endTime: true,
+        baseSalary: true,
+      },
+    }),
+    prisma.branch.findMany({ select: { id: true, name: true } }),
+  ]);
+
+  const staffMap = new Map(staffList.map((s) => [s.id, s]));
+  const branchMap = new Map(branches.map((b) => [b.id, b.name]));
+
+  const [attendanceRecords, overtimeRecords] = await Promise.all([
+    prisma.attendanceRecord.findMany({
+      where: {
+        ...branchFilter,
+        ...staffFilter,
+        workDate: { gte: ctx.fromDate, lte: ctx.toDate },
+      },
+      orderBy: [{ workDate: 'desc' }, { createdAt: 'desc' }],
+    }),
+    prisma.overtimeRecord.findMany({
+      where: {
+        ...branchFilter,
+        ...staffFilter,
+        workDate: { gte: ctx.fromDate, lte: ctx.toDate },
+      },
+      orderBy: [{ workDate: 'desc' }, { enteredAt: 'desc' }],
+    }),
+  ]);
+
+  // Group overtime by staffId + YYYY-MM-DD
+  const otMap = new Map();
+  for (const ot of overtimeRecords) {
+    const dStr = ymd(ot.workDate) || String(ot.workDate).slice(0, 10);
+    const key = `${ot.staffId}_${dStr}`;
+    if (!otMap.has(key)) otMap.set(key, []);
+    otMap.get(key).push(ot);
+  }
+
+  const recordKeys = new Set();
+  const rows = [];
+
+  for (const att of attendanceRecords) {
+    const dateStr = ymd(att.workDate) || String(att.workDate).slice(0, 10);
+    const key = `${att.staffId}_${dateStr}`;
+    recordKeys.add(key);
+
+    const st = staffMap.get(att.staffId);
+    const staffName = st?.name || 'Unknown Staff';
+    const employeeCode = st?.employeeCode || '—';
+    const designation = st?.designation || 'Staff';
+    const branchName = branchMap.get(att.branchId) || 'Branch';
+
+    const dayOts = otMap.get(key) || [];
+    const approvedOt = dayOts.filter((o) => o.status === 'APPROVED');
+    const otMinutes = approvedOt.reduce((sum, o) => sum + (o.approvedMinutes || o.minutes || 0), 0);
+    const otHours = n(toDec(otMinutes).dividedBy(60));
+    const otAmount = n(approvedOt.reduce((sum, o) => sum.plus(toDec(o.amount || 0)), toDec(0)));
+    const otStatus = dayOts.length > 0 ? dayOts[0].status : 'NONE';
+    const otReason = dayOts.map((o) => o.reason).filter(Boolean).join('; ') || '—';
+    const otApprovedBy = dayOts.map((o) => o.approvedByName).filter(Boolean).join(', ') || '—';
+
+    rows.push({
+      id: att.id,
+      date: dateStr,
+      staffId: att.staffId,
+      staffName,
+      employeeCode,
+      designation,
+      branchId: att.branchId,
+      branchName,
+      shift: st?.startTime && st?.endTime ? `${st.startTime} - ${st.endTime}` : 'Standard (9h)',
+      checkIn: att.checkIn || '—',
+      checkOut: att.checkOut || '—',
+      scheduledHours: n(att.scheduledHours || 8),
+      workedHours: n(att.workedHours || 0),
+      lateMinutes: att.lateMinutes || 0,
+      earlyExitMinutes: att.earlyExitMinutes || 0,
+      isLate: Boolean(att.isLate || att.lateMinutes > 0),
+      status: att.status,
+      source: att.source || 'MANUAL',
+      otMinutes,
+      otHours,
+      otAmount,
+      otStatus,
+      otReason,
+      otApprovedBy,
+      notes: att.notes || '',
+    });
+  }
+
+  // Include standalone overtime records that don't have an attendance punch on that date
+  for (const ot of overtimeRecords) {
+    const dateStr = ymd(ot.workDate) || String(ot.workDate).slice(0, 10);
+    const key = `${ot.staffId}_${dateStr}`;
+    if (!recordKeys.has(key)) {
+      recordKeys.add(key);
+      const st = staffMap.get(ot.staffId);
+      const staffName = st?.name || 'Unknown Staff';
+      const employeeCode = st?.employeeCode || '—';
+      const designation = st?.designation || 'Staff';
+      const branchName = branchMap.get(ot.branchId) || 'Branch';
+
+      const isApproved = ot.status === 'APPROVED';
+      const otMin = isApproved ? (ot.approvedMinutes || ot.minutes || 0) : ot.minutes;
+      const otHours = n(toDec(otMin).dividedBy(60));
+      const otAmount = isApproved ? n(ot.amount || 0) : 0;
+
+      rows.push({
+        id: `ot-${ot.id}`,
+        date: dateStr,
+        staffId: ot.staffId,
+        staffName,
+        employeeCode,
+        designation,
+        branchId: ot.branchId,
+        branchName,
+        shift: st?.shift || 'Overtime Entry',
+        checkIn: '—',
+        checkOut: '—',
+        scheduledHours: 0,
+        workedHours: 0,
+        lateMinutes: 0,
+        earlyExitMinutes: 0,
+        isLate: false,
+        status: isApproved ? 'APPROVED_OVERTIME' : 'OVERTIME_ENTRY',
+        source: 'MANUAL',
+        otMinutes: otMin,
+        otHours,
+        otAmount,
+        otStatus: ot.status,
+        otReason: ot.reason || '—',
+        otApprovedBy: ot.approvedByName || '—',
+        notes: ot.notes || '',
+      });
+    }
+  }
+
+  rows.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(a.staffName || '').localeCompare(String(b.staffName || '')));
+
+  let filteredRows = rows;
+  if (query.status && query.status !== 'ALL') {
+    filteredRows = filteredRows.filter((r) => r.status === query.status);
+  }
+  if (query.otStatus && query.otStatus !== 'ALL') {
+    filteredRows = filteredRows.filter((r) => r.otStatus === query.otStatus);
+  }
+  if (query.search && query.search.trim()) {
+    const s = query.search.toLowerCase().trim();
+    filteredRows = filteredRows.filter(
+      (r) =>
+        r.staffName.toLowerCase().includes(s) ||
+        r.employeeCode.toLowerCase().includes(s) ||
+        r.designation.toLowerCase().includes(s)
+    );
+  }
+
+  const presentCount = rows.filter((r) => r.status === 'PRESENT' || r.workedHours > 0).length;
+  const absentCount = rows.filter((r) => r.status === 'ABSENT').length;
+  const leaveCount = rows.filter((r) => r.status.includes('LEAVE')).length;
+  const lateCount = rows.filter((r) => r.isLate || r.lateMinutes > 0).length;
+  const totalWorkedHours = n(rows.reduce((sum, r) => sum + r.workedHours, 0));
+  const authorizedOtHours = n(rows.reduce((sum, r) => sum + r.otHours, 0));
+  const authorizedOtAmount = n(rows.reduce((sum, r) => sum + r.otAmount, 0));
+
+  const kpis = {
+    totalRecords: rows.length,
+    presentCount,
+    absentCount,
+    leaveCount,
+    lateCount,
+    totalWorkedHours,
+    authorizedOtHours,
+    authorizedOtAmount,
+  };
+
+  const totals = {
+    scheduledHours: n(filteredRows.reduce((sum, r) => sum + r.scheduledHours, 0)),
+    workedHours: n(filteredRows.reduce((sum, r) => sum + r.workedHours, 0)),
+    lateMinutes: filteredRows.reduce((sum, r) => sum + r.lateMinutes, 0),
+    otMinutes: filteredRows.reduce((sum, r) => sum + r.otMinutes, 0),
+    otHours: n(filteredRows.reduce((sum, r) => sum + r.otHours, 0)),
+    otAmount: n(filteredRows.reduce((sum, r) => sum + r.otAmount, 0)),
+  };
+
+  return formatReportResponse(ctx.meta, {
+    kpis,
+    rows: filteredRows,
+    totals,
+  });
+};
+
+
+
+
+
+
