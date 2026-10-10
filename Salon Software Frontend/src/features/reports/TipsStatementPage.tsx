@@ -394,130 +394,96 @@ export const TipsStatementPage: React.FC = () => {
         </div>
       </div>
 
-      {/* RECONCILING EQUATION BANNER */}
-      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-6 rounded-2xl text-white shadow-md space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-indigo-800/60 pb-3">
-          <div className="flex items-center gap-2">
-            <Scale className="w-5 h-5 text-indigo-400" />
-            <h2 className="text-sm font-semibold tracking-wide uppercase text-indigo-200">
-              Staff Tip Liability Reconciliation Formula
-            </h2>
-          </div>
-          <div className="flex items-center gap-2 text-xs">
-            {isEquationBalanced && isBreakdownBalanced ? (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 font-semibold border border-emerald-500/40">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                100% Reconciled to Sub-Ledgers
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/20 text-rose-300 font-semibold border border-rose-500/40">
-                <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
-                Discrepancy Detected
-              </span>
-            )}
-            <span className="text-slate-400">Cutoff: {endDate}</span>
-          </div>
+      {/* RECONCILING EQUATION & STATUS */}
+      <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-white border border-slate-200 rounded-xl shadow-2xs">
+        <div className="flex items-center gap-2">
+          <Scale className="w-4 h-4 text-[#0047AB]" />
+          <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">
+            Staff Tip Liability Reconciliation
+          </span>
         </div>
-
-        {/* The Equation Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-7 items-center text-center gap-3 pt-2">
-          {/* 1. Opening Liability */}
-          <div className="bg-white/10 backdrop-blur-sm p-4 rounded-xl border border-white/10">
-            <span className="text-[11px] text-slate-300 block uppercase font-medium">Opening Liability</span>
-            <span className="text-xl font-bold text-white mt-1 block">
-              {formatCurrency(summary.openingLiability)}
+        <div className="flex items-center gap-2 text-xs">
+          {isEquationBalanced && isBreakdownBalanced ? (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-700 font-semibold border border-emerald-200">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              100% Reconciled
             </span>
-            <span className="text-[10px] text-slate-400 block mt-1">Prior to {startDate}</span>
-          </div>
-
-          <div className="text-xl font-bold text-indigo-300 md:block hidden">+</div>
-
-          {/* 2. Net Tips Collected */}
-          <div className="bg-emerald-950/40 p-4 rounded-xl border border-emerald-500/30">
-            <span className="text-[11px] text-emerald-300 block uppercase font-medium">
-              {summary.liabilityBasis === 'STAFF_ALLOCATIONS' ? 'Net Tips Allocated' : 'Net Tips Collected'}
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-rose-50 text-rose-700 font-semibold border border-rose-200">
+              <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
+              Discrepancy Detected
             </span>
-            <span className="text-xl font-bold text-emerald-400 mt-1 block">
-              +{formatCurrency(summary.netTipsCollected)}
-            </span>
-            <span className="text-[10px] text-emerald-300/70 block mt-1">{summary.receiptsCount} receipts in period</span>
-          </div>
-
-          <div className="text-xl font-bold text-indigo-300 md:block hidden">-</div>
-
-          {/* 3. Net Payouts */}
-          <div className="bg-rose-950/40 p-4 rounded-xl border border-rose-500/30">
-            <span className="text-[11px] text-rose-300 block uppercase font-medium">Net Payouts Disbursed</span>
-            <span className="text-xl font-bold text-rose-400 mt-1 block">
-              -{formatCurrency(summary.netPayouts)}
-            </span>
-            <span className="text-[10px] text-rose-300/70 block mt-1">{summary.payoutsCount} disbursements settled</span>
-          </div>
-
-          <div className="text-xl font-bold text-indigo-300 md:block hidden">=</div>
-
-          {/* 4. Closing Liability */}
-          <div className="bg-amber-950/50 p-4 rounded-xl border border-amber-500/40">
-            <span className="text-[11px] text-amber-300 block uppercase font-medium">Closing Liability</span>
-            <span className="text-xl font-bold text-amber-400 mt-1 block">
-              {formatCurrency(summary.closingLiability)}
-            </span>
-            <span className="text-[10px] text-amber-300/70 block mt-1">As of {endDate} Cutoff</span>
-          </div>
-        </div>
-
-        {/* Sub-Ledger Composition Note */}
-        <div className="bg-black/30 p-3 rounded-xl border border-white/5 flex flex-wrap items-center justify-between text-xs text-slate-300 gap-2">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-indigo-400 shrink-0" />
-            <span>
-              <strong>Accounting Rule:</strong> Client tips are staff liabilities held in trust. Allocations assign beneficiary rights without altering overall salon liability.
-            </span>
-          </div>
-          <div className="flex items-center gap-3 font-semibold text-slate-200">
-            <span>Pool: {formatCurrency(summary.unallocatedTips)}</span>
-            <span>+</span>
-            <span>Payable: {formatCurrency(summary.allocatedUnpaidTips)}</span>
-            <span>=</span>
-            <span className="text-amber-300">{formatCurrency(summary.closingLiability)}</span>
-          </div>
+          )}
+          <span className="text-slate-500 font-mono">Cutoff: {endDate}</span>
         </div>
       </div>
 
-      {/* 2 Breakdown Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between">
-          <div>
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">
-              Unallocated Tips (Branch Gratuity Pool)
-            </span>
-            <span className="text-2xl font-bold text-slate-800 mt-1 block">
-              {formatCurrency(summary.unallocatedTips)}
-            </span>
-            <p className="text-xs text-slate-500 mt-1">
-              Collected from invoices but not yet designated to specific stylists or team members.
-            </p>
-          </div>
-          <div className="p-3 bg-slate-100 rounded-xl text-slate-600">
-            <Coins className="w-6 h-6" />
-          </div>
+      {/* CLEAN WHITE KPI CARDS */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        {/* 1. Opening Liability */}
+        <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+            Opening Liability
+          </span>
+          <span className="text-base font-bold text-slate-900 font-mono block">
+            {formatCurrency(summary.openingLiability)}
+          </span>
+          <span className="text-[10px] text-slate-400 mt-0.5 block">Prior to {startDate}</span>
         </div>
 
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between">
-          <div>
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">
-              Allocated but Unpaid (Staff Payable)
-            </span>
-            <span className="text-2xl font-bold text-indigo-600 mt-1 block">
-              {formatCurrency(summary.allocatedUnpaidTips)}
-            </span>
-            <p className="text-xs text-slate-500 mt-1">
-              Designated to verified staff entitlements awaiting drawer or bank payout disbursement.
-            </p>
-          </div>
-          <div className="p-3 bg-indigo-50 rounded-xl text-indigo-600">
-            <Wallet className="w-6 h-6" />
-          </div>
+        {/* 2. Net Tips Collected */}
+        <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+            {summary.liabilityBasis === 'STAFF_ALLOCATIONS' ? 'Net Tips Allocated' : 'Net Tips Collected'}
+          </span>
+          <span className="text-base font-bold text-emerald-600 font-mono block">
+            +{formatCurrency(summary.netTipsCollected)}
+          </span>
+          <span className="text-[10px] text-emerald-600 mt-0.5 block">{summary.receiptsCount} receipts</span>
+        </div>
+
+        {/* 3. Net Payouts */}
+        <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+            Net Payouts Disbursed
+          </span>
+          <span className="text-base font-bold text-rose-600 font-mono block">
+            -{formatCurrency(summary.netPayouts)}
+          </span>
+          <span className="text-[10px] text-rose-600 mt-0.5 block">{summary.payoutsCount} disbursements</span>
+        </div>
+
+        {/* 4. Closing Liability */}
+        <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+            Closing Liability
+          </span>
+          <span className="text-base font-bold text-amber-600 font-mono block">
+            {formatCurrency(summary.closingLiability)}
+          </span>
+          <span className="text-[10px] text-slate-400 mt-0.5 block">At Cutoff Date</span>
+        </div>
+
+        {/* 5. Unallocated Tips */}
+        <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+            Gratuity Pool
+          </span>
+          <span className="text-base font-bold text-slate-800 font-mono block">
+            {formatCurrency(summary.unallocatedTips)}
+          </span>
+          <span className="text-[10px] text-slate-400 mt-0.5 block">Unallocated</span>
+        </div>
+
+        {/* 6. Allocated Unpaid */}
+        <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+            Staff Payable
+          </span>
+          <span className="text-base font-bold text-indigo-600 font-mono block">
+            {formatCurrency(summary.allocatedUnpaidTips)}
+          </span>
+          <span className="text-[10px] text-slate-400 mt-0.5 block">Awaiting Payout</span>
         </div>
       </div>
 
@@ -527,7 +493,7 @@ export const TipsStatementPage: React.FC = () => {
           onClick={() => setActiveTab('SUMMARY')}
           className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all ${
             activeTab === 'SUMMARY'
-              ? 'bg-slate-900 text-white shadow-sm'
+              ? 'bg-[#0047AB] text-white shadow-sm'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
           }`}
         >

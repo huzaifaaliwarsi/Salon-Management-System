@@ -75,11 +75,24 @@ describe('Step 4 · Payment accounts', () => {
 
     const tog = await as('admin').post(`/payment-accounts/${res.body.data.id}/toggle`);
     expect(tog.body.data.isActive).toBe(false);
+
+    // Delete unused account -> permanently removed
+    const del = await as('admin').delete(`/payment-accounts/${res.body.data.id}`);
+    expect(del.status).toBe(200);
+    expect(del.body.data.deleted).toBe(true);
+
+    // Delete account with historical movements -> archives it to preserve ledger integrity
+    const delExisting = await as('admin').delete('/payment-accounts/acc-1');
+    expect(delExisting.status).toBe(200);
+    expect(delExisting.body.data.archived).toBe(true);
+    // Restore acc-1 back to active for subsequent tests
+    await as('admin').post('/payment-accounts/acc-1/toggle');
   });
 
   it('validates required fields and denies accountants', async () => {
     expect((await as('admin').post('/payment-accounts', { name: 'X' })).status).toBe(400);
     expect((await as('accountant').post('/payment-accounts', { name: 'X', providerName: 'Y', accountHolder: 'Z' })).status).toBe(403);
+    expect((await as('accountant').delete('/payment-accounts/acc-1')).status).toBe(403);
   });
 
   it('exposes the legacy online-account view', async () => {

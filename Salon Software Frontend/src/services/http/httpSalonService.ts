@@ -31,6 +31,14 @@ import {
   MonthlyPaySummary,
   StaffSalaryReport,
   StaffCommissionReport,
+  SalesInvoicesReport,
+  IncomeExpenseReport,
+  OperatingProfitReport,
+  PaymentAccountsReport,
+  CashDrawerReport,
+  DetailedExpensesReport,
+  InventoryReportData,
+  AttendanceOvertimeReport,
   Settlement,
   StaffPerformanceRecord,
   TipAllocationRecord,
@@ -96,6 +104,7 @@ const liveMethods: SalonServiceContract = {
   createPaymentAccount: (branchId, account) => api.post<PaymentAccount>('/payment-accounts', { ...account, branchId }),
   updatePaymentAccount: (id, account) => api.put<PaymentAccount>(`/payment-accounts/${id}`, account),
   togglePaymentAccountStatus: (id) => api.post<PaymentAccount>(`/payment-accounts/${id}/toggle`),
+  deletePaymentAccount: (id) => api.delete<{ id: string; deleted?: boolean; archived?: boolean; message: string }>(`/payment-accounts/${id}`),
   getOnlineAccounts: (branchId) => api.get<OnlineAccount[]>('/online-accounts', branchQuery(branchId)),
 
   // Business (operating) date lives in the database; only Super Admin may change it.
@@ -326,6 +335,14 @@ const liveMethods: SalonServiceContract = {
   reverseSalaryAdvance: (id, reason) => api.post<SalaryAdvance>(`/payroll/advances/${id}/reverse`, { reason }),
   getStaffSalaryReport: ({ branchId, ...q }) => api.get<StaffSalaryReport>('/reports/staff-salary', { ...branchQuery(branchId), ...q }),
   getStaffCommissionReport: ({ branchId, ...q }) => api.get<StaffCommissionReport>('/reports/staff-commission', { ...branchQuery(branchId), ...q }),
+  getSalesInvoicesReport: ({ branchId, ...q }) => api.get<SalesInvoicesReport>('/reports/sales-invoices', { ...branchQuery(branchId), ...q }),
+  getIncomeExpenseReport: ({ branchId, ...q }) => api.get<IncomeExpenseReport>('/reports/income-expense', { ...branchQuery(branchId), ...q }),
+  getOperatingProfitReport: ({ branchId, ...q }) => api.get<OperatingProfitReport>('/reports/operating-profit', { ...branchQuery(branchId), ...q }),
+  getPaymentAccountsReport: ({ branchId, ...q }) => api.get<PaymentAccountsReport>('/reports/payment-accounts', { ...branchQuery(branchId), ...q }),
+  getCashDrawerReport: ({ branchId, ...q }) => api.get<CashDrawerReport>('/reports/cash-drawer', { ...branchQuery(branchId), ...q }),
+  getDetailedExpensesReport: ({ branchId, ...q }) => api.get<DetailedExpensesReport>('/reports/detailed-expenses', { ...branchQuery(branchId), ...q }),
+  getInventoryReport: ({ branchId, ...q }) => api.get<InventoryReportData>('/reports/inventory', { ...branchQuery(branchId), ...q }),
+  getAttendanceOvertimeReport: ({ branchId, ...q }) => api.get<AttendanceOvertimeReport>('/reports/attendance-overtime', { ...branchQuery(branchId), ...q }),
 
   // ── Step 17 · Commission ───────────────────────────────────────────────────
   getCommissionRuns: (branchId) => api.get<CommissionRun[]>('/commission/runs', branchQuery(branchId)),

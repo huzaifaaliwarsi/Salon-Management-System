@@ -51,6 +51,22 @@ import {
   StaffSalaryReportQuery,
   StaffCommissionReport,
   StaffCommissionReportQuery,
+  SalesInvoicesReport,
+  SalesInvoicesReportQuery,
+  IncomeExpenseReport,
+  IncomeExpenseReportQuery,
+  OperatingProfitReport,
+  OperatingProfitReportQuery,
+  PaymentAccountsReport,
+  PaymentAccountsReportQuery,
+  CashDrawerReport,
+  CashDrawerReportQuery,
+  DetailedExpensesReport,
+  DetailedExpensesReportQuery,
+  InventoryReportData,
+  InventoryReportQuery,
+  AttendanceOvertimeReport,
+  AttendanceOvertimeReportQuery,
   CommissionRun,
   CommissionPayment,
   CommissionStatementRecord,
@@ -327,6 +343,7 @@ export interface SalonServiceContract {
   createPaymentAccount(branchId: string, account: Omit<PaymentAccount, 'id' | 'branchId' | 'currentBalance' | 'createdAt'>, actor?: User): Promise<PaymentAccount>;
   updatePaymentAccount(id: string, account: Partial<PaymentAccount>, actor?: User): Promise<PaymentAccount>;
   togglePaymentAccountStatus(id: string, actor?: User): Promise<PaymentAccount>;
+  deletePaymentAccount(id: string, actor?: User): Promise<{ id: string; deleted?: boolean; archived?: boolean; message: string }>;
 
   getSystemDate(): Promise<string>;
   setSystemDate(date: string, actor?: User): Promise<void>;
@@ -488,6 +505,14 @@ export interface SalonServiceContract {
   // Spec §10.2 / §10.3 reports (read-only)
   getStaffSalaryReport(query: StaffSalaryReportQuery): Promise<StaffSalaryReport>;
   getStaffCommissionReport(query: StaffCommissionReportQuery): Promise<StaffCommissionReport>;
+  getSalesInvoicesReport(query: SalesInvoicesReportQuery): Promise<SalesInvoicesReport>;
+  getIncomeExpenseReport(query: IncomeExpenseReportQuery): Promise<IncomeExpenseReport>;
+  getOperatingProfitReport(query: OperatingProfitReportQuery): Promise<OperatingProfitReport>;
+  getPaymentAccountsReport(query: PaymentAccountsReportQuery): Promise<PaymentAccountsReport>;
+  getCashDrawerReport(query: CashDrawerReportQuery): Promise<CashDrawerReport>;
+  getDetailedExpensesReport(query: DetailedExpensesReportQuery): Promise<DetailedExpensesReport>;
+  getInventoryReport(query: InventoryReportQuery): Promise<InventoryReportData>;
+  getAttendanceOvertimeReport(query: AttendanceOvertimeReportQuery): Promise<AttendanceOvertimeReport>;
 
   generateCommissionPreview(branchId: string, startDate: string, endDate: string, staffId?: string, actor?: User): Promise<CommissionRun>;
   finalizeCommission(commissionRunId: string, actor?: User): Promise<CommissionRun>;

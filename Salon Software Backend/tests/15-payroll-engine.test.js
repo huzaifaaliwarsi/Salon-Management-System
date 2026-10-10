@@ -31,7 +31,7 @@ describe('Payroll engine · monthly', () => {
       const result = run(staff({ compensationType }), month, attendance(month));
       expect(result.canFinalize).toBe(true);
       expect(result.payslip).toMatchObject({ baseEarnings: 60000, netPayable: 60000 });
-      expect(result.payslip.calculationDetails).toMatchObject({ prorationApplied: false, payableDays: days(month).length, prorationDivisor: days(month).length });
+      expect(result.payslip.calculationDetails).toMatchObject({ prorationApplied: false, payableDays: days(month).length, prorationDivisor: 30 });
     }
   });
 
@@ -39,8 +39,8 @@ describe('Payroll engine · monthly', () => {
     const result = evaluateEmployeePayroll(staff({ joiningDate: '2026-10-08', baseSalary: 30000 }), '2026-10', POLICY,
       attendance('2026-10', { to: '2026-10-08' }), [], [], {}, { startDate: '2026-10-01', endDate: '2026-10-08', runType: 'CUSTOM_RANGE' });
     expect(result.canFinalize).toBe(true);
-    expect(result.payslip).toMatchObject({ baseEarnings: 967.74, presentDays: 1, joiningDate: '2026-10-08', absenceDeductions: 0 });
-    expect(result.payslip.calculationDetails).toMatchObject({ payableDays: 1, prorationDivisor: 31, divisorUsed: 30 });
+    expect(result.payslip).toMatchObject({ baseEarnings: 1000, presentDays: 1, joiningDate: '2026-10-08', absenceDeductions: 0 });
+    expect(result.payslip.calculationDetails).toMatchObject({ payableDays: 1, prorationDivisor: 30, divisorUsed: 30 });
     expect(result.payslip.employmentNotes[0]).toContain('outside employment dates');
   });
 
@@ -63,13 +63,13 @@ describe('Payroll engine · monthly', () => {
     expect(r.payslip).toMatchObject({ absentDays: 2, unpaidLeaveDays: 1, paidLeaveDays: 1, absenceDeductions: 6000, attendanceImpact: -6000, netPayable: 54000 });
   });
 
-  it('S3 mid-month joiner is prorated by calendar days and by working days', () => {
+  it('S3 mid-month joiner uses fixed 30 even with working-day policy', () => {
     const s = staff({ joiningDate: '2026-09-16' });
     const att = attendance('2026-09', { from: '2026-09-16' });
     expect(run(s, '2026-09', att).payslip.baseEarnings).toBe(30000);
     const wd = run(s, '2026-09', att, { policy: { ...POLICY, prorationMethod: 'WORKING_DAYS' } });
-    expect(wd.payslip.baseEarnings).toBe(30000); // 13 of 26 working days
-    expect(wd.payslip.calculationDetails.prorationFormula).toContain('13/26');
+    expect(wd.payslip.baseEarnings).toBe(30000); // 15 calendar days at salary / 30
+    expect(wd.payslip.calculationDetails.prorationFormula).toContain('/ 30');
   });
 
   it('S22 staff who left mid-month get the days worked, with no exceptions after the exit date', () => {

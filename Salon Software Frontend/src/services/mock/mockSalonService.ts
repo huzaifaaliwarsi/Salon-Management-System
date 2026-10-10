@@ -116,6 +116,14 @@ import {
   CreateSupplierReturnInput,
   CreateManualStockOutInput,
   CreateStockSettlementInput,
+  SalesInvoicesReport,
+  IncomeExpenseReport,
+  OperatingProfitReport,
+  PaymentAccountsReport,
+  CashDrawerReport,
+  DetailedExpensesReport,
+  InventoryReportData,
+  AttendanceOvertimeReport,
 } from '@/types/salon';
 import { User, Role } from '@/types/auth';
 import { mockStorage, StorageSchema, DEFAULT_DEMO_DATE } from './mockStorage';
@@ -2358,6 +2366,48 @@ class MockSalonService implements SalonServiceContract {
     account.isActive = !account.isActive;
     mockStorage.saveStore(store);
     return { ...account };
+  }
+
+  async deletePaymentAccount(id: string, actor?: User): Promise<{ id: string; deleted?: boolean; archived?: boolean; message: string }> {
+    const authenticatedActor = this.getAuthenticatedActor(actor);
+    if (authenticatedActor.role !== 'SUPER_ADMIN' && authenticatedActor.role !== 'ADMIN') {
+      throw new Error('Access Denied: Only Administrators can remove payment accounts.');
+    }
+
+    const store = mockStorage.getStore();
+    const index = store.paymentAccounts.findIndex((a) => a.id === id);
+    if (index === -1) {
+      throw new Error(`Payment account '${id}' not found.`);
+    }
+
+    const account = store.paymentAccounts[index];
+    if (authenticatedActor.role === 'ADMIN' && account.branchId !== authenticatedActor.branchId) {
+      throw new Error('Access Denied: Cannot delete payment account from another branch.');
+    }
+
+    const hasMovements = (store.invoices || []).some((inv: any) => inv.paymentAccountId === id) ||
+      (store.expenses || []).some((exp: any) => exp.paymentAccountId === id) ||
+      (store.purchases || []).some((pur: any) => pur.paymentAccountId === id);
+
+    if (hasMovements || (account.currentBalance && account.currentBalance !== 0)) {
+      account.isActive = false;
+      mockStorage.saveStore(store);
+      return {
+        id,
+        deleted: false,
+        archived: true,
+        message: `Account '${account.name}' has transaction history and cannot be permanently deleted. It has been deactivated and archived.`,
+      };
+    }
+
+    store.paymentAccounts.splice(index, 1);
+    mockStorage.saveStore(store);
+    return {
+      id,
+      deleted: true,
+      archived: false,
+      message: `Payment account '${account.name}' removed successfully.`,
+    };
   }
 
   // --- DEMO DATE PROVIDER ---
@@ -7068,6 +7118,14 @@ class MockSalonService implements SalonServiceContract {
   async reverseSalaryAdvance(): Promise<SalaryAdvance> { return this.apiOnly(); }
   async getStaffSalaryReport(): Promise<StaffSalaryReport> { return this.apiOnly(); }
   async getStaffCommissionReport(): Promise<StaffCommissionReport> { return this.apiOnly(); }
+  async getSalesInvoicesReport(): Promise<SalesInvoicesReport> { return this.apiOnly(); }
+  async getIncomeExpenseReport(): Promise<IncomeExpenseReport> { return this.apiOnly(); }
+  async getOperatingProfitReport(): Promise<OperatingProfitReport> { return this.apiOnly(); }
+  async getPaymentAccountsReport(): Promise<PaymentAccountsReport> { return this.apiOnly(); }
+  async getCashDrawerReport(): Promise<CashDrawerReport> { return this.apiOnly(); }
+  async getDetailedExpensesReport(): Promise<DetailedExpensesReport> { return this.apiOnly(); }
+  async getInventoryReport(): Promise<InventoryReportData> { return this.apiOnly(); }
+  async getAttendanceOvertimeReport(): Promise<AttendanceOvertimeReport> { return this.apiOnly(); }
   // =========================================================================
   // --- PHASE 3E: STAFF COMMISSION METHODS ---
   // =========================================================================

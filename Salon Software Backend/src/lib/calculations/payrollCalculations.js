@@ -149,7 +149,8 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
 
   // ── Divisor ──
   let divisorUsed;
-  if (staff.payrollDivisor && staff.payrollDivisor > 0) divisorUsed = staff.payrollDivisor;
+  if (isMonthly) divisorUsed = 30;
+  else if (staff.payrollDivisor && staff.payrollDivisor > 0) divisorUsed = staff.payrollDivisor;
   else if (typeof policy.customDivisorDays === "number" && policy.customDivisorDays > 0) divisorUsed = policy.customDivisorDays;
   else if (policy.monthlyAbsenceDivisor === 26 || policy.monthlyAbsenceDivisor === 30) divisorUsed = policy.monthlyAbsenceDivisor;
   else if (policy.monthlyAbsenceDivisor === "WORKING_DAYS") divisorUsed = workingDaysInMonth || 26;
@@ -161,29 +162,23 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
   const joinedMidMonth = !!staff.joiningDate && staff.joiningDate > startDateStr && staff.joiningDate <= endDateStr;
   const leftMidMonth = !!exitDate && exitDate >= startDateStr && exitDate < endDateStr;
   const employedDates = datesToEvaluate.filter(employed);
-  const prorationDivisor = policy.prorationMethod === 'WORKING_DAYS' ? workingDaysInMonth : totalCalendarDays;
-  const payableDays = policy.prorationMethod === 'WORKING_DAYS'
-    ? employedDates.filter((d) => isWorkingDay(d, staff, branchHolidays).isWorking).length
-    : employedDates.length;
+  const prorationDivisor = 30;
+  const payableDays = employedDates.length;
   const excludedAttendanceDays = empAttendance.filter((a) => !employed(a.date)).length;
 
   if (isMonthly) {
     const fullMonthlyBase = staff.baseSalary || 0;
-    if (isPeriodRun || joinedMidMonth || leftMidMonth) {
-      isProrated = true;
-      const span = datesToEvaluate.filter(employed);
-      if (policy.prorationMethod === "WORKING_DAYS") {
-        const workedSpan = span.filter((d) => isWorkingDay(d, staff, branchHolidays).isWorking).length;
-        baseEarnings = roundCurrency(fullMonthlyBase * (workingDaysInMonth > 0 ? workedSpan / workingDaysInMonth : 1));
-        prorationFormula = `Prorated by working days: ${workedSpan}/${workingDaysInMonth} of PKR ${fmt(fullMonthlyBase)}`;
-      } else {
-        baseEarnings = roundCurrency(fullMonthlyBase * span.length / totalCalendarDays);
-        prorationFormula = `Prorated by calendar days: ${span.length}/${totalCalendarDays} of PKR ${fmt(fullMonthlyBase)}`;
-      }
-    } else {
-      baseEarnings = fullMonthlyBase;
-    }
-    absenceDeductions = roundCurrency(roundCurrency(fullMonthlyBase / divisorUsed) * (absentDays + unpaidLeaveDays));
+    isProrated = isPeriodRun || joinedMidMonth || leftMidMonth;
+    const priorDates = options.alreadyFinalizedDates || new Set();
+    const coveredDates = new Set([...priorDates, ...employedDates].filter((d) => d.startsWith(month) && employed(d)));
+    const completesMonth = allMonthDates.every(employed) && allMonthDates.every((d) => coveredDates.has(d));
+    const priorBase = Number(options.alreadyFinalizedBaseEarnings || 0);
+    const target = completesMonth ? fullMonthlyBase : Math.min(fullMonthlyBase, roundCurrency(fullMonthlyBase / 30 * coveredDates.size));
+    baseEarnings = roundCurrency(Math.max(0, target - priorBase));
+    const rawBase = roundCurrency(fullMonthlyBase / 30 * payableDays);
+    const reconciliation = roundCurrency(baseEarnings - rawBase);
+    prorationFormula = `PKR ${fmt(fullMonthlyBase)} / 30 ? ${payableDays} eligible days = PKR ${fmt(rawBase)}; monthly reconciliation PKR ${fmt(reconciliation)}; earned base PKR ${fmt(baseEarnings)}`;
+    absenceDeductions = roundCurrency(fullMonthlyBase / 30 * (absentDays + unpaidLeaveDays));
   } else if (isDaily) {
     const dailyRate = staff.dailySalaryRate || 0;
     baseEarnings = roundCurrency(dailyRate * presentDays);
@@ -272,7 +267,7 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
   const extrasText = ` + Allowances (PKR ${fmt(allowancesTotal)}) - Other Deductions (PKR ${fmt(otherDeductions)}) - Advance Recovery (PKR ${fmt(advanceRecoveryAmount)})`;
   let formula;
   if (isMonthly) {
-    formula = `Base Salary (PKR ${fmt(baseEarnings)}) - Absences (${absentDays + unpaidLeaveDays}d @ PKR ${fmt(roundCurrency((staff.baseSalary || 0) / divisorUsed))}/d = PKR ${fmt(absenceDeductions)}) - Penalties (PKR ${fmt(attendancePenaltyDeductions)}) + Overtime (${approvedOvertimeMinutes}m @ PKR ${fmt(hourlyRateSnapshot)}/hr = PKR ${fmt(approvedOvertimeAmount)})${extrasText} = Net PKR ${fmt(netPayable)}`;
+    formula = `${prorationFormula}. Base Salary (PKR ${fmt(baseEarnings)}) - Absences (${absentDays + unpaidLeaveDays}d @ PKR ${fmt(roundCurrency((staff.baseSalary || 0) / divisorUsed))}/d = PKR ${fmt(absenceDeductions)}) - Penalties (PKR ${fmt(attendancePenaltyDeductions)}) + Overtime (${approvedOvertimeMinutes}m @ PKR ${fmt(hourlyRateSnapshot)}/hr = PKR ${fmt(approvedOvertimeAmount)})${extrasText} = Net PKR ${fmt(netPayable)}`;
   } else if (isDaily) {
     formula = `Daily Rate (PKR ${fmt(staff.dailySalaryRate)} × ${presentDays} present days = PKR ${fmt(baseEarnings)}) + Paid Leave (${paidLeaveDays}d = PKR ${fmt(leaveEarnings)}) + Holidays/Weekly Off (${paidHolidayDays + paidWeeklyOffDays}d = PKR ${fmt(holidayEarnings)}) - Penalties (PKR ${fmt(attendancePenaltyDeductions)}) + Overtime (PKR ${fmt(approvedOvertimeAmount)})${extrasText} = Net PKR ${fmt(netPayable)}`;
   } else {
@@ -341,17 +336,18 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
       outstandingAmount: Math.max(0, netPayable),
       calculationDetails: {
         formula,
+        monthlyCalculationVersion: isMonthly ? 2 : undefined,
         divisorUsed,
         payableDays: isMonthly ? payableDays : presentDays + paidLeaveDays + paidHolidayDays + paidWeeklyOffDays,
         prorationDivisor: isMonthly ? prorationDivisor : undefined,
         prorationDays: isMonthly ? payableDays : undefined,
         prorationApplied: isProrated,
-        prorationFormula: isProrated ? prorationFormula : void 0,
+        prorationFormula: isMonthly ? prorationFormula : void 0,
         dailyRateUsed: isDaily ? (staff.dailySalaryRate || 0) : roundCurrency((staff.baseSalary || 0) / divisorUsed),
         periodType: runType,
         startDate: periodStartDate,
         endDate: periodEndDate,
-        policyNotes: `Policy Divisor: /${divisorUsed}. Daily Leave Eligible: ${policy.dailyStaffPaidLeaveEligibility}. Holiday Paid (daily): ${!!policy.nonWorkedHolidayPaid}. Weekly Off Paid (daily): ${!!policy.nonWorkedWeeklyOffPaid}. Proration: ${policy.prorationMethod}.`
+        policyNotes: `Policy Divisor: /${divisorUsed}. Daily Leave Eligible: ${policy.dailyStaffPaidLeaveEligibility}. Holiday Paid (daily): ${!!policy.nonWorkedHolidayPaid}. Weekly Off Paid (daily): ${!!policy.nonWorkedWeeklyOffPaid}. Proration: ${isMonthly ? "FIXED_30_WITH_MONTHLY_RECONCILIATION" : policy.prorationMethod}.`
       }
     }
   };

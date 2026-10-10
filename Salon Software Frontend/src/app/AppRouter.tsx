@@ -21,6 +21,7 @@ import { ExpenseManagementPage } from '../features/expenses/ExpenseManagementPag
 import { MyBalanceSheetPage } from '../features/custody/MyBalanceSheetPage';
 import { AccountSettlementPage } from '../features/custody/AccountSettlementPage';
 import { StaffAttendancePage } from '../features/attendance/StaffAttendancePage';
+import { LeaveManagementPage } from '../features/attendance/LeaveManagementPage';
 import { ManualOvertimePage } from '../features/overtime/ManualOvertimePage';
 import { PayrollPage } from '../features/payroll/PayrollPage';
 import { StaffLoansPage } from '../features/payroll/StaffLoansPage';
@@ -39,8 +40,12 @@ import { COGSReportPage } from '../features/reports/COGSReportPage';
 import { GeneralLedgerPage } from '../features/ledger/GeneralLedgerPage';
 import { ActivityLogPage } from '../features/audit/ActivityLogPage';
 import { IncomeExpenseReportPage } from '../features/reports/IncomeExpenseReportPage';
+import { PaymentAccountsReportPage } from '../features/reports/PaymentAccountsReportPage';
+import { CashDrawerLogsReportPage } from '../features/reports/CashDrawerLogsReportPage';
+import { DetailedExpensesReportPage } from '../features/reports/DetailedExpensesReportPage';
 import { StaffSalaryReportPage } from '../features/reports/StaffSalaryReportPage';
 import { StaffCommissionReportPage } from '../features/reports/StaffCommissionReportPage';
+import { AttendanceOvertimeReportPage } from '../features/reports/AttendanceOvertimeReportPage';
 import { ScheduledModuleView } from '../features/scaffold/ScheduledModuleView';
 import { AccessDeniedView } from '../features/scaffold/AccessDeniedView';
 
@@ -115,11 +120,13 @@ export const AppRouter: React.FC = () => {
       pathname === '/admin/branch-settings' ||
       pathname === '/admin/tax-settings' ||
       pathname === '/admin/payment-accounts' ||
-      pathname === '/reports/payment-accounts' ||
       pathname === '/admin/data-reset' ||
       pathname === '/admin/reset-data'
     ) {
       return <BranchSettingsPage />;
+    }
+    if (pathname === '/reports/payment-accounts') {
+      return <PaymentAccountsReportPage />;
     }
 
     // 5. Phase 3A: POS Billing and Invoice Management
@@ -134,12 +141,11 @@ export const AppRouter: React.FC = () => {
     }
 
     // 6. Phase 3B: Expense Management
-    if (
-      pathname === '/accounts/expenses' ||
-      pathname === '/expenses' ||
-      pathname === '/reports/detailed-expenses'
-    ) {
+    if (pathname === '/accounts/expenses' || pathname === '/expenses') {
       return <ExpenseManagementPage />;
+    }
+    if (pathname === '/reports/detailed-expenses') {
+      return <DetailedExpensesReportPage />;
     }
 
     // 7. Phase 3C: Balance Sheet, Account Settlement & Cash Drawers
@@ -148,10 +154,12 @@ export const AppRouter: React.FC = () => {
     }
     if (
       pathname === '/accounts/account-settlement' ||
-      pathname === '/reports/settlement-history' ||
-      pathname === '/reports/cash-drawer'
+      pathname === '/reports/settlement-history'
     ) {
       return <AccountSettlementPage />;
+    }
+    if (pathname === '/reports/cash-drawer') {
+      return <CashDrawerLogsReportPage />;
     }
 
     // 7B. Phase 3D: General Ledger
@@ -169,14 +177,26 @@ export const AppRouter: React.FC = () => {
       return <IncomeExpenseReportPage />;
     }
 
-    // 8. Staff Attendance & Punches (Operational & Connected Reports)
-    if (pathname === '/operations/attendance' || pathname === '/reports/attendance') {
+    // 8. Staff Attendance & Punches (Operational)
+    if (pathname === '/operations/attendance') {
       return <StaffAttendancePage />;
     }
+    if (pathname === '/operations/leaves') {
+      return <LeaveManagementPage />;
+    }
 
-    // 9. Manual Overtime (Operational & Connected Reports)
-    if (pathname === '/operations/manual-overtime' || pathname === '/operations/overtime' || pathname === '/reports/overtime') {
+    // 9. Manual Overtime (Operational)
+    if (pathname === '/operations/manual-overtime' || pathname === '/operations/overtime') {
       return <ManualOvertimePage />;
+    }
+
+    // Dedicated Attendance & Overtime Report
+    if (
+      pathname === '/reports/attendance' ||
+      pathname === '/reports/attendance-overtime' ||
+      pathname === '/reports/overtime'
+    ) {
+      return <AttendanceOvertimeReportPage />;
     }
 
     // 10. Payroll & Salary Reports

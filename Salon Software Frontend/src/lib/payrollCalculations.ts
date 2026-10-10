@@ -148,7 +148,8 @@ export function evaluateEmployeePayroll(
 
   // 4. Resolve divisor for monthly deductions
   let divisorUsed: number;
-  if (staff.payrollDivisor && staff.payrollDivisor > 0) {
+  if (staff.compensationType.startsWith('MONTHLY')) divisorUsed = 30;
+  else if (staff.payrollDivisor && staff.payrollDivisor > 0) {
     divisorUsed = staff.payrollDivisor;
   } else if (typeof policy.customDivisorDays === 'number' && policy.customDivisorDays > 0) {
     divisorUsed = policy.customDivisorDays;
@@ -178,21 +179,8 @@ export function evaluateEmployeePayroll(
       const joinDay = parseInt(staff.joiningDate.slice(8, 10), 10);
       const daysEmployed = totalCalendarDays - joinDay + 1;
 
-      if (policy.prorationMethod === 'WORKING_DAYS') {
-        let workingDaysEmployed = 0;
-        for (let d = joinDay; d <= totalCalendarDays; d++) {
-          const dStr = `${month}-${String(d).padStart(2, '0')}`;
-          if (isWorkingDay(dStr, staff, branchHolidays).isWorking) workingDaysEmployed++;
-        }
-        const factor = workingDaysInMonth > 0 ? workingDaysEmployed / workingDaysInMonth : 1;
-        baseEarnings = roundCurrency(fullMonthlyBase * factor);
-        prorationFormula = `Prorated by working days: ${workingDaysEmployed}/${workingDaysInMonth} of PKR ${fullMonthlyBase}`;
-      } else {
-        // CALENDAR_DAYS
-        const factor = daysEmployed / totalCalendarDays;
-        baseEarnings = roundCurrency(fullMonthlyBase * factor);
-        prorationFormula = `Prorated by calendar days: ${daysEmployed}/${totalCalendarDays} of PKR ${fullMonthlyBase}`;
-      }
+      baseEarnings = roundCurrency(Math.min(fullMonthlyBase, fullMonthlyBase / 30 * daysEmployed));
+      prorationFormula = `PKR ${fullMonthlyBase} / 30 ? ${daysEmployed} eligible days = PKR ${baseEarnings}`;
     } else {
       // Full employed month: Monthly base salary is the FULL configured monthly amount.
       baseEarnings = fullMonthlyBase;
@@ -201,7 +189,7 @@ export function evaluateEmployeePayroll(
     // Absence / Unpaid leave deduction
     const dailyDeductionRate = roundCurrency(fullMonthlyBase / divisorUsed);
     const unworkedDeductibleDays = absentDays + unpaidLeaveDays;
-    absenceDeductions = roundCurrency(dailyDeductionRate * unworkedDeductibleDays);
+    absenceDeductions = roundCurrency(fullMonthlyBase / 30 * unworkedDeductibleDays);
 
   } else if (staff.compensationType === 'DAILY_SALARY' || staff.compensationType === 'DAILY_PLUS_COMMISSION') {
     const dailyRate = staff.dailySalaryRate || 0;

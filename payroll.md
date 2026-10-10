@@ -246,3 +246,13 @@ Finalize is blocked while any attendance exception exists or any payslip net < 0
 2. Commission page: month picker.
 3. Payslip print: Basic · Attendance Impact · OT · Allowances · Deductions · Advance · Gross · Net.
 4. Browser test as Super Admin / Admin / Accountant (403) / Staff (portal).
+
+## Fixed 30-day monthly calculation (2026-10-09)
+
+Monthly salary proration and absence/unpaid-leave deductions use the contractual salary divided by 30, regardless of legacy employee or policy divisor settings. Eligible days include calendar days within employment and the selected run. For example, 30,000 / 30 � 2 = 2,000. Deductions round once after multiplying the unrounded daily rate.
+
+Each preview and finalization loads non-cancelled finalized runs for the employee and month. Base earnings equal the cumulative entitlement for covered eligible dates minus previously frozen base earnings, capped at the monthly salary. When all dates of a fully employed month are covered, cumulative entitlement is exactly the contractual salary, including February. The completing run absorbs the reconciliation and rounding remainder; run order does not change the monthly total. Overlapping employment dates block finalization, including weekly off days. Cancelled runs do not consume entitlement. Existing finalized snapshots are never rewritten; new calculation snapshots have monthlyCalculationVersion 2.
+
+Preview and printed payslip show /30, eligible days, raw proration, monthly reconciliation and earned base. Daily contracts and recurring allowance policies remain separate from this monthly base rule.
+
+Pure-engine regression checks: `npx vitest run --config vitest.payroll.config.js tests/15-payroll-engine.test.js tests/24-payroll-fixed-divisor.test.js` (does not reset the integration database).

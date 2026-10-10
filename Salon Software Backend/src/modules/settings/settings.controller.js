@@ -20,6 +20,7 @@ export const listOnlineAccounts   = send((req) => s.listOnlineAccounts(req.user,
 export const createPaymentAccount = send((req) => s.createPaymentAccount(req.body, req.user), 201);
 export const updatePaymentAccount = send((req) => s.updatePaymentAccount(req.params.id, req.body, req.user));
 export const togglePaymentAccount = send((req) => s.togglePaymentAccount(req.params.id, req.user));
+export const deletePaymentAccount = send((req) => s.deletePaymentAccount(req.params.id, req.user));
 
 // Expense categories
 export const listExpenseCategories  = send((req) => s.listExpenseCategories(req.user, req.query.branchId));

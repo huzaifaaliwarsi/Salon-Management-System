@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   Receipt,
   TrendingUp,
+  Award,
   Clock,
   FileText,
   Calendar,
@@ -51,6 +52,8 @@ export const NavIcon: React.FC<NavIconProps> = ({ name, className = 'w-4 h-4' })
       return <Receipt className={className} />;
     case 'TrendingUp':
       return <TrendingUp className={className} />;
+    case 'Award':
+      return <Award className={className} />;
     case 'Clock':
     case 'ClockAlert':
     case 'Clock3':

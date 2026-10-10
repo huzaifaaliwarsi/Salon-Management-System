@@ -5,12 +5,10 @@ import {
   AttendanceRecord,
   StaffMember,
   Branch,
-  LeaveRecord,
   CSVAttendanceImportRow,
   CSVAttendanceImportResult,
   AttendanceStatus,
   AttendanceSource,
-  BranchHoliday,
 } from '../../types/salon';
 import {
   Clock,
@@ -36,7 +34,7 @@ import {
   ChevronRight,
   Sparkles,
 } from 'lucide-react';
-import { formatMinutesToTime, parseTimeToMinutes, evaluateLeaveAllowance } from '../../lib/attendanceCalculations';
+import { formatMinutesToTime, parseTimeToMinutes } from '../../lib/attendanceCalculations';
 import { AccessDeniedView } from '../scaffold/AccessDeniedView';
 import { toast } from '../../context/ToastContext';
 
@@ -54,8 +52,6 @@ export const StaffAttendancePage: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [attendanceList, setAttendanceList] = useState<AttendanceRecord[]>([]);
   const [staffList, setStaffList] = useState<StaffMember[]>([]);
-  const [leavesList, setLeavesList] = useState<LeaveRecord[]>([]);
-  const [holidaysList, setHolidaysList] = useState<BranchHoliday[]>([]);
 
   // Filter controls
   const [viewMode, setViewMode] = useState<'DAY' | 'MONTH'>('DAY');
@@ -67,12 +63,10 @@ export const StaffAttendancePage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [sourceFilter, setSourceFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
-
   // Modals state
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
   const [showMarkAllModal, setShowMarkAllModal] = useState<boolean>(false);
   const [showCorrectModal, setShowCorrectModal] = useState<boolean>(false);
-  const [showLeaveModal, setShowLeaveModal] = useState<boolean>(false);
   const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
   const [showImportModal, setShowImportModal] = useState<boolean>(false);
   const [showFinalizeModal, setShowFinalizeModal] = useState<boolean>(false);
@@ -107,14 +101,6 @@ export const StaffAttendancePage: React.FC = () => {
     notes: '',
   });
 
-  const [leaveForm, setLeaveForm] = useState({
-    staffId: '',
-    startDate: selectedDate,
-    endDate: selectedDate,
-    type: 'PAID' as 'PAID' | 'UNPAID',
-    reason: '',
-  });
-
   // CSV Import State
   const [importCsvText, setImportCsvText] = useState<string>('');
   const [importPreview, setImportPreview] = useState<CSVAttendanceImportRow[]>([]);
@@ -130,12 +116,10 @@ export const StaffAttendancePage: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [sysDate, allStaff, atts, leaves, holidays] = await Promise.all([
+      const [sysDate, allStaff, atts] = await Promise.all([
         salonService.getSystemDate(),
         salonService.getStaff(effectiveBranchId),
         salonService.getAttendance(effectiveBranchId, viewMode === 'DAY' ? selectedDate : undefined, undefined, user || undefined),
-        salonService.getLeaves(effectiveBranchId, undefined, user || undefined),
-        salonService.getBranchHolidays(effectiveBranchId),
       ]);
 
       if (!selectedDate) {
@@ -144,8 +128,6 @@ export const StaffAttendancePage: React.FC = () => {
       }
 
       setStaffList(allStaff);
-      setLeavesList(leaves);
-      setHolidaysList(holidays);
 
       if (viewMode === 'MONTH') {
         const monthAtts = atts.filter((a) => a.date.startsWith(selectedMonth));
@@ -253,14 +235,15 @@ export const StaffAttendancePage: React.FC = () => {
   // Handle Add Attendance
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!addForm.staffId) {
+    const selectedStaff = staffList.find((staff) => staff.id === addForm.staffId);
+    if (!selectedStaff) {
       toast.error('Please select an employee.');
       return;
     }
     try {
       await salonService.createAttendance(
         {
-          branchId: effectiveBranchId === 'ALL' ? staffList[0]?.branchId : effectiveBranchId,
+          branchId: effectiveBranchId === 'ALL' ? selectedStaff.branchId : effectiveBranchId,
           staffId: addForm.staffId,
           date: addForm.date,
           checkIn: addForm.checkIn,
@@ -319,36 +302,6 @@ export const StaffAttendancePage: React.FC = () => {
       await loadData();
     } catch (err: any) {
       toast.error(err.message || 'Failed to correct attendance.');
-    }
-  };
-
-  // Handle Mark Leave
-  const handleLeaveSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!leaveForm.staffId) {
-      toast.error('Please select an employee.');
-      return;
-    }
-    try {
-      const selectedStaff = staffList.find((s) => s.id === leaveForm.staffId);
-      const bId = selectedStaff?.branchId || effectiveBranchId;
-      const res = await salonService.markLeave(
-        {
-          branchId: bId,
-          staffId: leaveForm.staffId,
-          startDate: leaveForm.startDate,
-          endDate: leaveForm.endDate,
-          type: leaveForm.type,
-          reason: leaveForm.reason,
-        },
-        user || undefined
-      );
-
-      toast.success(`Leave ${res.leaveNumber} marked for ${res.staffName} (${res.totalDays} working days).`);
-      setShowLeaveModal(false);
-      await loadData();
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to mark leave.');
     }
   };
 
@@ -447,14 +400,6 @@ export const StaffAttendancePage: React.FC = () => {
     document.body.removeChild(link);
   };
 
-  // Selected leave preview helper
-  const leaveStaffPreview = useMemo(() => {
-    if (!leaveForm.staffId) return null;
-    const staff = staffList.find((s) => s.id === leaveForm.staffId);
-    if (!staff) return null;
-    return evaluateLeaveAllowance(staff, leavesList, leaveForm.startDate, holidaysList);
-  }, [leaveForm.staffId, leaveForm.startDate, staffList, leavesList, holidaysList]);
-
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 font-['Poppins']">
       {/* HEADER */}
@@ -468,7 +413,7 @@ export const StaffAttendancePage: React.FC = () => {
             </span>
           </div>
           <p className="text-sm text-slate-500 mt-1">
-            Biometric and manual shift verification, grace threshold auditing, and leave tracking
+            Biometric and manual shift verification, punches and attendance auditing
           </p>
         </div>
 
@@ -491,14 +436,6 @@ export const StaffAttendancePage: React.FC = () => {
           >
             <Plus className="w-4 h-4" />
             Add Individual
-          </button>
-
-          <button
-            onClick={() => setShowLeaveModal(true)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-xs"
-          >
-            <Calendar className="w-3.5 h-3.5 text-blue-600" />
-            Mark Leave
           </button>
 
           <button
@@ -765,6 +702,10 @@ export const StaffAttendancePage: React.FC = () => {
 
       {/* ATTENDANCE TABLE */}
       <div className="bg-white rounded-xl border border-slate-200/80 shadow-xs overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-slate-900">Attendance records</h2>
+          <span className="text-xs text-slate-500">{filteredRecords.length} records · status and source filters apply here</span>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
@@ -1339,166 +1280,6 @@ export const StaffAttendancePage: React.FC = () => {
                   className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-xs"
                 >
                   Save Correction
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 3: MARK LEAVE */}
-      {showLeaveModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h3 className="font-bold text-slate-900 text-lg">Mark Staff Leave</h3>
-                <p className="text-xs text-slate-500 mt-0.5">Approve paid or unpaid absence with allowance preview</p>
-              </div>
-              <button onClick={() => setShowLeaveModal(false)} className="text-slate-400 hover:text-slate-600">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleLeaveSubmit} className="p-5 space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Select Employee *</label>
-                <select
-                  required
-                  value={leaveForm.staffId}
-                  onChange={(e) => setLeaveForm({ ...leaveForm, staffId: e.target.value })}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
-                >
-                  <option value="">-- Choose Staff Member --</option>
-                  {staffList.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name} ({s.employeeCode})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Allowance preview badge */}
-              {leaveStaffPreview && (
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1">
-                  <div className="font-semibold text-slate-800 flex items-center justify-between">
-                    <span>Leave Entitlement Preview:</span>
-                    <span className="text-[10px] text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                      {leaveStaffPreview.period} Policy
-                    </span>
-                  </div>
-                  {leaveStaffPreview.isConfigured ? (
-                    <div className="grid grid-cols-3 gap-2 pt-1">
-                      <div>
-                        <span className="text-slate-400 text-[10px]">Allowed:</span>
-                        <div className="font-bold text-slate-900">{leaveStaffPreview.allowedDays} days</div>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 text-[10px]">Used:</span>
-                        <div className="font-bold text-amber-600">{leaveStaffPreview.usedDays} days</div>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 text-[10px]">Remaining:</span>
-                        <div className="font-bold text-emerald-600">{leaveStaffPreview.remainingDays} days</div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-amber-800 font-medium text-xs">
-                      Paid leave allowance: <strong>Not configured</strong> (Must use unpaid leave or configure staff profile first).
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Start Date *</label>
-                  <input
-                    type="date"
-                    required
-                    value={leaveForm.startDate}
-                    onChange={(e) => setLeaveForm({ ...leaveForm, startDate: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">End Date *</label>
-                  <input
-                    type="date"
-                    required
-                    value={leaveForm.endDate}
-                    onChange={(e) => setLeaveForm({ ...leaveForm, endDate: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Leave Type *</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <label
-                    className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer text-xs font-medium ${
-                      leaveForm.type === 'PAID'
-                        ? 'bg-blue-50 border-blue-300 text-blue-900 font-semibold'
-                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="leaveType"
-                      value="PAID"
-                      checked={leaveForm.type === 'PAID'}
-                      onChange={() => setLeaveForm({ ...leaveForm, type: 'PAID' })}
-                      className="text-blue-600"
-                    />
-                    <span>Paid Leave (Counted)</span>
-                  </label>
-
-                  <label
-                    className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer text-xs font-medium ${
-                      leaveForm.type === 'UNPAID'
-                        ? 'bg-slate-100 border-slate-400 text-slate-900 font-semibold'
-                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="leaveType"
-                      value="UNPAID"
-                      checked={leaveForm.type === 'UNPAID'}
-                      onChange={() => setLeaveForm({ ...leaveForm, type: 'UNPAID' })}
-                      className="text-slate-600"
-                    />
-                    <span>Unpaid Leave (No Pay)</span>
-                  </label>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Reason for Leave *</label>
-                <textarea
-                  required
-                  rows={2}
-                  placeholder="Medical emergency, vacation, personal reason..."
-                  value={leaveForm.reason}
-                  onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setShowLeaveModal(false)}
-                  className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-[#2254E1] hover:bg-blue-700 shadow-xs"
-                >
-                  Confirm Leave
                 </button>
               </div>
             </form>

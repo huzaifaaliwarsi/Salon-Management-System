@@ -1,319 +1,706 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { salonService } from '@/services';
-import { Invoice, Expense } from '@/types/salon';
-import { formatCurrency, formatNumber } from '@/lib/formatters';
-import { StatCard } from '@/components/ui/stat-card';
-import { Card, CardHeader } from '@/components/ui/card';
+import {
+  Branch,
+  IncomeExpenseReport,
+  IncomeExpenseReportRow,
+  IncomeExpenseReportQuery,
+  IncomeExpenseItemType,
+} from '@/types/salon';
+import { AccessDeniedView } from '@/features/scaffold/AccessDeniedView';
+import { formatCurrency } from '@/lib/formatters';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { ReportShell } from '@/features/reports/components/ReportShell';
+import { ReportTable, ColumnDef } from '@/features/reports/components/ReportTable';
+import {
+  downloadReportCsv,
+  downloadReportExcel,
+  printReportWindow,
+  DATE_PRESETS,
+  DatePreset,
+} from '@/features/reports/reportUtils';
 import {
   TrendingUp,
   TrendingDown,
+  RotateCcw,
+  Wallet,
+  Users,
+  Award,
+  AlertTriangle,
+  Scale,
   DollarSign,
-  CreditCard,
-  PieChart,
-  RefreshCw,
-  Calendar,
-  BarChart3,
-  Receipt,
-  Coins,
 } from 'lucide-react';
+
+const selectField = 'text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] h-8';
+const inputField = 'text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] h-8';
+const filterLabel = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1';
 
 export const IncomeExpenseReportPage: React.FC = () => {
   const { user, activeBranchId, allBranches } = useAuth();
 
-  const [startDate, setStartDate] = useState(() => {
-    const d = new Date();
-    d.setDate(1);
-    return d.toISOString().slice(0, 10);
+  // Role guard: Super Admin, Admin, and Accountant
+  if (!user || user.role === 'STAFF') {
+    return <AccessDeniedView attemptedPath="/reports/income-expense" />;
+  }
+
+  const isSuperAdmin = user.role === 'SUPER_ADMIN';
+  const defaultBranch = isSuperAdmin ? (activeBranchId || 'ALL') : (user.branchId || '');
+
+  // Filter Form State
+  const [selectedBranch, setSelectedBranch] = useState<string>(defaultBranch);
+  const [selectedPreset, setSelectedPreset] = useState<DatePreset>('THIS_MONTH');
+  const [customFrom, setCustomFrom] = useState<string>('');
+  const [customTo, setCustomTo] = useState<string>('');
+  const [selectedType, setSelectedType] = useState<string>('ALL');
+  const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
+  const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string>('ALL');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+
+  // Applied Query State (triggers API fetch)
+  const [appliedQuery, setAppliedQuery] = useState<IncomeExpenseReportQuery>({
+    branchId: defaultBranch,
+    preset: 'THIS_MONTH',
+    type: 'ALL',
+    category: 'ALL',
+    status: 'ALL',
+    paymentMethod: 'ALL',
+    search: '',
   });
-  const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
 
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Report Data State
+  const [reportData, setReportData] = useState<IncomeExpenseReport | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const effectiveBranchId = user?.role === 'SUPER_ADMIN' ? activeBranchId : user?.branchId;
-
-  const loadData = async () => {
+  // Fetch report data from live backend API (100% Real DB)
+  const fetchReport = useCallback(async (q: IncomeExpenseReportQuery) => {
     setIsLoading(true);
-    setError(null);
+    setErrorMessage(null);
     try {
-      const branchParam = effectiveBranchId || 'ALL';
-      const [invList, expList] = await Promise.all([
-        salonService.getInvoices(branchParam, { startDate, endDate }),
-        salonService.getExpenses(branchParam, { startDate, endDate }),
-      ]);
-
-      // Filter out voided invoices
-      const liveInvoices = (invList || []).filter((i: any) => i.lifecycle !== 'VOIDED');
-      // Filter out reversed expenses
-      const liveExpenses = (expList || []).filter((e: any) => e.status === 'POSTED' && !e.isReversalRecord);
-
-      setInvoices(liveInvoices);
-      setExpenses(liveExpenses);
+      const data = await salonService.getIncomeExpenseReport(q);
+      setReportData(data);
     } catch (err: any) {
-      setError(err.message || 'Failed to load financial statements.');
+      console.error('Failed to load Income & Expense report:', err);
+      setErrorMessage(err.message || 'Failed to fetch live income & expense report from server.');
     } finally {
       setIsLoading(false);
     }
+  }, []);
+
+  // Update branch state when active branch in context changes
+  useEffect(() => {
+    if (isSuperAdmin && activeBranchId && activeBranchId !== selectedBranch) {
+      setSelectedBranch(activeBranchId);
+      setAppliedQuery((prev) => ({ ...prev, branchId: activeBranchId }));
+    }
+  }, [activeBranchId, isSuperAdmin]);
+
+  // Load report when applied query changes
+  useEffect(() => {
+    fetchReport(appliedQuery);
+  }, [appliedQuery, fetchReport]);
+
+  // Handle Form Submit / Filter Button
+  const handleApplyFilters = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setAppliedQuery({
+      branchId: selectedBranch,
+      preset: selectedPreset,
+      startDate: selectedPreset === 'CUSTOM' ? customFrom : undefined,
+      endDate: selectedPreset === 'CUSTOM' ? customTo : undefined,
+      from: selectedPreset === 'CUSTOM' ? customFrom : undefined,
+      to: selectedPreset === 'CUSTOM' ? customTo : undefined,
+      type: selectedType,
+      category: selectedCategory,
+      status: selectedStatus,
+      paymentMethod: selectedPaymentMethod,
+      search: searchQuery.trim(),
+    });
   };
 
-  useEffect(() => {
-    loadData();
-  }, [effectiveBranchId, startDate, endDate]);
+  const handleResetFilters = () => {
+    const resetBranch = isSuperAdmin ? (activeBranchId || 'ALL') : (user.branchId || '');
+    setSelectedBranch(resetBranch);
+    setSelectedPreset('THIS_MONTH');
+    setCustomFrom('');
+    setCustomTo('');
+    setSelectedType('ALL');
+    setSelectedCategory('ALL');
+    setSelectedStatus('ALL');
+    setSelectedPaymentMethod('ALL');
+    setSearchQuery('');
+    setAppliedQuery({
+      branchId: resetBranch,
+      preset: 'THIS_MONTH',
+      type: 'ALL',
+      category: 'ALL',
+      status: 'ALL',
+      paymentMethod: 'ALL',
+      search: '',
+    });
+  };
 
-  // Aggregate financials
-  const grossSales = invoices.reduce((sum, inv) => sum + (inv.subtotal || 0), 0);
-  const totalDiscounts = invoices.reduce((sum, inv) => sum + (inv.discount || 0), 0);
-  const netSales = invoices.reduce((sum, inv) => sum + (inv.netSales || 0), 0);
-  const taxBilled = invoices.reduce((sum, inv) => sum + (inv.tax || 0), 0);
-  const tipsCollected = invoices.reduce((sum, inv) => sum + (inv.tip || 0), 0);
+  // Export handlers
+  const exportHeaders = [
+    'Date',
+    'Type',
+    'Category',
+    'Source',
+    'Reference',
+    'Branch',
+    'User / Payee',
+    'Description',
+    'Recognized Income (PKR)',
+    'Recognized Expense (PKR)',
+    'Payment Method',
+    'Status',
+  ];
 
-  const totalExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
-  const netOperatingSurplus = netSales - totalExpenses;
+  const exportRows = useMemo(() => {
+    if (!reportData?.rows) return [];
+    return reportData.rows.map((r) => [
+      r.date,
+      r.type,
+      r.category,
+      r.source,
+      r.reference,
+      r.branchName,
+      r.userOrPayee,
+      r.description,
+      r.income,
+      r.expense,
+      r.paymentMethod,
+      r.status,
+    ]);
+  }, [reportData]);
 
-  // Group expenses by category
-  const expenseByCategory = expenses.reduce<Record<string, number>>((acc, exp) => {
-    const cat = exp.category || 'General Operational';
-    acc[cat] = (acc[cat] || 0) + exp.amount;
-    return acc;
-  }, {});
+  const exportMeta: [string, string][] = useMemo(() => {
+    const meta = reportData?.meta;
+    return [
+      ['Report', 'Income & Expense Financial Register'],
+      ['Branch', meta?.branchName || 'All Branches'],
+      ['Date Range', `${meta?.from || ''} to ${meta?.to || ''}`],
+      ['Preset', meta?.preset || 'THIS_MONTH'],
+      ['Timezone', meta?.timezone || 'Asia/Karachi'],
+      ['Generated By', meta?.generatedBy || user?.name || 'User'],
+      ['Generated At', meta?.generatedAt || new Date().toISOString()],
+    ];
+  }, [reportData, user]);
 
-  const sortedExpenseCategories = Object.entries(expenseByCategory).sort(([, a], [, b]) => b - a);
+  const handleExportCsv = () => {
+    if (!reportData || !reportData.rows.length) return;
+    downloadReportCsv('income_expense_report', exportMeta, [
+      { headers: exportHeaders, rows: exportRows },
+    ]);
+  };
 
-  // Group payment methods collected
-  const cashSales = invoices.reduce((sum, inv) => {
-    const cashPayments = (inv.payments || [])
-      .filter((p) => p.method === 'CASH')
-      .reduce((pSum, p) => pSum + (p.amount || 0), 0);
-    return sum + cashPayments;
-  }, 0);
+  const handleExportExcel = () => {
+    if (!reportData || !reportData.rows.length) return;
+    downloadReportExcel('income_expense_report', exportMeta, [
+      { headers: exportHeaders, rows: exportRows },
+    ]);
+  };
 
-  const onlineSales = invoices.reduce((sum, inv) => {
-    const onlinePayments = (inv.payments || [])
-      .filter((p) => p.method === 'ONLINE_ACCOUNT')
-      .reduce((pSum, p) => pSum + (p.amount || 0), 0);
-    return sum + onlinePayments;
-  }, 0);
+  const handleExportPrint = () => {
+    if (!reportData || !reportData.rows.length) return;
+    const totals = reportData.totals;
+    const totalsRow = [
+      'TOTAL',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      `Net: ${formatCurrency(totals.net)}`,
+      totals.income,
+      totals.expense,
+      '',
+      '',
+    ];
 
-  const currentBranchName =
-    effectiveBranchId === 'ALL'
-      ? 'All Locations (Consolidated)'
-      : allBranches.find((b) => b.id === effectiveBranchId)?.name || 'Selected Branch';
+    printReportWindow({
+      title: 'Income & Expense Financial Register',
+      subtitle: `Branch: ${reportData.meta.branchName} · Range: ${reportData.meta.from} to ${reportData.meta.to}`,
+      meta: exportMeta,
+      headers: exportHeaders,
+      rows: exportRows,
+      totals: totalsRow,
+    });
+  };
+
+  // Helper Badge Renderers
+  const renderTypeBadge = (type: IncomeExpenseItemType) => {
+    switch (type) {
+      case 'INCOME':
+        return <Badge variant="success">Income</Badge>;
+      case 'OPERATING_EXPENSE':
+        return <Badge variant="danger">Expense</Badge>;
+      case 'SALARY_EXPENSE':
+        return <Badge variant="secondary">Salary</Badge>;
+      case 'COMMISSION_EXPENSE':
+        return <Badge variant="warning">Commission</Badge>;
+      case 'INVENTORY_WRITEOFF':
+        return <Badge variant="neutral">Stock Loss</Badge>;
+      default:
+        return <Badge variant="neutral">{type}</Badge>;
+    }
+  };
+
+  const renderSourceBadge = (source: string) => {
+    switch (source) {
+      case 'POS_INVOICE':
+        return <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-[#0047AB]">POS Sale</span>;
+      case 'INVOICE_REFUND':
+        return <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-rose-50 text-rose-700">Refund Reversal</span>;
+      case 'EXPENSE_VOUCHER':
+        return <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-800">Expense Voucher</span>;
+      case 'PAYROLL':
+        return <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-50 text-purple-700">Payroll Run</span>;
+      case 'COMMISSION':
+        return <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-50 text-orange-700">Commission Ledger</span>;
+      case 'INVENTORY':
+        return <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700">Stock Shrinkage</span>;
+      default:
+        return <span className="text-[10px] text-slate-500">{source}</span>;
+    }
+  };
+
+  // Table Column Definitions
+  const columns: ColumnDef<IncomeExpenseReportRow>[] = [
+    {
+      key: 'date',
+      header: 'Date',
+      align: 'left',
+      width: '100px',
+      render: (row: IncomeExpenseReportRow) => (
+        <span className="font-mono text-slate-700 text-xs">{row.date}</span>
+      ),
+    },
+    {
+      key: 'type',
+      header: 'Type',
+      align: 'left',
+      width: '100px',
+      render: (row: IncomeExpenseReportRow) => renderTypeBadge(row.type),
+    },
+    {
+      key: 'category',
+      header: 'Category',
+      align: 'left',
+      width: '160px',
+      render: (row: IncomeExpenseReportRow) => (
+        <span className="font-semibold text-slate-900 text-xs">{row.category}</span>
+      ),
+    },
+    {
+      key: 'source',
+      header: 'Source',
+      align: 'left',
+      width: '130px',
+      render: (row: IncomeExpenseReportRow) => renderSourceBadge(row.source),
+    },
+    {
+      key: 'reference',
+      header: 'Reference #',
+      align: 'left',
+      width: '130px',
+      render: (row: IncomeExpenseReportRow) => (
+        <span className="font-mono font-bold text-[#0047AB] hover:underline cursor-pointer">
+          {row.reference}
+        </span>
+      ),
+    },
+    {
+      key: 'branchName',
+      header: 'Branch',
+      align: 'left',
+      width: '140px',
+      render: (row: IncomeExpenseReportRow) => (
+        <span className="text-slate-600 text-xs">{row.branchName}</span>
+      ),
+    },
+    {
+      key: 'userOrPayee',
+      header: 'User / Payee',
+      align: 'left',
+      width: '180px',
+      render: (row: IncomeExpenseReportRow) => (
+        <div className="max-w-[170px] truncate" title={row.userOrPayee}>
+          <span className="text-slate-800 font-medium text-xs">{row.userOrPayee}</span>
+        </div>
+      ),
+    },
+    {
+      key: 'description',
+      header: 'Description',
+      align: 'left',
+      width: '240px',
+      render: (row: IncomeExpenseReportRow) => (
+        <div className="max-w-[230px] truncate" title={row.description}>
+          <span className="text-slate-600 text-xs">{row.description}</span>
+        </div>
+      ),
+    },
+    {
+      key: 'income',
+      header: 'Recognized Income',
+      align: 'right',
+      width: '140px',
+      render: (row: IncomeExpenseReportRow) => {
+        if (!row.income) return <span className="text-slate-300">-</span>;
+        const isNegative = row.income < 0;
+        return (
+          <span className={`font-mono font-semibold ${isNegative ? 'text-rose-600' : 'text-emerald-700'}`}>
+            {formatCurrency(row.income)}
+          </span>
+        );
+      },
+    },
+    {
+      key: 'expense',
+      header: 'Recognized Expense',
+      align: 'right',
+      width: '140px',
+      render: (row: IncomeExpenseReportRow) => {
+        if (!row.expense) return <span className="text-slate-300">-</span>;
+        const isNegative = row.expense < 0;
+        return (
+          <span className={`font-mono font-semibold ${isNegative ? 'text-emerald-600' : 'text-rose-600'}`}>
+            {formatCurrency(row.expense)}
+          </span>
+        );
+      },
+    },
+    {
+      key: 'paymentMethod',
+      header: 'Payment / Method',
+      align: 'left',
+      width: '130px',
+      render: (row: IncomeExpenseReportRow) => (
+        <span className="text-[11px] font-mono text-slate-600 bg-slate-50 px-2 py-0.5 rounded border border-slate-200">
+          {row.paymentMethod || 'N/A'}
+        </span>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      align: 'center',
+      width: '110px',
+      render: (row: IncomeExpenseReportRow) => {
+        const s = row.status?.toUpperCase();
+        if (s === 'POSTED' || s === 'PAID' || s === 'FINALIZED') {
+          return <Badge variant="success">{s}</Badge>;
+        }
+        if (s === 'DRAFT') {
+          return <Badge variant="neutral">Draft</Badge>;
+        }
+        if (s === 'REFUNDED') {
+          return <Badge variant="danger">Refunded</Badge>;
+        }
+        if (s === 'WRITTEN_OFF') {
+          return <Badge variant="warning">Written Off</Badge>;
+        }
+        return <Badge variant="neutral">{row.status}</Badge>;
+      },
+    },
+  ];
+
+  // Table Footer Totals Component
+  const renderTotalsRow = () => {
+    if (!reportData) return null;
+    const totals = reportData.totals;
+    return (
+      <tr className="bg-[#EBF1FA] font-bold text-slate-900 border-t-2 border-slate-300 text-xs">
+        <td className="py-2.5 px-3 text-center border-r border-slate-200/80">TOTAL</td>
+        <td className="py-2.5 px-3" colSpan={7}>
+          <span className="text-slate-600 font-normal">
+            Total Rows: {reportData.rows.length} · Net Position:{' '}
+          </span>
+          <span className={totals.net >= 0 ? 'text-emerald-700 font-mono' : 'text-rose-700 font-mono'}>
+            {formatCurrency(totals.net)}
+          </span>
+        </td>
+        <td className="py-2.5 px-3 text-right font-mono text-emerald-700">
+          {formatCurrency(totals.income)}
+        </td>
+        <td className="py-2.5 px-3 text-right font-mono text-rose-700">
+          {formatCurrency(totals.expense)}
+        </td>
+        <td className="py-2.5 px-3" colSpan={2}></td>
+      </tr>
+    );
+  };
+
+  // KPIs Extract
+  const kpis = reportData?.kpis;
+  const isSurplus = (kpis?.netOperatingPosition ?? 0) >= 0;
 
   return (
-    <div className="space-y-6">
-      {/* Header Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
-        <div>
-          <div className="flex items-center gap-2">
-            <Badge variant="primary" dot>
-              Financial Intelligence
-            </Badge>
-            <span className="text-xs text-slate-400">·</span>
-            <span className="text-xs text-slate-600 font-medium">{currentBranchName}</span>
+    <div className="space-y-4">
+      {/* Universal Report Shell with Filter Header & Action Banner */}
+      <ReportShell
+        title="Income & Expense Financial Register"
+        description="Canonical operating revenue and expenses tracking. Fully compliant with locked accounting invariants (excludes tax, tips, settlements & asset capitalizations)."
+        icon={DollarSign}
+        bannerTitle="Income & Expense Register"
+        metaNotice={
+          <div className="text-xs text-slate-500 flex items-center gap-2">
+            <span>Branch: <strong className="text-slate-700 font-semibold">{reportData?.meta.branchName || 'All'}</strong></span>
+            <span>·</span>
+            <span>Period: <strong className="text-slate-700 font-semibold">{reportData?.meta.from} to {reportData?.meta.to}</strong></span>
+            <span>·</span>
+            <span>Timezone: <strong className="text-slate-700 font-semibold">Asia/Karachi</strong></span>
           </div>
-          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-slate-900 mt-1 flex items-center gap-2">
-            <BarChart3 className="w-6 h-6 text-[#2254E1]" />
-            Income & Operating Expense Statement
-          </h1>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Net revenue calculation, paid expense attribution, segregated staff gratuity, and operating margin.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2.5">
-          <div className="flex items-center gap-1.5 text-xs text-slate-500 bg-white border border-slate-200 px-2.5 py-1.5 rounded-lg">
-            <Calendar className="w-3.5 h-3.5 text-slate-400" />
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="text-xs border-none bg-transparent focus:outline-none"
-            />
-            <span className="text-slate-300">to</span>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="text-xs border-none bg-transparent focus:outline-none"
-            />
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            leftIcon={<RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />}
-            onClick={loadData}
-            disabled={isLoading}
-          >
-            Refresh
-          </Button>
-        </div>
-      </div>
-
-      {/* Financial KPIs */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          title="Gross Billed Revenue"
-          value={formatCurrency(grossSales)}
-          subtitle={`Discounts: ${formatCurrency(totalDiscounts)}`}
-          icon={<DollarSign className="w-4 h-4" />}
-          tone="primary"
-        />
-
-        <StatCard
-          title="Net Operating Revenue"
-          value={formatCurrency(netSales)}
-          subtitle="Gross sales less promotional discounts"
-          icon={<Receipt className="w-4 h-4" />}
-          tone="success"
-        />
-
-        <StatCard
-          title="Paid Operating Expenses"
-          value={formatCurrency(totalExpenses)}
-          subtitle={`${expenses.length} verified voucher payments`}
-          icon={<CreditCard className="w-4 h-4" />}
-          tone="warning"
-        />
-
-        <StatCard
-          title="Net Operating Surplus"
-          value={formatCurrency(netOperatingSurplus)}
-          subtitle={netOperatingSurplus >= 0 ? 'Operating Profit' : 'Operating Deficit'}
-          icon={netOperatingSurplus >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
-          tone={netOperatingSurplus >= 0 ? 'success' : 'warning'}
-          trendText={netOperatingSurplus >= 0 ? '+Surplus' : 'Deficit'}
-          trendDirection={netOperatingSurplus >= 0 ? 'up' : 'down'}
-        />
-      </div>
-
-      {/* Secondary Financial Strip: Tax, Tips & Collections */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="p-4 rounded-xl bg-white border border-slate-200/80 flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium text-slate-500">Provincial Tax Billed (PST/SST)</p>
-            <p className="text-base font-semibold text-slate-900 tabular-nums mt-0.5">
-              {formatCurrency(taxBilled)}
-            </p>
-          </div>
-          <span className="text-xs text-slate-400 font-medium">Billed Tax</span>
-        </div>
-
-        <div className="p-4 rounded-xl bg-white border border-slate-200/80 flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium text-slate-500">Staff Tips (Segregated)</p>
-            <p className="text-base font-semibold text-purple-700 tabular-nums mt-0.5">
-              {formatCurrency(tipsCollected)}
-            </p>
-          </div>
-          <span className="text-xs text-purple-700 bg-purple-50 px-2 py-0.5 rounded font-medium">
-            Custody Liability
-          </span>
-        </div>
-
-        <div className="p-4 rounded-xl bg-white border border-slate-200/80 flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium text-slate-500">Cash vs Bank Split</p>
-            <p className="text-xs font-semibold text-slate-900 mt-1">
-              Cash: <span className="text-emerald-700">{formatCurrency(cashSales)}</span> · Bank:{' '}
-              <span className="text-[#2254E1]">{formatCurrency(onlineSales)}</span>
-            </p>
-          </div>
-          <span className="text-xs text-slate-400 font-medium">Collections</span>
-        </div>
-      </div>
-
-      {/* Detailed Revenue & Expense Tables */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Expenses by Category */}
-        <Card padding="md">
-          <CardHeader
-            title="Operating Expenses by Category"
-            subtitle={`${sortedExpenseCategories.length} categories charged in this period`}
-          />
-
-          <div className="space-y-3">
-            {sortedExpenseCategories.length === 0 ? (
-              <div className="py-10 text-center text-slate-400 text-xs">
-                No operating expenses recorded for this period.
-              </div>
-            ) : (
-              sortedExpenseCategories.map(([category, amt]) => {
-                const pct = totalExpenses > 0 ? (amt / totalExpenses) * 100 : 0;
-                return (
-                  <div key={category} className="p-3 rounded-lg border border-slate-100 bg-slate-50/50 space-y-1.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-slate-900">{category}</span>
-                      <span className="font-semibold text-rose-700 tabular-nums">{formatCurrency(amt)}</span>
-                    </div>
-                    <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
-                      <div
-                        className="bg-rose-500 h-1.5 rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(100, pct)}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-end text-[11px] text-slate-400 font-medium">
-                      {pct.toFixed(1)}% of total paid expenses
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </Card>
-
-        {/* Recent Invoiced Revenue Highlights */}
-        <Card padding="none">
-          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+        }
+        isFilterLoading={isLoading}
+        onFilterSubmit={handleApplyFilters}
+        onExportCsv={handleExportCsv}
+        onExportExcel={handleExportExcel}
+        onExportPdf={handleExportPrint}
+        onExportPrint={handleExportPrint}
+        filterChildren={
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            {/* Branch / Campus Filter */}
             <div>
-              <h3 className="text-sm font-semibold text-slate-900">Recent Service Invoices</h3>
-              <p className="text-xs text-slate-500">Customer checkout records and billings</p>
+              <label className={filterLabel}>Campus / Branch</label>
+              <select
+                value={selectedBranch}
+                onChange={(e) => setSelectedBranch(e.target.value)}
+                disabled={!isSuperAdmin}
+                className={`${selectField} w-full`}
+              >
+                {isSuperAdmin && <option value="ALL">All Branches (Consolidated)</option>}
+                {allBranches.map((b: Branch) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name} ({b.city})
+                  </option>
+                ))}
+              </select>
             </div>
-            <span className="text-xs font-semibold text-slate-600">
-              Total Count: {formatNumber(invoices.length)}
-            </span>
-          </div>
 
-          <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
-            {invoices.length === 0 ? (
-              <div className="py-10 text-center text-slate-400 text-xs">
-                No customer invoices billed in this date range.
+            {/* Date Presets */}
+            <div>
+              <label className={filterLabel}>Date Preset (Karachi)</label>
+              <select
+                value={selectedPreset}
+                onChange={(e) => setSelectedPreset(e.target.value as DatePreset)}
+                className={`${selectField} w-full`}
+              >
+                {DATE_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Custom Range: From */}
+            {selectedPreset === 'CUSTOM' ? (
+              <div>
+                <label className={filterLabel}>From Date</label>
+                <input
+                  type="date"
+                  value={customFrom}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                  className={`${inputField} w-full`}
+                />
               </div>
             ) : (
-              invoices.slice(0, 8).map((inv) => (
-                <div key={inv.id} className="p-3.5 flex items-center justify-between hover:bg-slate-50/60 transition-colors">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-slate-900">{inv.invoiceNumber}</span>
-                      <Badge size="sm" variant={inv.status === 'PAID' ? 'success' : 'warning'}>
-                        {inv.status}
-                      </Badge>
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-slate-500 mt-1">
-                      <span>{inv.clientName}</span>
-                      <span>·</span>
-                      <span className="text-slate-400">{inv.date}</span>
-                    </div>
-                  </div>
-
-                  <div className="text-right">
-                    <span className="text-xs font-semibold text-slate-900 tabular-nums block">
-                      {formatCurrency(inv.total)}
-                    </span>
-                    <span className="text-[11px] text-slate-500 block">
-                      Net: {formatCurrency(inv.netSales)}
-                    </span>
-                  </div>
-                </div>
-              ))
+              <div>
+                <label className={filterLabel}>Item Type</label>
+                <select
+                  value={selectedType}
+                  onChange={(e) => setSelectedType(e.target.value)}
+                  className={`${selectField} w-full`}
+                >
+                  <option value="ALL">All Financial Types</option>
+                  <option value="INCOME">Recognized Income</option>
+                  <option value="OPERATING_EXPENSE">Operating Expenses</option>
+                  <option value="SALARY_EXPENSE">Salaries & Wages</option>
+                  <option value="COMMISSION_EXPENSE">Staff Commission</option>
+                  <option value="INVENTORY_WRITEOFF">Inventory Losses</option>
+                </select>
+              </div>
             )}
+
+            {/* Custom Range: To or Category Filter */}
+            {selectedPreset === 'CUSTOM' ? (
+              <div>
+                <label className={filterLabel}>To Date</label>
+                <input
+                  type="date"
+                  value={customTo}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                  className={`${inputField} w-full`}
+                />
+              </div>
+            ) : (
+              <div>
+                <label className={filterLabel}>Category</label>
+                <select
+                  value={selectedCategory}
+                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  className={`${selectField} w-full`}
+                >
+                  <option value="ALL">All Categories</option>
+                  {(reportData?.categories || []).map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Status Filter */}
+            <div>
+              <label className={filterLabel}>Posting Status</label>
+              <select
+                value={selectedStatus}
+                onChange={(e) => setSelectedStatus(e.target.value)}
+                className={`${selectField} w-full`}
+              >
+                <option value="ALL">All Statuses</option>
+                <option value="POSTED">Posted / Completed</option>
+                <option value="FINALIZED">Finalized</option>
+                <option value="REFUNDED">Refunded</option>
+                <option value="WRITTEN_OFF">Written Off</option>
+              </select>
+            </div>
+
+            {/* Search Filter */}
+            <div>
+              <label className={filterLabel}>Search Reference / Payee</label>
+              <input
+                type="text"
+                placeholder="e.g. INV-001, EXP-042..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className={`${inputField} w-full`}
+              />
+            </div>
           </div>
-        </Card>
-      </div>
+        }
+        kpiStrip={
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2.5">
+            {/* 1. Total Recognized Income */}
+            <div className="bg-white rounded-xl p-3 border border-slate-200 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Recognized Income</span>
+                <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
+              </div>
+              <div className="mt-1 text-lg font-bold font-mono text-emerald-600">
+                {formatCurrency(kpis?.totalRecognizedIncome ?? 0)}
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Net sales after reversals</div>
+            </div>
+
+            {/* 2. Total Operating Expenses */}
+            <div className="bg-white rounded-xl p-3 border border-slate-200 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Total Expenses</span>
+                <TrendingDown className="w-3.5 h-3.5 text-rose-600" />
+              </div>
+              <div className="mt-1 text-lg font-bold font-mono text-rose-600">
+                {formatCurrency(kpis?.totalOperatingExpenses ?? 0)}
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Direct + Payroll + Comm + Loss</div>
+            </div>
+
+            {/* 3. Net Operating Position */}
+            <div className="bg-white rounded-xl p-3 border border-slate-200 shadow-2xs col-span-2 sm:col-span-1 lg:col-span-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+                  Operating Surplus
+                </span>
+                <Scale className={`w-3.5 h-3.5 ${isSurplus ? 'text-emerald-600' : 'text-rose-600'}`} />
+              </div>
+              <div className={`mt-1 text-lg font-bold font-mono ${isSurplus ? 'text-emerald-700' : 'text-rose-700'}`}>
+                {formatCurrency(kpis?.netOperatingPosition ?? 0)}
+              </div>
+              <div className={`text-[10px] font-medium mt-0.5 ${isSurplus ? 'text-emerald-600' : 'text-rose-600'}`}>
+                Margin: {kpis?.operatingMarginPercent ?? 0}% ({isSurplus ? 'Surplus' : 'Deficit'})
+              </div>
+            </div>
+
+            {/* 4. Direct Operational Expenses */}
+            <div className="bg-white rounded-xl p-3 border border-slate-200 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Direct Expenses</span>
+                <Wallet className="w-3.5 h-3.5 text-slate-400" />
+              </div>
+              <div className="mt-1 text-lg font-bold font-mono text-slate-900">
+                {formatCurrency(kpis?.directExpenses ?? 0)}
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Rent, Utilities, Vouchers</div>
+            </div>
+
+            {/* 5. Salary Expenses */}
+            <div className="bg-white rounded-xl p-3 border border-slate-200 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Salaries</span>
+                <Users className="w-3.5 h-3.5 text-purple-600" />
+              </div>
+              <div className="mt-1 text-lg font-bold font-mono text-slate-900">
+                {formatCurrency(kpis?.salaryExpenses ?? 0)}
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Finalized payroll payables</div>
+            </div>
+
+            {/* 6. Commission Expenses */}
+            <div className="bg-white rounded-xl p-3 border border-slate-200 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Commissions</span>
+                <Award className="w-3.5 h-3.5 text-amber-600" />
+              </div>
+              <div className="mt-1 text-lg font-bold font-mono text-slate-900">
+                {formatCurrency(kpis?.commissionExpenses ?? 0)}
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Earned staff commissions</div>
+            </div>
+
+            {/* 7. Inventory Shrinkage Losses */}
+            <div className="bg-white rounded-xl p-3 border border-slate-200 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Stock Losses</span>
+                <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
+              </div>
+              <div className="mt-1 text-lg font-bold font-mono text-slate-900">
+                {formatCurrency(kpis?.inventoryLoss ?? 0)}
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Damage & expiry write-offs</div>
+            </div>
+          </div>
+        }
+      >
+        {/* Error Notification */}
+        {errorMessage && (
+          <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-xs flex items-center justify-between">
+            <span>{errorMessage}</span>
+            <button
+              onClick={() => fetchReport(appliedQuery)}
+              className="px-2 py-0.5 bg-rose-100 hover:bg-rose-200 rounded font-semibold text-[11px]"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {/* Landscape Report Table with Horizontal Scroller */}
+        <ReportTable<IncomeExpenseReportRow>
+          columns={columns}
+          data={reportData?.rows || []}
+          loading={isLoading}
+          emptyMessage="No financial income or expense records found for the selected branch, dates, and filters."
+          renderTotals={renderTotalsRow}
+        />
+      </ReportShell>
     </div>
   );
 };
+
+export default IncomeExpenseReportPage;

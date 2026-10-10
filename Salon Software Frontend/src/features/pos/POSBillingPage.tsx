@@ -575,7 +575,6 @@ export const POSBillingPage: React.FC = () => {
     const validity = getPackageValidity(pkg);
     if (!validity.isValid) return;
 
-    const defaultStaff = staffList[0] || { id: 'unassigned', name: 'Primary Stylist', commissionRate: 0.1 };
     const cartInstanceId = `ci-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
     // Build component assignments with revenue weights
@@ -588,9 +587,9 @@ export const POSBillingPage: React.FC = () => {
       quantity: c.quantity,
       allocationPercentage: c.allocationPercentage,
       allocatedAmount: c.allocatedAmount,
-      staffId: defaultStaff.id,
-      staffName: defaultStaff.name,
-      staffCommissionRate: defaultStaff.commissionRate,
+      staffId: '',
+      staffName: '',
+      staffCommissionRate: 0,
     }));
 
     const newItem: POSCartItem = {
@@ -598,16 +597,10 @@ export const POSBillingPage: React.FC = () => {
       type: 'PACKAGE',
       item: pkg,
       quantity: 1,
-      staffId: defaultStaff.id,
-      staffName: defaultStaff.name,
-      staffCommissionRate: defaultStaff.commissionRate,
-      assignedStaff: [
-        {
-          staffId: defaultStaff.id,
-          staffName: defaultStaff.name,
-          staffCommissionRate: defaultStaff.commissionRate,
-        },
-      ],
+      staffId: '',
+      staffName: '',
+      staffCommissionRate: 0,
+      assignedStaff: [],
       packageComponents: compAssignments,
     };
 
@@ -669,13 +662,7 @@ export const POSBillingPage: React.FC = () => {
     setCart((prev) =>
       prev.map((ci) => {
         if (ci.cartInstanceId !== cartInstanceId) return ci;
-        const currentStaff = ci.assignedStaff || [
-          {
-            staffId: ci.staffId,
-            staffName: ci.staffName,
-            staffCommissionRate: ci.staffCommissionRate,
-          },
-        ];
+        const currentStaff = ci.assignedStaff || [];
         if (currentStaff.some((s) => s.staffId === staffId)) return ci;
         const updatedStaff = [
           ...currentStaff,
@@ -702,13 +689,12 @@ export const POSBillingPage: React.FC = () => {
       prev.map((ci) => {
         if (ci.cartInstanceId !== cartInstanceId) return ci;
         const currentStaff = ci.assignedStaff || [];
-        if (currentStaff.length <= 1) return ci; // Keep at least one staff
         const updatedStaff = currentStaff.filter((s) => s.staffId !== staffId);
         return {
           ...ci,
-          staffId: updatedStaff[0].staffId,
-          staffName: updatedStaff.map((s) => s.staffName).join(', '),
-          staffCommissionRate: updatedStaff[0].staffCommissionRate,
+          staffId: updatedStaff.length > 0 ? updatedStaff[0].staffId : '',
+          staffName: updatedStaff.length > 0 ? updatedStaff.map((s) => s.staffName).join(', ') : '',
+          staffCommissionRate: updatedStaff.length > 0 ? updatedStaff[0].staffCommissionRate : 0,
           assignedStaff: updatedStaff,
         };
       })
@@ -960,6 +946,13 @@ export const POSBillingPage: React.FC = () => {
   // Open Checkout Modal
   const handleOpenCheckout = () => {
     if (cart.length === 0) return;
+    const unassignedPkg = cart.find(
+      (ci) => ci.type === 'PACKAGE' && (!ci.assignedStaff || ci.assignedStaff.length === 0)
+    );
+    if (unassignedPkg) {
+      alert(`Please assign at least one stylist to package '${unassignedPkg.item.name}' before checkout.`);
+      return;
+    }
     if (bookingPriceDiscrepancy && !acknowledgedPriceDiscrepancy) {
       alert(
         `Price Quote Notice: The quoted booking price was ${formatCurrency(
@@ -1869,72 +1862,77 @@ export const POSBillingPage: React.FC = () => {
                       <div className="pt-2 border-t border-slate-200/60 space-y-2">
                         <div className="flex items-center justify-between">
                           <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                            Assigned Stylists ({ci.assignedStaff?.length || 1}):
+                            Assigned Stylists ({ci.assignedStaff?.length || 0}):
                           </span>
                           {ci.assignedStaff && ci.assignedStaff.length > 1 ? (
                             <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200/60">
                               Equal Split ({(100 / ci.assignedStaff.length).toFixed(1)}% each)
                             </span>
-                          ) : (
+                          ) : ci.assignedStaff && ci.assignedStaff.length === 1 ? (
                             <span className="text-[10px] text-slate-400">
                               100% attributed
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200/60">
+                              No stylist assigned
                             </span>
                           )}
                         </div>
 
                         {/* Assigned Staff Chips */}
                         <div className="flex flex-wrap gap-1.5 items-center">
-                          {(ci.assignedStaff && ci.assignedStaff.length > 0
-                            ? ci.assignedStaff
-                            : [
-                                {
-                                  staffId: ci.staffId,
-                                  staffName: ci.staffName,
-                                  staffCommissionRate: ci.staffCommissionRate,
-                                },
-                              ]
-                          ).map((st) => (
-                            <span
-                              key={st.staffId}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 hover:bg-slate-200/80 text-slate-800 rounded-md text-[11px] font-medium border border-slate-200/80 transition-colors"
-                            >
-                              <span>{st.staffName}</span>
-                              <span className="text-[10px] text-slate-400 font-normal">
-                                ({Math.round((st.staffCommissionRate || 0) * 100)}%)
-                              </span>
-                              {ci.assignedStaff && ci.assignedStaff.length > 1 && (
+                          {(ci.assignedStaff || []).map((st) => {
+                            const rawRate = st.staffCommissionRate ?? 0;
+                            const displayRate = rawRate > 0 && rawRate <= 1 ? Math.round(rawRate * 100) : Math.round(rawRate);
+                            return (
+                              <span
+                                key={st.staffId}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 hover:bg-slate-200/80 text-slate-800 rounded-md text-[11px] font-medium border border-slate-200/80 transition-colors"
+                              >
+                                <span>{st.staffName}</span>
+                                <span className="text-[10px] text-slate-400 font-normal">
+                                  ({displayRate}%)
+                                </span>
                                 <button
                                   type="button"
                                   onClick={() => handleRemoveStaffFromPackage(ci.cartInstanceId, st.staffId)}
-                                  className="ml-0.5 text-slate-400 hover:text-rose-600 focus:outline-hidden"
+                                  className="ml-0.5 text-slate-400 hover:text-rose-600 focus:outline-hidden cursor-pointer"
                                   title="Remove staff"
                                 >
                                   <X className="w-3 h-3" />
                                 </button>
-                              )}
-                            </span>
-                          ))}
+                              </span>
+                            );
+                          })}
 
                           {/* Add staff to package dropdown */}
-                          <Select
-                            value=""
-                            onValueChange={(val) => {
-                              if (val) handleAddStaffToPackage(ci.cartInstanceId, val);
-                            }}
-                          >
-                            <SelectTrigger className="w-[110px] text-[10px] h-6 bg-blue-50/60 border-blue-200 text-[#2254E1] hover:bg-blue-100/60 font-semibold cursor-pointer">
-                              <SelectValue placeholder="+ Add Staff" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {staffList
-                                .filter((s) => !ci.assignedStaff?.some((as) => as.staffId === s.id))
-                                .map((st) => (
-                                  <SelectItem key={st.id} value={st.id} className="text-xs">
-                                    {st.name} ({st.roleTitle})
-                                  </SelectItem>
-                                ))}
-                            </SelectContent>
-                          </Select>
+                          {staffList.filter((s) => !ci.assignedStaff?.some((as) => as.staffId === s.id)).length > 0 && (
+                            <Select
+                              value=""
+                              onValueChange={(val) => {
+                                if (val) handleAddStaffToPackage(ci.cartInstanceId, val);
+                              }}
+                            >
+                              <SelectTrigger
+                                className={`text-[10px] h-6 font-semibold cursor-pointer ${
+                                  !ci.assignedStaff || ci.assignedStaff.length === 0
+                                    ? 'w-[120px] bg-amber-50/80 border-amber-300 text-amber-800 hover:bg-amber-100/70'
+                                    : 'w-[110px] bg-blue-50/60 border-blue-200 text-[#2254E1] hover:bg-blue-100/60'
+                                }`}
+                              >
+                                <SelectValue placeholder={!ci.assignedStaff || ci.assignedStaff.length === 0 ? '+ Assign Staff' : '+ Add Staff'} />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {staffList
+                                  .filter((s) => !ci.assignedStaff?.some((as) => as.staffId === s.id))
+                                  .map((st) => (
+                                    <SelectItem key={st.id} value={st.id} className="text-xs">
+                                      {st.name} ({st.roleTitle})
+                                    </SelectItem>
+                                  ))}
+                              </SelectContent>
+                            </Select>
+                          )}
                         </div>
 
                         {/* Included services in package */}
