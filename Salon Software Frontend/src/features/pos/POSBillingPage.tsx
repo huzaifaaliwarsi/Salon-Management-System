@@ -623,7 +623,37 @@ export const POSBillingPage: React.FC = () => {
                 return ci;
               }
             }
-            return newQty > 0 ? { ...ci, quantity: newQty } : null;
+            if (newQty <= 0) return null;
+
+            if (ci.type === 'PACKAGE' && ci.assignedStaff && ci.assignedStaff.length > 0) {
+              const newTotal = getCatalogueSellingPrice(ci.item) * newQty;
+              const count = ci.assignedStaff.length;
+              const oldTotal = getCatalogueSellingPrice(ci.item) * ci.quantity;
+
+              let updatedStaff;
+              if (oldTotal > 0) {
+                let allocated = 0;
+                updatedStaff = ci.assignedStaff.map((s, idx) => {
+                  if (idx === count - 1) {
+                    return { ...s, allocatedAmount: Math.max(0, newTotal - allocated) };
+                  }
+                  const ratio = (s.allocatedAmount ?? 0) / oldTotal;
+                  const share = Math.round(newTotal * ratio);
+                  allocated += share;
+                  return { ...s, allocatedAmount: share };
+                });
+              } else {
+                const equalShare = Math.floor(newTotal / count);
+                const rem = newTotal - equalShare * count;
+                updatedStaff = ci.assignedStaff.map((s, idx) => ({
+                  ...s,
+                  allocatedAmount: equalShare + (idx === 0 ? rem : 0),
+                }));
+              }
+              return { ...ci, quantity: newQty, assignedStaff: updatedStaff };
+            }
+
+            return { ...ci, quantity: newQty };
           }
           return ci;
         })
@@ -657,7 +687,6 @@ export const POSBillingPage: React.FC = () => {
   };
 
   // Add staff member to a package line item
-  // Add staff member to a package line item
   const handleAddStaffToPackage = (cartInstanceId: string, staffId: string) => {
     const staff = staffList.find((s) => s.id === staffId);
     if (!staff) return;
@@ -669,25 +698,26 @@ export const POSBillingPage: React.FC = () => {
         if (currentStaff.some((s) => s.staffId === staffId)) return ci;
 
         const totalLineAmount = getCatalogueSellingPrice(ci.item) * ci.quantity;
-        const newCount = currentStaff.length + 1;
-        const equalShare = Math.round(totalLineAmount / newCount);
-
-        const currentSum = currentStaff.reduce((sum, s) => sum + (s.allocatedAmount ?? 0), 0);
-        const remaining = Math.max(0, totalLineAmount - currentSum);
-        const newStaffAmount = currentStaff.length === 0 ? totalLineAmount : (remaining > 0 ? remaining : equalShare);
-
-        const updatedStaff = [
-          ...currentStaff.map((s) => ({
-            ...s,
-            allocatedAmount: s.allocatedAmount ?? equalShare,
-          })),
+        const newStaffList = [
+          ...currentStaff,
           {
             staffId: staff.id,
             staffName: staff.name,
             staffCommissionRate: staff.commissionRate,
-            allocatedAmount: newStaffAmount,
+            allocatedAmount: 0,
           },
         ];
+
+        // Evenly divide totalLineAmount across all staff members so it always sums to totalLineAmount
+        const count = newStaffList.length;
+        const equalShare = Math.floor(totalLineAmount / count);
+        const remainder = totalLineAmount - equalShare * count;
+
+        const updatedStaff = newStaffList.map((s, idx) => ({
+          ...s,
+          allocatedAmount: equalShare + (idx === 0 ? remainder : 0),
+        }));
+
         return {
           ...ci,
           staffId: updatedStaff[0].staffId,
@@ -709,9 +739,66 @@ export const POSBillingPage: React.FC = () => {
       prev.map((ci) => {
         if (ci.cartInstanceId !== cartInstanceId) return ci;
         const currentStaff = ci.assignedStaff || [];
-        const updatedStaff = currentStaff.map((s) =>
-          s.staffId === staffId ? { ...s, allocatedAmount: Math.max(0, amount) } : s
+        if (currentStaff.length === 0) return ci;
+
+        const totalLineAmount = getCatalogueSellingPrice(ci.item) * ci.quantity;
+        const targetStaff = currentStaff.find((s) => s.staffId === staffId);
+        if (!targetStaff) return ci;
+
+        // Strictly clamp amount between 0 and totalLineAmount ("packag price sa uper nhi jaega")
+        const clampedAmount = Math.max(0, Math.min(Math.round(amount), totalLineAmount));
+        const otherStaff = currentStaff.filter((s) => s.staffId !== staffId);
+
+        if (otherStaff.length === 0) {
+          // If only 1 staff member, they always get 100% of package price
+          return {
+            ...ci,
+            assignedStaff: [{ ...targetStaff, allocatedAmount: totalLineAmount }],
+          };
+        }
+
+        // The remaining balance that must be distributed across other staff
+        const remainingBalance = totalLineAmount - clampedAmount;
+
+        if (otherStaff.length === 1) {
+          // Exactly 2 staff: (e.g. package=1500, staff1=1000 => staff2=500)
+          const updatedStaff = currentStaff.map((s) => {
+            if (s.staffId === staffId) return { ...s, allocatedAmount: clampedAmount };
+            return { ...s, allocatedAmount: remainingBalance };
+          });
+          return { ...ci, assignedStaff: updatedStaff };
+        }
+
+        // More than 2 staff: distribute remainingBalance among other staff proportionally
+        const currentOtherTotal = otherStaff.reduce(
+          (sum, s) => sum + (s.allocatedAmount ?? 0),
+          0
         );
+
+        let allocatedSoFar = 0;
+        const newOtherAllocations = new Map<string, number>();
+
+        otherStaff.forEach((s, idx) => {
+          if (idx === otherStaff.length - 1) {
+            newOtherAllocations.set(s.staffId, Math.max(0, remainingBalance - allocatedSoFar));
+          } else {
+            let share = 0;
+            if (currentOtherTotal > 0) {
+              share = Math.round(remainingBalance * ((s.allocatedAmount ?? 0) / currentOtherTotal));
+            } else {
+              share = Math.floor(remainingBalance / otherStaff.length);
+            }
+            share = Math.max(0, Math.min(share, remainingBalance - allocatedSoFar));
+            allocatedSoFar += share;
+            newOtherAllocations.set(s.staffId, share);
+          }
+        });
+
+        const updatedStaff = currentStaff.map((s) => {
+          if (s.staffId === staffId) return { ...s, allocatedAmount: clampedAmount };
+          return { ...s, allocatedAmount: newOtherAllocations.get(s.staffId) ?? 0 };
+        });
+
         return {
           ...ci,
           assignedStaff: updatedStaff,
@@ -728,14 +815,15 @@ export const POSBillingPage: React.FC = () => {
         const currentStaff = ci.assignedStaff || [];
         if (currentStaff.length === 0) return ci;
         const totalLineAmount = getCatalogueSellingPrice(ci.item) * ci.quantity;
-        const equalShare = Math.round(totalLineAmount / currentStaff.length);
+        const count = currentStaff.length;
+        const equalShare = Math.floor(totalLineAmount / count);
+        const remainder = totalLineAmount - equalShare * count;
+
         const updatedStaff = currentStaff.map((s, idx) => ({
           ...s,
-          allocatedAmount:
-            idx === currentStaff.length - 1
-              ? totalLineAmount - equalShare * (currentStaff.length - 1)
-              : equalShare,
+          allocatedAmount: equalShare + (idx === 0 ? remainder : 0),
         }));
+
         return {
           ...ci,
           assignedStaff: updatedStaff,
@@ -750,12 +838,33 @@ export const POSBillingPage: React.FC = () => {
       prev.map((ci) => {
         if (ci.cartInstanceId !== cartInstanceId) return ci;
         const currentStaff = ci.assignedStaff || [];
-        const updatedStaff = currentStaff.filter((s) => s.staffId !== staffId);
+        const updatedStaffRaw = currentStaff.filter((s) => s.staffId !== staffId);
+
+        if (updatedStaffRaw.length === 0) {
+          return {
+            ...ci,
+            staffId: '',
+            staffName: '',
+            staffCommissionRate: 0,
+            assignedStaff: [],
+          };
+        }
+
+        const totalLineAmount = getCatalogueSellingPrice(ci.item) * ci.quantity;
+        const count = updatedStaffRaw.length;
+        const equalShare = Math.floor(totalLineAmount / count);
+        const remainder = totalLineAmount - equalShare * count;
+
+        const updatedStaff = updatedStaffRaw.map((s, idx) => ({
+          ...s,
+          allocatedAmount: equalShare + (idx === 0 ? remainder : 0),
+        }));
+
         return {
           ...ci,
-          staffId: updatedStaff.length > 0 ? updatedStaff[0].staffId : '',
-          staffName: updatedStaff.length > 0 ? updatedStaff.map((s) => s.staffName).join(', ') : '',
-          staffCommissionRate: updatedStaff.length > 0 ? updatedStaff[0].staffCommissionRate : 0,
+          staffId: updatedStaff[0].staffId,
+          staffName: updatedStaff.map((s) => s.staffName).join(', '),
+          staffCommissionRate: updatedStaff[0].staffCommissionRate,
           assignedStaff: updatedStaff,
         };
       })
@@ -2005,6 +2114,7 @@ export const POSBillingPage: React.FC = () => {
                                         <input
                                           type="number"
                                           min="0"
+                                          max={lineTotalAmount}
                                           step="1"
                                           value={st.allocatedAmount ?? currentAmount}
                                           onChange={(e) =>
