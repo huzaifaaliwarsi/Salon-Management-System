@@ -107,7 +107,7 @@ export const PayrollPage: React.FC = () => {
   const [selectedMonthNum, setSelectedMonthNum] = useState<string>(initialMonth.slice(5, 7) || '10');
   const [selectedYear, setSelectedYear] = useState<string>(initialMonth.slice(0, 4) || '2026');
   const [salaryAdvances, setSalaryAdvances] = useState<SalaryAdvance[]>([]);
-  const [hasFiltered, setHasFiltered] = useState<boolean>(true);
+  const [hasFiltered, setHasFiltered] = useState<boolean>(false);
   const [selectedStaffIds, setSelectedStaffIds] = useState<string[]>([]);
   const [runType, setRunType] = useState<PayrollRunType>('MONTHLY');
   const [startDate, setStartDate] = useState(demoDate || new Date().toISOString().slice(0, 10));
@@ -358,6 +358,10 @@ export const PayrollPage: React.FC = () => {
   };
 
   const handleGenerateSalary = async () => {
+    if (!hasFiltered) {
+      await handleFilter();
+      return;
+    }
     if (selectedStaffIds.length === 0) {
       setFeedback({ type: 'error', message: 'Please select at least one eligible staff member to generate salary.' });
       return;
@@ -635,39 +639,30 @@ export const PayrollPage: React.FC = () => {
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 font-sans">
-      {/* Top Banner / Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+      {/* Top Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2">
         <div>
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl">
-              <DollarSign className="w-6 h-6" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Staff Payroll Management</h1>
-              <p className="text-sm text-slate-500">
-                Monthly base earnings, attendance penalties, approved overtime, and auditable disbursements.
-              </p>
-            </div>
-          </div>
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Generate Salary</h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Select branch, month and year to filter and generate staff salaries.
+          </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={() => setShowPolicyModal(true)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium rounded-xl text-sm transition-colors"
-          >
-            <Settings className="w-4 h-4 text-slate-500" />
-            Policy Settings
-          </button>
-
-          <button
-            onClick={handleGeneratePreview}
-            disabled={actionLoading}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-xl text-sm shadow-sm transition-all hover:shadow"
-          >
-            <Calendar className="w-4 h-4" />
-            Generate Payroll Preview
-          </button>
+        {/* View Switcher Tabs - Minimal & Clean */}
+        <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+          {VIEW_TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setView(t.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                view === t.id
+                  ? 'bg-[#0a3871] text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -694,89 +689,13 @@ export const PayrollPage: React.FC = () => {
         </div>
       )}
 
-      {/* Summary Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Finalized Payable</span>
-          <div className="mt-2 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-slate-900">
-              Rs. {summaryStats.finalizedPayable.toLocaleString()}
-            </span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium">
-              {summaryStats.employeeCount} Staff
-            </span>
-          </div>
-          <p className="mt-1 text-xs text-slate-500">Gross salary minus penalties + overtime</p>
-        </div>
-
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Paid</span>
-          <div className="mt-2 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-emerald-600">Rs. {summaryStats.paid.toLocaleString()}</span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-medium">
-              Disbursed
-            </span>
-          </div>
-          <p className="mt-1 text-xs text-slate-500">Cleared through Open Drawer or Bank</p>
-        </div>
-
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Outstanding Balance</span>
-          <div className="mt-2 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-amber-600">
-              Rs. {summaryStats.outstanding.toLocaleString()}
-            </span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 font-medium">
-              Pending Payout
-            </span>
-          </div>
-          <p className="mt-1 text-xs text-slate-500">Due to employees for {selectedMonth}</p>
-        </div>
-
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active Cash Drawer</span>
-          <div className="mt-2 flex items-baseline justify-between">
-            <span className="text-xl font-bold text-slate-800">
-              {activeUserOpenDrawer ? `Rs. ${activeUserOpenDrawer.expectedInDrawer.toLocaleString()}` : 'No Open Drawer'}
-            </span>
-            <span
-              className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                activeUserOpenDrawer ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'
-              }`}
-            >
-              {activeUserOpenDrawer ? 'Ready' : 'Locked'}
-            </span>
-          </div>
-          <p className="mt-1 text-xs text-slate-500">
-            {activeUserOpenDrawer
-              ? `Custodian: ${user.name}`
-              : 'Cash payments require an open drawer'}
-          </p>
-        </div>
-      </div>
-
-      {/* View tabs */}
-      <div className="flex flex-wrap gap-2">
-        {VIEW_TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setView(t.id)}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors ${
-              view === t.id ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
       {/* GENERATE SALARY VIEW */}
       {view === 'GENERATE' && (
         <div className="space-y-6">
           {/* Top Form & Staff Selection */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
             {/* Left Filter Card */}
-            <div className="lg:col-span-4 bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+            <div className={`${hasFiltered ? 'lg:col-span-4' : 'lg:col-span-5 max-w-md'} bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-4`}>
               <h2 className="text-lg font-bold text-slate-900 pb-2 border-b border-slate-100">Generate Salary</h2>
 
               {/* Branch */}
@@ -820,6 +739,7 @@ export const PayrollPage: React.FC = () => {
                     onChange={(e) => {
                       setSelectedMonthNum(e.target.value);
                       setSelectedMonth(`${selectedYear}-${e.target.value}`);
+                      setHasFiltered(false);
                     }}
                     className="w-full text-sm pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
                   >
@@ -846,6 +766,7 @@ export const PayrollPage: React.FC = () => {
                     onChange={(e) => {
                       setSelectedYear(e.target.value);
                       setSelectedMonth(`${e.target.value}-${selectedMonthNum}`);
+                      setHasFiltered(false);
                     }}
                     className="w-full text-sm pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
                   >
@@ -872,7 +793,7 @@ export const PayrollPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleGenerateSalary}
-                  disabled={actionLoading || selectedStaffIds.length === 0}
+                  disabled={actionLoading}
                   className="w-full py-2.5 px-4 bg-[#0a3871] hover:bg-[#082d5b] disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-xl text-sm flex items-center justify-center gap-2 shadow-sm transition-all"
                 >
                   <Briefcase className="w-4 h-4" /> Generate Salary
@@ -880,287 +801,290 @@ export const PayrollPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Right Eligible Staff Card */}
-            <div className="lg:col-span-8 bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex flex-col min-h-[380px]">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3.5 border-b border-slate-100 gap-3">
-                <div className="text-sm font-bold text-slate-700">
-                  Staff Code | <span className="text-rose-600">Name</span> | Designation
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleSelectAll}
-                    className="px-3.5 py-1.5 bg-[#00bcd4] hover:bg-[#00acc1] text-white text-xs font-semibold rounded-md shadow-xs transition-colors"
-                  >
-                    Select All
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSelectNone}
-                    className="px-3.5 py-1.5 bg-[#e53935] hover:bg-[#d32f2f] text-white text-xs font-semibold rounded-md shadow-xs transition-colors"
-                  >
-                    Select None
-                  </button>
-                </div>
-              </div>
-
-              {/* Staff List */}
-              <div className="mt-4 flex-1 overflow-y-auto max-h-[330px] space-y-2.5 pr-1">
-                {branchStaff.length === 0 ? (
-                  <div className="p-12 text-center text-slate-400 text-sm">
-                    No active staff found for this branch.
+            {/* Right Eligible Staff Card - Only visible when hasFiltered is true */}
+            {hasFiltered && (
+              <div className="lg:col-span-8 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col min-h-[380px]">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3.5 border-b border-slate-100 gap-3">
+                  <div className="text-sm font-bold text-slate-700">
+                    Staff Code | <span className="text-rose-600">Name</span> | Designation
                   </div>
-                ) : (
-                  branchStaff.map((s) => {
-                    const isSelected = selectedStaffIds.includes(s.id);
-                    const isGenerated = generatedStaffIdSet.has(s.id);
-                    const loan = staffLoanMap.get(s.id);
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSelectAll}
+                      className="px-3.5 py-1.5 bg-[#00bcd4] hover:bg-[#00acc1] text-white text-xs font-semibold rounded-md shadow-xs transition-colors"
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSelectNone}
+                      className="px-3.5 py-1.5 bg-[#e53935] hover:bg-[#d32f2f] text-white text-xs font-semibold rounded-md shadow-xs transition-colors"
+                    >
+                      Select None
+                    </button>
+                  </div>
+                </div>
 
-                    return (
-                      <div
-                        key={s.id}
-                        onClick={() => toggleStaffSelection(s.id)}
-                        className="p-3 rounded-xl bg-[#fffde7] border border-[#fff59d] hover:border-[#fbc02d] flex items-center justify-between text-xs sm:text-sm cursor-pointer transition-all select-none"
-                      >
-                        <div className="flex items-center gap-2.5 flex-wrap">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => {}} // row onClick handles toggle
-                            className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer pointer-events-none"
-                          />
-                          <span className="text-slate-600 font-medium">
-                            {s.employeeCode || `EMP-${s.id.slice(-3).toUpperCase()}`}
-                          </span>
-                          <span className="text-slate-300">|</span>
-                          <span className="text-rose-600 font-semibold">{s.name}</span>
-                          <span className="text-slate-300">|</span>
-                          <span className="text-slate-600 capitalize">
-                            {s.designation || s.role || 'Staff'}
-                          </span>
-                          {loan && (
-                            <span className="ml-1 px-2.5 py-0.5 bg-[#ff9800] text-white text-[11px] font-bold rounded-full shadow-xs">
-                              Loan: {roundCurrency(loan.recoveryPerMonth || loan.balance)}.00/instalment
-                            </span>
-                          )}
-                        </div>
+                {/* Staff List */}
+                <div className="mt-4 flex-1 overflow-y-auto max-h-[330px] space-y-2.5 pr-1">
+                  {branchStaff.length === 0 ? (
+                    <div className="p-12 text-center text-slate-400 text-sm">
+                      No active staff found for this branch.
+                    </div>
+                  ) : (
+                    branchStaff.map((s) => {
+                      const isSelected = selectedStaffIds.includes(s.id);
+                      const isGenerated = generatedStaffIdSet.has(s.id);
+                      const loan = staffLoanMap.get(s.id);
 
-                        <div className="pl-3">
-                          {isGenerated ? (
-                            <span className="px-3 py-1 bg-[#2e7d32] text-white text-xs font-bold rounded-md shadow-xs">
-                              Generated
+                      return (
+                        <div
+                          key={s.id}
+                          onClick={() => toggleStaffSelection(s.id)}
+                          className="p-3 rounded-xl bg-[#fffde7] border border-[#fff59d] hover:border-[#fbc02d] flex items-center justify-between text-xs sm:text-sm cursor-pointer transition-all select-none"
+                        >
+                          <div className="flex items-center gap-2.5 flex-wrap">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {}} // row onClick handles toggle
+                              className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer pointer-events-none"
+                            />
+                            <span className="text-slate-600 font-medium">
+                              {s.employeeCode || `EMP-${s.id.slice(-3).toUpperCase()}`}
                             </span>
-                          ) : (
-                            <span className="px-3 py-1 bg-slate-200 text-slate-600 text-xs font-medium rounded-md">
-                              Not Generated
+                            <span className="text-slate-300">|</span>
+                            <span className="text-rose-600 font-semibold">{s.name}</span>
+                            <span className="text-slate-300">|</span>
+                            <span className="text-slate-600 capitalize">
+                              {s.designation || s.role || 'Staff'}
                             </span>
-                          )}
+                            {loan && (
+                              <span className="ml-1 px-2.5 py-0.5 bg-[#ff9800] text-white text-[11px] font-bold rounded-full shadow-xs">
+                                Loan: {roundCurrency(loan.recoveryPerMonth || loan.balance)}.00/instalment
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="pl-3">
+                            {isGenerated ? (
+                              <span className="px-3 py-1 bg-[#2e7d32] text-white text-xs font-bold rounded-md shadow-xs">
+                                Generated
+                              </span>
+                            ) : (
+                              <span className="px-3 py-1 bg-slate-200 text-slate-600 text-xs font-medium rounded-md">
+                                Not Generated
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })
-                )}
+                      );
+                    })
+                  )}
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
-          {/* Generated Salaries Table Section */}
-          <div className="space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <h3 className="text-lg font-bold text-slate-800">Generated Salaries</h3>
-              <span className="px-4 py-1.5 bg-[#00bcd4] text-white text-xs font-bold rounded-full shadow-xs w-fit">
-                {effectiveBranchName} - {monthLabel} {selectedYear}
-              </span>
-            </div>
+          {/* Generated Salaries Table Section - Only visible when hasFiltered is true */}
+          {hasFiltered && (
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <h3 className="text-lg font-bold text-slate-800">Generated Salaries</h3>
+                <span className="px-4 py-1.5 bg-[#00bcd4] text-white text-xs font-bold rounded-full shadow-xs w-fit">
+                  {effectiveBranchName} - {monthLabel} {selectedYear}
+                </span>
+              </div>
 
-            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse min-w-[1100px]">
-                  <thead>
-                    <tr className="bg-[#f0f4f8] text-slate-700 text-xs font-semibold border-b border-slate-200">
-                      <th className="py-3 px-3 text-center">#</th>
-                      <th className="py-3 px-3 text-center">Photo</th>
-                      <th className="py-3 px-4">Name</th>
-                      <th className="py-3 px-3 text-center">Salary Month</th>
-                      <th className="py-3 px-3 text-center">Present</th>
-                      <th className="py-3 px-3 text-center">Absent</th>
-                      <th className="py-3 px-4 text-center">Basic</th>
-                      <th className="py-3 px-4 text-center">Salary Generated</th>
-                      <th className="py-3 px-4 text-center">Amount Paid</th>
-                      <th className="py-3 px-4 text-center">Loan Repayment</th>
-                      <th className="py-3 px-3 text-center">Status</th>
-                      <th className="py-3 px-4 text-center">Make Payment</th>
-                      <th className="py-3 px-3 text-center">Delete</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-sm">
-                    {generatedPayslipRows.length === 0 ? (
-                      <tr>
-                        <td colSpan={13} className="py-12 text-center text-slate-400 text-sm">
-                          No salaries generated for {effectiveBranchName} ({monthLabel} {selectedYear}) yet. Select eligible staff above and click "Generate Salary".
-                        </td>
+              <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse min-w-[1100px]">
+                    <thead>
+                      <tr className="bg-[#f0f4f8] text-slate-700 text-xs font-semibold border-b border-slate-200">
+                        <th className="py-3 px-4">Staff</th>
+                        <th className="py-3 px-3 text-center">Salary Month</th>
+                        <th className="py-3 px-3 text-center">Present</th>
+                        <th className="py-3 px-3 text-center">Absent</th>
+                        <th className="py-3 px-3 text-center">Late</th>
+                        <th className="py-3 px-3 text-center">Early Exit</th>
+                        <th className="py-3 px-4 text-center">Basic</th>
+                        <th className="py-3 px-4 text-center">Salary Generated</th>
+                        <th className="py-3 px-4 text-center">Amount Paid</th>
+                        <th className="py-3 px-4 text-center">Loan Repayment</th>
+                        <th className="py-3 px-3 text-center">Status</th>
+                        <th className="py-3 px-4 text-center">Actions</th>
                       </tr>
-                    ) : (
-                      generatedPayslipRows.map(({ run, payslip: p }, idx) => {
-                        const isPaid = p.outstandingAmount <= 0 && p.paidAmount > 0;
-                        const compLabel =
-                          p.compensationType === 'DAILY_SALARY'
-                            ? 'daily'
-                            : p.compensationType === 'COMMISSION_ONLY'
-                            ? 'commission only'
-                            : p.compensationType === 'DAILY_PLUS_COMMISSION'
-                            ? 'daily + comm'
-                            : p.compensationType === 'MONTHLY_PLUS_COMMISSION'
-                            ? 'monthly + comm'
-                            : 'full time';
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-sm">
+                      {generatedPayslipRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={12} className="py-12 text-center text-slate-400 text-sm">
+                            No salaries generated for {effectiveBranchName} ({monthLabel} {selectedYear}) yet. Select eligible staff above and click "Generate Salary".
+                          </td>
+                        </tr>
+                      ) : (
+                        generatedPayslipRows.map(({ run, payslip: p }) => {
+                          const isPaid = p.outstandingAmount <= 0 && p.paidAmount > 0;
+                          const compLabel =
+                            p.compensationType === 'DAILY_SALARY'
+                              ? 'daily'
+                              : p.compensationType === 'COMMISSION_ONLY'
+                              ? 'commission only'
+                              : p.compensationType === 'DAILY_PLUS_COMMISSION'
+                              ? 'daily + comm'
+                              : p.compensationType === 'MONTHLY_PLUS_COMMISSION'
+                              ? 'monthly + comm'
+                              : 'full time';
 
-                        return (
-                          <tr key={p.id} className="hover:bg-slate-50/80 transition-colors">
-                            {/* # */}
-                            <td className="py-3.5 px-3 text-center text-xs font-semibold text-slate-600">
-                              {idx + 1}
-                            </td>
+                          return (
+                            <tr key={p.id} className="hover:bg-slate-50/80 transition-colors">
+                              {/* Staff */}
+                              <td className="py-3.5 px-4">
+                                <div className="font-bold text-slate-900 text-sm">{p.staffName}</div>
+                                <div className="text-[11px] text-slate-400 capitalize">{p.employeeCode}</div>
+                              </td>
 
-                            {/* Photo */}
-                            <td className="py-3.5 px-3 text-center">
-                              <div className="w-8 h-8 rounded-full bg-[#0a3871] text-white font-bold text-xs flex items-center justify-center mx-auto shadow-xs">
-                                {p.staffName.slice(0, 2).toUpperCase()}
-                              </div>
-                            </td>
+                              {/* Salary Month */}
+                              <td className="py-3.5 px-3 text-center">
+                                <span className="px-2.5 py-1 bg-[#00bcd4] text-white text-xs font-semibold rounded-full shadow-xs">
+                                  {monthLabel} {selectedYear}
+                                </span>
+                              </td>
 
-                            {/* Name */}
-                            <td className="py-3.5 px-4">
-                              <div className="font-bold text-slate-900 text-sm">{p.staffName}</div>
-                              <div className="text-[11px] text-slate-400 capitalize">{p.employeeCode}</div>
-                            </td>
+                              {/* Present */}
+                              <td className="py-3.5 px-3 text-center">
+                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#4caf50] text-white font-bold text-xs shadow-xs">
+                                  {p.presentDays ?? 0}
+                                </span>
+                              </td>
 
-                            {/* Salary Month */}
-                            <td className="py-3.5 px-3 text-center">
-                              <span className="px-2.5 py-1 bg-[#00bcd4] text-white text-xs font-semibold rounded-full shadow-xs">
-                                {monthLabel} {selectedYear}
-                              </span>
-                            </td>
+                              {/* Absent */}
+                              <td className="py-3.5 px-3 text-center">
+                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#f44336] text-white font-bold text-xs shadow-xs">
+                                  {p.absentDays ?? 0}
+                                </span>
+                              </td>
 
-                            {/* Present */}
-                            <td className="py-3.5 px-3 text-center">
-                              <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#4caf50] text-white font-bold text-xs shadow-xs">
-                                {p.presentDays ?? 0}
-                              </span>
-                            </td>
+                              {/* Late */}
+                              <td className="py-3.5 px-3 text-center">
+                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#ff9800] text-white font-bold text-xs shadow-xs">
+                                  0
+                                </span>
+                              </td>
 
-                            {/* Absent */}
-                            <td className="py-3.5 px-3 text-center">
-                              <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#f44336] text-white font-bold text-xs shadow-xs">
-                                {p.absentDays ?? 0}
-                              </span>
-                            </td>
+                              {/* Early Exit */}
+                              <td className="py-3.5 px-3 text-center">
+                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#f44336] text-white font-bold text-xs shadow-xs">
+                                  0
+                                </span>
+                              </td>
 
-                            {/* Basic */}
-                            <td className="py-3.5 px-4 text-center">
-                              <div className="font-bold text-[#1976d2] text-sm">
-                                {((p.effectiveBaseSalary ?? p.baseEarnings) || 0).toLocaleString('en-US', {
+                              {/* Basic */}
+                              <td className="py-3.5 px-4 text-center">
+                                <div className="font-bold text-[#1976d2] text-sm">
+                                  {((p.effectiveBaseSalary ?? p.baseEarnings) || 0).toLocaleString('en-US', {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 2,
+                                  })}
+                                </div>
+                                <div className="text-[10px] text-slate-400 font-medium">{compLabel}</div>
+                              </td>
+
+                              {/* Salary Generated */}
+                              <td className="py-3.5 px-4 text-center font-bold text-[#2e7d32] text-sm">
+                                {(p.netPayable || 0).toLocaleString('en-US', {
                                   minimumFractionDigits: 2,
                                   maximumFractionDigits: 2,
                                 })}
-                              </div>
-                              <div className="text-[10px] text-slate-400 font-medium">{compLabel}</div>
-                            </td>
+                              </td>
 
-                            {/* Salary Generated */}
-                            <td className="py-3.5 px-4 text-center font-bold text-[#2e7d32] text-sm">
-                              {(p.netPayable || 0).toLocaleString('en-US', {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 2,
-                              })}
-                            </td>
+                              {/* Amount Paid */}
+                              <td className="py-3.5 px-4 text-center font-bold text-[#00bcd4] text-sm">
+                                {(p.paidAmount || 0).toLocaleString('en-US', {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </td>
 
-                            {/* Amount Paid */}
-                            <td className="py-3.5 px-4 text-center font-bold text-[#00bcd4] text-sm">
-                              {(p.paidAmount || 0).toLocaleString('en-US', {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 2,
-                              })}
-                            </td>
+                              {/* Loan Repayment */}
+                              <td className="py-3.5 px-4 text-center font-bold text-[#ff9800] text-sm">
+                                {(p.advanceRecoveryAmount || 0).toLocaleString('en-US', {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </td>
 
-                            {/* Loan Repayment */}
-                            <td className="py-3.5 px-4 text-center font-bold text-[#ff9800] text-sm">
-                              {(p.advanceRecoveryAmount || 0).toLocaleString('en-US', {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 2,
-                              })}
-                            </td>
+                              {/* Status */}
+                              <td className="py-3.5 px-3 text-center">
+                                <span
+                                  className={`px-2.5 py-1 text-xs font-semibold rounded-md ${
+                                    isPaid
+                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                      : 'bg-[#ffe0b2] text-[#e65100] border border-[#ffcc80]'
+                                  }`}
+                                >
+                                  {isPaid ? 'Paid' : 'Pending'}
+                                </span>
+                              </td>
 
-                            {/* Status */}
-                            <td className="py-3.5 px-3 text-center">
-                              <span
-                                className={`px-2.5 py-1 text-xs font-semibold rounded-md ${
-                                  isPaid
-                                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                    : 'bg-[#ffe0b2] text-[#e65100] border border-[#ffcc80]'
-                                }`}
-                              >
-                                {isPaid ? 'Paid' : 'Pending'}
-                              </span>
-                            </td>
+                              {/* Actions */}
+                              <td className="py-3.5 px-4 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => openPaymentModal(run, p)}
+                                    disabled={p.outstandingAmount <= 0}
+                                    className="px-3 py-1.5 bg-[#1976d2] hover:bg-[#1565c0] disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-md shadow-xs transition-colors"
+                                  >
+                                    Make Payment
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setRunToCancel(run);
+                                      setShowCancelModal(true);
+                                    }}
+                                    title="Cancel Payroll Run"
+                                    className="p-1.5 bg-[#e53935] hover:bg-[#d32f2f] text-white rounded-md shadow-xs transition-colors"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
 
-                            {/* Make Payment */}
-                            <td className="py-3.5 px-4 text-center">
-                              <button
-                                type="button"
-                                onClick={() => openPaymentModal(run, p)}
-                                disabled={p.outstandingAmount <= 0}
-                                className="px-3.5 py-1.5 bg-[#1976d2] hover:bg-[#1565c0] disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-md shadow-xs transition-colors"
-                              >
-                                Make Payment
-                              </button>
-                            </td>
-
-                            {/* Delete / Cancel Run */}
-                            <td className="py-3.5 px-3 text-center">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setRunToCancel(run);
-                                  setShowCancelModal(true);
-                                }}
-                                title="Cancel Payroll Run"
-                                className="p-1.5 bg-[#e53935] hover:bg-[#d32f2f] text-white rounded-md shadow-xs transition-colors"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })
+                    {generatedPayslipRows.length > 0 && (
+                      <tfoot>
+                        <tr className="bg-slate-50 font-bold border-t border-slate-200">
+                          <td colSpan={6} className="py-3.5 px-4 text-right text-slate-800 text-sm">
+                            Total:
+                          </td>
+                          <td className="py-3.5 px-4 text-center text-[#1976d2] text-sm">
+                            {generatedTotals.basic.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3.5 px-4 text-center text-[#2e7d32] text-sm">
+                            {generatedTotals.salaryGenerated.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3.5 px-4 text-center text-[#00bcd4] text-sm">
+                            {generatedTotals.amountPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3.5 px-4 text-center text-[#ff9800] text-sm">
+                            {generatedTotals.loanRepayment.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td colSpan={2}></td>
+                        </tr>
+                      </tfoot>
                     )}
-                  </tbody>
-
-                  {generatedPayslipRows.length > 0 && (
-                    <tfoot>
-                      <tr className="bg-slate-50 font-bold border-t border-slate-200">
-                        <td colSpan={6} className="py-3.5 px-4 text-right text-slate-800 text-sm">
-                          Total:
-                        </td>
-                        <td className="py-3.5 px-4 text-center text-[#1976d2] text-sm">
-                          {generatedTotals.basic.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className="py-3.5 px-4 text-center text-[#2e7d32] text-sm">
-                          {generatedTotals.salaryGenerated.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className="py-3.5 px-4 text-center text-[#00bcd4] text-sm">
-                          {generatedTotals.amountPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className="py-3.5 px-4 text-center text-[#ff9800] text-sm">
-                          {generatedTotals.loanRepayment.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td colSpan={3}></td>
-                      </tr>
-                    </tfoot>
-                  )}
-                </table>
+                  </table>
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 
