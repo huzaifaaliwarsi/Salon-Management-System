@@ -1,69 +1,46 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { salonService } from '@/services';
 import {
   CashDrawerReport,
   CashDrawerReportRow,
   CashDrawerReportQuery,
+  OnlineAccountBreakdownItem,
+  Branch,
 } from '@/types/salon';
 import { AccessDeniedView } from '@/features/scaffold/AccessDeniedView';
+import { formatCurrency } from '@/lib/formatters';
+import { Badge } from '@/components/ui/badge';
+import { ReportShell } from '@/features/reports/components/ReportShell';
+import { ReportTable, ColumnDef } from '@/features/reports/components/ReportTable';
 import {
   downloadReportCsv,
   downloadReportExcel,
   printReportWindow,
+  DATE_PRESETS,
+  DatePreset,
 } from '@/features/reports/reportUtils';
 import {
-  Filter,
-  FileSpreadsheet,
-  FileText,
-  Printer,
-  Loader2,
-  Vault,
+  Banknote,
+  Smartphone,
+  CreditCard,
+  Building2,
+  ArrowDownLeft,
+  ArrowUpRight,
+  ShieldCheck,
+  Scale,
+  Lock,
+  Unlock,
+  AlertTriangle,
+  Info,
+  DollarSign,
+  CheckCircle2,
+  Clock,
 } from 'lucide-react';
 
-const selectClass =
-  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
-const inputClass =
-  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
-const labelClass = 'block text-[11px] font-semibold text-[#0B2545] mb-1.5';
-
-const formatPKR = (amt: number, withSign = false) => {
-  const num = Number(amt) || 0;
-  const abs = Math.abs(num);
-  const formatted = abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (withSign) {
-    return num >= 0 ? `+${formatted}` : `-${formatted}`;
-  }
-  return formatted;
-};
-
-const formatDateParts = (dateStr: string) => {
-  if (!dateStr) return { dayMonth: '—', year: '' };
-  try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return { dayMonth: dateStr, year: '' };
-    const day = String(d.getDate()).padStart(2, '0');
-    const month = d.toLocaleString('en-US', { month: 'short' });
-    const year = String(d.getFullYear());
-    return { dayMonth: `${day} ${month}`, year };
-  } catch {
-    return { dayMonth: dateStr, year: '' };
-  }
-};
-
-const formatDateDisplay = (dateStr: string) => {
-  if (!dateStr) return '—';
-  try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return dateStr;
-    const day = d.getDate();
-    const month = d.toLocaleString('en-US', { month: 'short' });
-    const year = d.getFullYear();
-    return `${day} ${month}, ${year}`;
-  } catch {
-    return dateStr;
-  }
-};
+const selectField = 'text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] h-8';
+const inputField = 'text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] h-8';
+const filterLabel = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1';
 
 export const CashDrawerLogsReportPage: React.FC = () => {
   const { user, activeBranchId, allBranches } = useAuth();
@@ -73,501 +50,627 @@ export const CashDrawerLogsReportPage: React.FC = () => {
     return <AccessDeniedView attemptedPath="/reports/cash-drawer" />;
   }
 
+  const isSuperAdmin = user.role === 'SUPER_ADMIN';
+  const defaultBranch = isSuperAdmin ? (activeBranchId || 'ALL') : (user.branchId || '');
+
   // Filter Form State
-  const [selectedBranch, setSelectedBranch] = useState<string>(activeBranchId || user.branchId || 'ALL');
+  const [selectedBranch, setSelectedBranch] = useState<string>(defaultBranch);
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
-  const [fromDate, setFromDate] = useState<string>('');
-  const [toDate, setToDate] = useState<string>('');
+  const [selectedPreset, setSelectedPreset] = useState<DatePreset>('THIS_MONTH');
+  const [customFrom, setCustomFrom] = useState<string>('');
+  const [customTo, setCustomTo] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Page state: Only fetch when user explicitly clicks Filter ("filter karna sa aae default nhi")
-  const [hasFiltered, setHasFiltered] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  // Applied Query State (triggers API fetch)
+  const [appliedQuery, setAppliedQuery] = useState<CashDrawerReportQuery>({
+    branchId: defaultBranch,
+    status: 'ALL',
+    preset: 'THIS_MONTH',
+  });
+
   const [reportData, setReportData] = useState<CashDrawerReport | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Fetch report data on demand from backend API
-  const fetchReport = useCallback(
-    async (q: CashDrawerReportQuery) => {
-      setIsLoading(true);
-      setErrorMessage(null);
-      try {
-        const data = await salonService.getCashDrawerReport(q);
-        setReportData(data);
-      } catch (err: any) {
-        console.error('Failed to load Cash Drawer report:', err);
-        setErrorMessage(err.message || 'Failed to fetch live cash drawer report from server.');
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    []
-  );
+  // Fetch Report Data from Live Express Backend
+  const fetchReport = useCallback(async (q: CashDrawerReportQuery) => {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const data = await salonService.getCashDrawerReport(q);
+      setReportData(data);
+    } catch (err: any) {
+      console.error('Failed to load Cash Drawer report:', err);
+      setErrorMessage(err.message || 'Failed to fetch live cash drawer report from server.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
+  // Update branch state when active branch in context changes
+  useEffect(() => {
+    if (isSuperAdmin && activeBranchId && activeBranchId !== selectedBranch) {
+      setSelectedBranch(activeBranchId);
+      setAppliedQuery((prev) => ({ ...prev, branchId: activeBranchId }));
+    }
+  }, [activeBranchId, isSuperAdmin]);
+
+  // Load report when applied query changes
+  useEffect(() => {
+    fetchReport(appliedQuery);
+  }, [appliedQuery, fetchReport]);
+
+  // Handle Form Submit / Filter Button
   const handleApplyFilters = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    setHasFiltered(true);
-
-    const query: CashDrawerReportQuery = {
+    setAppliedQuery({
       branchId: selectedBranch,
-      startDate: fromDate || undefined,
-      endDate: toDate || undefined,
-      from: fromDate || undefined,
-      to: toDate || undefined,
-      preset: !fromDate && !toDate ? 'THIS_MONTH' : 'CUSTOM',
-      status: (selectedStatus as any) || 'ALL',
-      search: searchQuery.trim() || undefined,
-    };
-
-    fetchReport(query);
-  };
-
-  // Export handlers
-  const handleExportExcel = () => {
-    if (!reportData || !reportData.rows.length) return;
-    const meta: [string, string][] = [
-      ['Report', 'Cash Drawer Logs Report'],
-      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
-      ['From Date', fromDate || reportData.meta.from || '—'],
-      ['To Date', toDate || reportData.meta.to || '—'],
-      ['Generated At', new Date().toLocaleString()],
-    ];
-
-    const headers = [
-      '#',
-      'Session Date',
-      'Custodian',
-      'Campus',
-      'Status',
-      'Opening Float',
-      'Sales Cash In',
-      'Expenses Out',
-      'Tips Paid Out',
-      'Expected Cash',
-      'Counted Cash',
-      'Discrepancy',
-    ];
-
-    const rows = reportData.rows.map((r, i) => [
-      i + 1,
-      formatDateDisplay(r.date),
-      r.custodianName,
-      r.branchName,
-      r.status,
-      r.openingFloat.toFixed(2),
-      r.cashSales.toFixed(2),
-      r.cashExpenses.toFixed(2),
-      r.cashTips.toFixed(2),
-      r.expectedCash.toFixed(2),
-      (r.countedCash ?? 0).toFixed(2),
-      r.variance.toFixed(2),
-    ]);
-
-    downloadReportExcel('Cash_Drawer_Report', meta, [{ headers, rows }]);
-  };
-
-  const handleExportPdf = () => {
-    if (!reportData || !reportData.rows.length) return;
-    const meta: [string, string][] = [
-      ['Report', 'Cash Drawer Logs Report'],
-      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
-      ['From Date', fromDate || reportData.meta.from || '—'],
-      ['To Date', toDate || reportData.meta.to || '—'],
-      ['Generated At', new Date().toLocaleString()],
-    ];
-
-    const headers = [
-      '#',
-      'Session Date',
-      'Custodian',
-      'Campus',
-      'Status',
-      'Opening Float',
-      'Sales Cash In',
-      'Expenses Out',
-      'Tips Paid Out',
-      'Expected Cash',
-      'Counted Cash',
-      'Discrepancy',
-    ];
-
-    const rows = reportData.rows.map((r, i) => [
-      i + 1,
-      formatDateDisplay(r.date),
-      r.custodianName,
-      r.branchName,
-      r.status,
-      r.openingFloat.toFixed(2),
-      r.cashSales.toFixed(2),
-      r.cashExpenses.toFixed(2),
-      r.cashTips.toFixed(2),
-      r.expectedCash.toFixed(2),
-      (r.countedCash ?? 0).toFixed(2),
-      r.variance.toFixed(2),
-    ]);
-
-    downloadReportCsv('Cash_Drawer_Report', meta, [{ headers, rows }]);
-  };
-
-  const handlePrint = () => {
-    if (!reportData || !reportData.rows.length) {
-      window.print();
-      return;
-    }
-    const meta: [string, string][] = [
-      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
-      ['From Date', fromDate || reportData.meta.from || '—'],
-      ['To Date', toDate || reportData.meta.to || '—'],
-      ['Expected Closing Cash', formatPKR(reportData.totals.expectedCash)],
-      ['Counted Cash', formatPKR(reportData.totals.countedCash)],
-      ['Total Discrepancy', formatPKR(reportData.totals.variance)],
-    ];
-    const headers = ['#', 'Date', 'Custodian', 'Campus', 'Status', 'Opening Float', 'Sales Cash', 'Expected Cash', 'Counted Cash', 'Variance'];
-    const rows = reportData.rows.map((r, i) => [
-      i + 1,
-      formatDateDisplay(r.date),
-      r.custodianName,
-      r.branchName,
-      r.status,
-      formatPKR(r.openingFloat),
-      formatPKR(r.cashSales),
-      formatPKR(r.expectedCash),
-      formatPKR(r.countedCash ?? 0),
-      formatPKR(r.variance),
-    ]);
-
-    printReportWindow({
-      title: 'Cash Drawer Logs Report',
-      meta,
-      headers,
-      rows,
+      status: selectedStatus,
+      preset: selectedPreset,
+      startDate: selectedPreset === 'CUSTOM' ? customFrom : undefined,
+      endDate: selectedPreset === 'CUSTOM' ? customTo : undefined,
+      from: selectedPreset === 'CUSTOM' ? customFrom : undefined,
+      to: selectedPreset === 'CUSTOM' ? customTo : undefined,
+      search: searchQuery.trim(),
     });
   };
 
-  const kpis = reportData?.kpis || {
-    totalSessions: 0,
-    settledSessions: 0,
-    openSessions: 0,
-    totalOpeningFloat: 0,
-    totalCashSales: 0,
-    totalManualCashIn: 0,
-    totalManualCashOut: 0,
-    totalExpensesPaid: 0,
-    totalCashRefunds: 0,
-    totalTipsPaidOut: 0,
-    totalExpectedClosingCash: 0,
-    totalActualCounted: 0,
-    totalDiscrepancyVariance: 0,
+  // Export Metadata
+  const exportMeta: [string, string][] = useMemo(() => {
+    if (!reportData) return [];
+    return [
+      ['Report Name', 'Cash Drawer Custody, Sessions & Tender Collections'],
+      ['Branch / Campus', reportData.meta.branchName || 'All Branches'],
+      ['Reporting Window', `${reportData.meta.from.slice(0, 10)} to ${reportData.meta.to.slice(0, 10)}`],
+      ['Date Basis', `${reportData.meta.dateBasis} (${reportData.meta.timezone})`],
+      ['Total Physical Cash Collections', formatCurrency(reportData.tenderBreakdown.totalCash)],
+      ['Total Online Collections', formatCurrency(reportData.tenderBreakdown.totalOnline)],
+      ['Grand Total Collections', formatCurrency(reportData.tenderBreakdown.grandTotal)],
+      ['Total Opening Float', formatCurrency(reportData.kpis.totalOpeningFloat)],
+      ['Total Expected Cash', formatCurrency(reportData.kpis.totalExpectedCash)],
+      ['Total Counted Cash', formatCurrency(reportData.kpis.totalCountedCash)],
+      ['Total Cash Variance', formatCurrency(reportData.kpis.totalVariance)],
+      ['Generated At', reportData.meta.generatedAt],
+      ['Generated By', reportData.meta.generatedBy],
+    ];
+  }, [reportData]);
+
+  // Export Headers
+  const exportHeaders = useMemo(
+    () => [
+      'Session Code',
+      'Date',
+      'Cashier / Custodian',
+      'Branch',
+      'Status',
+      'Opening Float (PKR)',
+      'Cash Sales (PKR)',
+      'Dues & Tips (PKR)',
+      'Total Cash In (PKR)',
+      'Cash Refunds (PKR)',
+      'Cash Expenses (PKR)',
+      'Settlement Out (PKR)',
+      'Total Cash Out (PKR)',
+      'Expected Cash (PKR)',
+      'Counted Cash (PKR)',
+      'Variance (PKR)',
+      'Online Attributed (PKR)',
+    ],
+    []
+  );
+
+  const exportRows = useMemo(() => {
+    if (!reportData?.rows) return [];
+    return reportData.rows.map((r: CashDrawerReportRow) => [
+      r.sessionCode,
+      r.date,
+      r.custodianName,
+      r.branchName,
+      r.status,
+      r.openingFloat,
+      r.cashSales,
+      r.duesCollected + r.cashTips,
+      r.totalCashIn,
+      r.cashRefunds,
+      r.cashExpenses,
+      r.settlementsOut,
+      r.totalCashOut,
+      r.expectedCash,
+      r.countedCash !== null ? r.countedCash : '-',
+      r.variance,
+      r.onlineTotal,
+    ]);
+  }, [reportData]);
+
+  // Export Handlers
+  const handleExportCsv = () => {
+    if (!reportData || !reportData.rows.length) return;
+    downloadReportCsv('cash_drawer_sessions_report', exportMeta, [
+      { headers: exportHeaders, rows: exportRows },
+    ]);
   };
 
-  return (
-    <div className="min-h-screen bg-[#F4F6F9] px-4 py-5 md:px-8 md:py-6 text-slate-800">
-      {/* Top Header Card with Title & Filters */}
-      <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 p-5 md:p-6 mb-6">
-        <div className="mb-5">
-          <h1 className="text-xl font-bold text-[#0B2545] tracking-tight">Cash Drawer Logs Reports</h1>
-          <p className="text-xs text-slate-500 mt-1">
-            Physical cash custody audit by cashier drawer session: expected vs counted cash, tender inflows, expense drops and variance reconciliations
-          </p>
-        </div>
+  const handleExportExcel = () => {
+    if (!reportData || !reportData.rows.length) return;
+    downloadReportExcel('cash_drawer_sessions_report', exportMeta, [
+      { title: 'Drawer Sessions', headers: exportHeaders, rows: exportRows },
+    ]);
+  };
 
-        {/* Filters Form Row */}
-        <form onSubmit={handleApplyFilters} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3.5 items-end">
-          {/* Campus Filter */}
+  const handlePrint = () => {
+    if (!reportData || !reportData.rows.length) return;
+    const totalsRow = [
+      'TOTAL',
+      '',
+      '',
+      '',
+      '',
+      reportData.totals.openingFloat,
+      reportData.totals.cashSales,
+      '',
+      reportData.totals.cashIn,
+      reportData.totals.cashRefunds,
+      reportData.totals.cashExpenses,
+      reportData.totals.settlementsOut,
+      reportData.totals.cashOut,
+      reportData.totals.expectedCash,
+      reportData.totals.countedCash,
+      reportData.totals.variance,
+      reportData.totals.onlineTotal,
+    ];
+    printReportWindow({
+      title: 'Cash Drawer Custody, Sessions & Tender Collections',
+      subtitle: `Branch: ${reportData.meta.branchName} · Window: ${reportData.meta.from.slice(0, 10)} to ${reportData.meta.to.slice(0, 10)}`,
+      meta: exportMeta,
+      headers: exportHeaders,
+      rows: exportRows,
+      totals: totalsRow,
+    });
+  };
+
+  // Table Columns Definition
+  const columns: ColumnDef<CashDrawerReportRow>[] = useMemo(
+    () => [
+      {
+        key: 'sessionCode',
+        header: 'Session Code',
+        width: '120px',
+        render: (row) => (
           <div>
-            <label className={labelClass}>Campus</label>
-            <select
-              value={selectedBranch}
-              onChange={(e) => setSelectedBranch(e.target.value)}
-              className={selectClass}
+            <span className="font-bold text-[#0047AB] font-mono text-xs block">{row.sessionCode}</span>
+            <span className="text-[10px] text-slate-400 block">{row.date}</span>
+          </div>
+        ),
+      },
+      {
+        key: 'custodianName',
+        header: 'Cashier / Custodian',
+        width: '150px',
+        render: (row) => (
+          <div>
+            <span className="font-semibold text-slate-800 text-xs block truncate" title={row.custodianName}>
+              {row.custodianName}
+            </span>
+            <span className="text-[10px] text-slate-400 block">{row.branchName}</span>
+          </div>
+        ),
+      },
+      {
+        key: 'status',
+        header: 'Status',
+        width: '110px',
+        render: (row) => {
+          if (row.status === 'SETTLED') {
+            return (
+              <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-semibold gap-1">
+                <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Settled
+              </Badge>
+            );
+          }
+          if (row.status === 'SETTLEMENT_PENDING') {
+            return (
+              <Badge className="bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-semibold gap-1">
+                <Clock className="w-3 h-3 text-amber-600" /> Pending Review
+              </Badge>
+            );
+          }
+          return (
+            <Badge className="bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-semibold gap-1">
+              <Unlock className="w-3 h-3 text-blue-600" /> Open
+            </Badge>
+          );
+        },
+      },
+      {
+        key: 'openingFloat',
+        header: 'Opening Float',
+        align: 'right',
+        width: '120px',
+        render: (row) => <span className="font-mono text-xs text-slate-700">{formatCurrency(row.openingFloat)}</span>,
+      },
+      {
+        key: 'cashSales',
+        header: 'Cash Sales',
+        align: 'right',
+        width: '120px',
+        render: (row) => <span className="font-mono text-xs text-emerald-600 font-semibold">{formatCurrency(row.cashSales)}</span>,
+      },
+      {
+        key: 'otherCashIn',
+        header: 'Dues / Tips In',
+        align: 'right',
+        width: '120px',
+        render: (row) => (
+          <span className="font-mono text-xs text-emerald-700">
+            {formatCurrency(row.duesCollected + row.cashTips + row.otherCashIn)}
+          </span>
+        ),
+      },
+      {
+        key: 'totalCashIn',
+        header: 'Total Cash In',
+        align: 'right',
+        width: '125px',
+        render: (row) => (
+          <span className="font-mono text-xs font-bold text-emerald-700 bg-emerald-50/50 px-1.5 py-0.5 rounded">
+            +{formatCurrency(row.totalCashIn)}
+          </span>
+        ),
+      },
+      {
+        key: 'cashRefunds',
+        header: 'Cash Refunds',
+        align: 'right',
+        width: '115px',
+        render: (row) => (
+          <span className={`font-mono text-xs ${row.cashRefunds > 0 ? 'text-rose-600 font-semibold' : 'text-slate-400'}`}>
+            {row.cashRefunds > 0 ? `-${formatCurrency(row.cashRefunds)}` : '0.00'}
+          </span>
+        ),
+      },
+      {
+        key: 'cashExpenses',
+        header: 'Cash Expenses',
+        align: 'right',
+        width: '115px',
+        render: (row) => (
+          <span className={`font-mono text-xs ${row.cashExpenses > 0 ? 'text-rose-600 font-semibold' : 'text-slate-400'}`}>
+            {row.cashExpenses > 0 ? `-${formatCurrency(row.cashExpenses)}` : '0.00'}
+          </span>
+        ),
+      },
+      {
+        key: 'settlementsOut',
+        header: 'Settlement Out',
+        align: 'right',
+        width: '120px',
+        render: (row) => (
+          <span className={`font-mono text-xs ${row.settlementsOut > 0 ? 'text-indigo-600 font-semibold' : 'text-slate-400'}`}>
+            {row.settlementsOut > 0 ? `-${formatCurrency(row.settlementsOut)}` : '0.00'}
+          </span>
+        ),
+      },
+      {
+        key: 'expectedCash',
+        header: 'Expected Cash',
+        align: 'right',
+        width: '125px',
+        render: (row) => <span className="font-mono text-xs font-bold text-slate-800">{formatCurrency(row.expectedCash)}</span>,
+      },
+      {
+        key: 'countedCash',
+        header: 'Counted Cash',
+        align: 'right',
+        width: '125px',
+        render: (row) => (
+          <span className="font-mono text-xs text-slate-700">
+            {row.countedCash !== null ? formatCurrency(row.countedCash) : <span className="text-slate-400 italic">Not Counted</span>}
+          </span>
+        ),
+      },
+      {
+        key: 'variance',
+        header: 'Variance',
+        align: 'right',
+        width: '115px',
+        render: (row) => {
+          if (row.countedCash === null) return <span className="text-slate-400 font-mono text-xs">-</span>;
+          const isZero = Math.abs(row.variance) < 0.01;
+          const isOver = row.variance > 0;
+          return (
+            <span
+              className={`font-mono text-xs font-bold ${
+                isZero ? 'text-slate-500' : isOver ? 'text-emerald-600' : 'text-rose-600'
+              }`}
             >
-              <option value="ALL">All Campuses</option>
-              {allBranches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Session Status Filter */}
+              {isOver ? '+' : ''}
+              {formatCurrency(row.variance)}
+            </span>
+          );
+        },
+      },
+      {
+        key: 'onlineTotal',
+        header: 'Online Attributed',
+        align: 'right',
+        width: '135px',
+        render: (row) => (
           <div>
-            <label className={labelClass}>Drawer Status</label>
-            <select
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
-              className={selectClass}
-            >
-              <option value="ALL">All Statuses</option>
-              <option value="SETTLED">Settled</option>
-              <option value="OPEN">Open</option>
-              <option value="SETTLEMENT_PENDING">Pending Settlement</option>
-            </select>
+            <span className="font-mono text-xs font-bold text-blue-600 block">
+              {formatCurrency(row.onlineTotal)}
+            </span>
+            {row.onlineBreakdown.length > 0 && (
+              <span className="text-[10px] text-slate-400 block truncate max-w-[130px]" title={row.onlineBreakdown.map((b) => `${b.accountName}: ${b.amount}`).join(', ')}>
+                {row.onlineBreakdown.map((b) => `${b.accountName}: ${formatCurrency(b.amount)}`).join(', ')}
+              </span>
+            )}
           </div>
+        ),
+      },
+      {
+        key: 'movementCount',
+        header: 'Tx Count',
+        align: 'center',
+        width: '80px',
+        render: (row) => (
+          <Badge variant="outline" className="font-mono text-[10px] text-slate-600">
+            {row.movementCount}
+          </Badge>
+        ),
+      },
+    ],
+    []
+  );
 
-          {/* From Date */}
-          <div>
-            <label className={labelClass}>From Date</label>
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className={inputClass}
-            />
-          </div>
-
-          {/* To Date */}
-          <div>
-            <label className={labelClass}>To Date</label>
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className={inputClass}
-            />
-          </div>
-
-          {/* Filter Action Button */}
-          <div>
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full h-[35px] bg-[#0047AB] hover:bg-[#003785] active:bg-[#002b66] text-white font-medium text-xs rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-70"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Loading...</span>
-                </>
-              ) : (
-                <>
-                  <Filter className="w-3.5 h-3.5 fill-current" />
-                  <span>Filter</span>
-                </>
-              )}
-            </button>
-          </div>
-        </form>
+  // Filter Form Controls
+  const filterForm = (
+    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 items-end">
+      {/* Branch / Campus */}
+      <div>
+        <label className={filterLabel}>Campus / Branch</label>
+        <select
+          value={selectedBranch}
+          onChange={(e) => setSelectedBranch(e.target.value)}
+          disabled={!isSuperAdmin}
+          className={`${selectField} w-full`}
+        >
+          {isSuperAdmin && <option value="ALL">All Branches</option>}
+          {allBranches?.map((b: Branch) => (
+            <option key={b.id} value={b.id}>
+              {b.name}
+            </option>
+          ))}
+        </select>
       </div>
 
-      {/* Main Content Area */}
-      {!hasFiltered ? (
-        /* Empty State before Filter clicked */
-        <div className="bg-white rounded-xl border border-slate-200/90 p-16 md:p-24 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
-          <div className="text-slate-400 mb-3">
-            <Filter className="w-14 h-14 stroke-[1.25] text-slate-400" />
+      {/* Status Filter */}
+      <div>
+        <label className={filterLabel}>Session Status</label>
+        <select
+          value={selectedStatus}
+          onChange={(e) => setSelectedStatus(e.target.value)}
+          className={`${selectField} w-full`}
+        >
+          <option value="ALL">All Statuses</option>
+          <option value="OPEN">Open Drawers</option>
+          <option value="SETTLEMENT_PENDING">Pending Settlement</option>
+          <option value="SETTLED">Settled & Closed</option>
+        </select>
+      </div>
+
+      {/* Date Presets */}
+      <div>
+        <label className={filterLabel}>Date Preset</label>
+        <select
+          value={selectedPreset}
+          onChange={(e) => setSelectedPreset(e.target.value as DatePreset)}
+          className={`${selectField} w-full`}
+        >
+          {DATE_PRESETS.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Search Input */}
+      <div>
+        <label className={filterLabel}>Search Session / User</label>
+        <input
+          type="text"
+          placeholder="Filter code, cashier..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className={`${inputField} w-full`}
+        />
+      </div>
+
+      {/* Custom Date Pickers */}
+      {selectedPreset === 'CUSTOM' && (
+        <div className="col-span-full grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          <div>
+            <label className={filterLabel}>From Date</label>
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className={`${inputField} w-full`}
+            />
           </div>
-          <p className="text-slate-400 text-sm font-medium">Please apply filters to view reports</p>
-        </div>
-      ) : isLoading ? (
-        /* Loading Skeleton */
-        <div className="bg-white rounded-xl border border-slate-200/90 p-16 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
-          <Loader2 className="w-10 h-10 animate-spin text-[#0047AB] mb-3" />
-          <p className="text-slate-600 text-sm font-medium">Loading Cash Drawer Reports...</p>
-        </div>
-      ) : errorMessage ? (
-        /* Error Message */
-        <div className="bg-white rounded-xl border border-rose-200 p-8 shadow-xs text-center">
-          <p className="text-rose-600 text-sm font-medium mb-3">{errorMessage}</p>
-          <button
-            onClick={() => handleApplyFilters()}
-            className="px-4 py-1.5 bg-[#0047AB] text-white text-xs font-semibold rounded-md shadow-xs hover:bg-[#003785]"
-          >
-            Retry
-          </button>
-        </div>
-      ) : (
-        /* Filtered Data Layout */
-        <div className="mb-8">
-          {/* Royal Blue Banner Header */}
-          <div className="bg-[#0047AB] text-white px-5 py-3 rounded-t-xl flex flex-wrap items-center justify-between gap-3 shadow-sm">
-            <div className="flex items-center gap-2.5">
-              <Vault className="w-5 h-5 text-white/90" />
-              <span className="font-semibold text-sm tracking-wide">Cash Drawer Custody Register</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleExportExcel}
-                className="bg-[#009688] hover:bg-[#00897B] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                CSV
-              </button>
-              <button
-                type="button"
-                onClick={handleExportPdf}
-                className="bg-[#DC2626] hover:bg-[#B91C1C] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
-              >
-                <FileText className="w-3.5 h-3.5" />
-                PDF
-              </button>
-              <button
-                type="button"
-                onClick={handlePrint}
-                className="bg-[#4B5563] hover:bg-[#374151] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
-              >
-                <Printer className="w-3.5 h-3.5" />
-                Print
-              </button>
-            </div>
-          </div>
-
-          {/* Table Container with Horizontal Scroll */}
-          <div className="bg-white overflow-x-auto rounded-b-xl border border-t-0 border-slate-200/90 shadow-sm">
-            <table className="w-full min-w-[1300px] text-left border-collapse font-['Inter',sans-serif] text-[13px] antialiased">
-              <thead>
-                <tr className="bg-[#EAF2FB] border-b border-blue-100 text-[#475569] font-medium text-[13px]">
-                  <th className="py-3.5 px-3 text-center w-8">#</th>
-                  <th className="py-3.5 px-4 whitespace-nowrap">Session Date</th>
-                  <th className="py-3.5 px-4">Custodian</th>
-                  <th className="py-3.5 px-4">Campus</th>
-                  <th className="py-3.5 px-4 text-center">Status</th>
-                  <th className="py-3.5 px-4 text-right">Opening Float</th>
-                  <th className="py-3.5 px-4 text-right">Sales Cash In</th>
-                  <th className="py-3.5 px-4 text-right">Expenses Out</th>
-                  <th className="py-3.5 px-4 text-right">Tips Paid</th>
-                  <th className="py-3.5 px-4 text-right">Expected Cash</th>
-                  <th className="py-3.5 px-4 text-right">Counted Cash</th>
-                  <th className="py-3.5 px-4 text-right">Variance</th>
-                </tr>
-              </thead>
-              <tbody className="text-[#334155]">
-                {reportData && reportData.rows.length > 0 ? (
-                  reportData.rows.map((row: CashDrawerReportRow, idx: number) => {
-                    const isSettled = row.status === 'SETTLED';
-                    const hasDiscrepancy = Math.abs(row.variance) > 0.01;
-                    const dateParts = formatDateParts(row.date);
-
-                    return (
-                      <tr key={row.id || idx} className="hover:bg-blue-50/20 transition-colors border-b border-dashed border-slate-200">
-                        {/* 1. # */}
-                        <td className="py-3.5 px-3 text-center font-normal text-slate-400">
-                          {idx + 1}
-                        </td>
-
-                        {/* 2. Date */}
-                        <td className="py-3.5 px-4 whitespace-nowrap leading-tight">
-                          <div className="font-medium text-slate-800">{dateParts.dayMonth}</div>
-                          <div className="text-[11px] text-slate-400">{dateParts.year}</div>
-                        </td>
-
-                        {/* 3. Custodian */}
-                        <td className="py-3.5 px-4 whitespace-nowrap font-medium text-slate-800">
-                          {row.custodianName}
-                        </td>
-
-                        {/* 4. Campus */}
-                        <td className="py-3.5 px-4 whitespace-nowrap text-slate-600">
-                          {row.branchName || 'Main Campus'}
-                        </td>
-
-                        {/* 5. Status */}
-                        <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                          {isSettled ? (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#10B981] text-white shadow-2xs">
-                              SETTLED
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#F59E0B] text-white shadow-2xs">
-                              {row.status}
-                            </span>
-                          )}
-                        </td>
-
-                        {/* 6. Opening Float */}
-                        <td className="py-3.5 px-4 text-right tabular-nums text-slate-600 whitespace-nowrap">
-                          {formatPKR(row.openingFloat)}
-                        </td>
-
-                        {/* 7. Sales Cash In */}
-                        <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-[#10B981] whitespace-nowrap">
-                          +{formatPKR(row.cashSales)}
-                        </td>
-
-                        {/* 8. Expenses Out */}
-                        <td className="py-3.5 px-4 text-right tabular-nums font-medium text-[#EF4444] whitespace-nowrap">
-                          -{formatPKR(row.cashExpenses)}
-                        </td>
-
-                        {/* 9. Tips Paid */}
-                        <td className="py-3.5 px-4 text-right tabular-nums font-medium text-slate-600 whitespace-nowrap">
-                          -{formatPKR(row.cashTips)}
-                        </td>
-
-                        {/* 10. Expected Cash */}
-                        <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-slate-800 whitespace-nowrap">
-                          {formatPKR(row.expectedCash)}
-                        </td>
-
-                        {/* 11. Counted Cash */}
-                        <td className="py-3.5 px-4 text-right tabular-nums font-bold text-[#0047AB] whitespace-nowrap">
-                          {row.countedCash !== null && row.countedCash !== undefined ? formatPKR(row.countedCash) : '—'}
-                        </td>
-
-                        {/* 12. Variance */}
-                        <td
-                          className={`py-3.5 px-4 text-right tabular-nums font-semibold whitespace-nowrap ${
-                            hasDiscrepancy ? (row.variance > 0 ? 'text-[#10B981]' : 'text-[#EF4444]') : 'text-slate-500'
-                          }`}
-                        >
-                          {row.variance >= 0
-                            ? `+${formatPKR(row.variance)}`
-                            : `-${formatPKR(Math.abs(row.variance))}`}
-                        </td>
-                      </tr>
-                    );
-                  })
-                ) : (
-                  <tr>
-                    <td colSpan={12} className="py-12 text-center text-slate-400 font-medium">
-                      No cash drawer sessions found for the selected campus, dates, and filters.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-
-              {/* Integrated Table Footer */}
-              <tfoot className="bg-[#F8FAFC] border-t-2 border-slate-200 font-['Inter',sans-serif] text-[13px] text-[#334155]">
-                {/* Row 1: TOTALS (PKR) */}
-                <tr className="border-b border-slate-200/70">
-                  <td colSpan={9} className="py-3.5 px-4 text-right font-bold text-slate-800 tracking-wide">
-                    TOTAL CASH CLOSING (PKR)
-                  </td>
-                  <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-slate-800">
-                    {formatPKR(reportData?.totals?.expectedCash ?? 0)}
-                  </td>
-                  <td className="py-3.5 px-4 text-right tabular-nums font-bold text-[#0047AB]">
-                    {formatPKR(reportData?.totals?.countedCash ?? 0)}
-                  </td>
-                  <td className="py-3.5 px-4 text-right tabular-nums font-bold text-slate-800">
-                    {(reportData?.totals?.variance ?? 0) >= 0
-                      ? `+${formatPKR(reportData?.totals?.variance ?? 0)}`
-                      : `-${formatPKR(Math.abs(reportData?.totals?.variance ?? 0))}`}
-                  </td>
-                </tr>
-
-                {/* Row 2: Net Cash Reconciled */}
-                <tr>
-                  <td colSpan={9} className="py-3 px-4 text-right font-medium text-slate-600">
-                    Net Physical Cash Collected
-                  </td>
-                  <td colSpan={3} className="py-3 px-4 text-right tabular-nums font-bold text-[#0047AB] text-sm">
-                    +{formatPKR(reportData?.totals?.countedCash ?? 0)}
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
+          <div>
+            <label className={filterLabel}>To Date</label>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className={`${inputField} w-full`}
+            />
           </div>
         </div>
       )}
-
-      {/* Footer Branding */}
-      <div className="text-center py-4 text-xs text-slate-400 font-medium tracking-wide">
-        © iSysware Management System
-      </div>
     </div>
   );
-};
 
-export default CashDrawerLogsReportPage;
+  // KPI Summary Strip
+  const kpiStrip = reportData ? (
+    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-2">
+      {/* Sessions Count */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+          Sessions Logged
+        </span>
+        <span className="text-base font-bold text-slate-800 font-mono block">
+          {reportData.kpis.totalSessions}
+        </span>
+        <span className="text-[10px] text-slate-400 mt-0.5 block">
+          {reportData.kpis.openSessionsCount} Open · {reportData.kpis.settledSessionsCount} Settled
+        </span>
+      </div>
+
+      {/* Opening Float */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+          Opening Float
+        </span>
+        <span className="text-base font-bold text-slate-800 font-mono block">
+          {formatCurrency(reportData.kpis.totalOpeningFloat)}
+        </span>
+        <span className="text-[10px] text-slate-400 mt-0.5 block">Custody baseline</span>
+      </div>
+
+      {/* Cash Sales */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
+            Cash Sales
+          </span>
+          <ArrowDownLeft className="w-3.5 h-3.5 text-emerald-500" />
+        </div>
+        <span className="text-base font-bold text-emerald-600 font-mono block">
+          +{formatCurrency(reportData.kpis.totalCashSales)}
+        </span>
+        <span className="text-[10px] text-emerald-600 mt-0.5 block">Direct POS Cash</span>
+      </div>
+
+      {/* Total Cash In */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
+            Total Cash In
+          </span>
+          <Banknote className="w-3.5 h-3.5 text-emerald-600" />
+        </div>
+        <span className="text-base font-bold text-emerald-700 font-mono block">
+          +{formatCurrency(reportData.kpis.totalCashIn)}
+        </span>
+        <span className="text-[10px] text-slate-400 mt-0.5 block">Sales + Tips + Dues</span>
+      </div>
+
+      {/* Total Cash Out */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
+            Total Cash Out
+          </span>
+          <ArrowUpRight className="w-3.5 h-3.5 text-rose-500" />
+        </div>
+        <span className="text-base font-bold text-rose-600 font-mono block">
+          -{formatCurrency(reportData.kpis.totalCashOut)}
+        </span>
+        <span className="text-[10px] text-rose-600 mt-0.5 block">Refunds, Exp & Settl</span>
+      </div>
+
+      {/* Expected Cash */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+          Expected Cash
+        </span>
+        <span className="text-base font-bold text-slate-900 font-mono block">
+          {formatCurrency(reportData.kpis.totalExpectedCash)}
+        </span>
+        <span className="text-[10px] text-slate-400 mt-0.5 block">System Computed</span>
+      </div>
+
+      {/* Counted Cash */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
+          Counted Cash
+        </span>
+        <span className="text-base font-bold text-slate-800 font-mono block">
+          {formatCurrency(reportData.kpis.totalCountedCash)}
+        </span>
+        <span className="text-[10px] text-slate-400 mt-0.5 block">Physical Verification</span>
+      </div>
+
+      {/* Variance */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
+            Net Variance
+          </span>
+          <Scale className="w-3.5 h-3.5 text-slate-400" />
+        </div>
+        <span
+          className={`text-base font-bold font-mono block ${
+            Math.abs(reportData.kpis.totalVariance) < 0.01
+              ? 'text-slate-700'
+              : reportData.kpis.totalVariance > 0
+              ? 'text-emerald-600'
+              : 'text-rose-600'
+          }`}
+        >
+          {reportData.kpis.totalVariance > 0 ? '+' : ''}
+          {formatCurrency(reportData.kpis.totalVariance)}
+        </span>
+        <span className="text-[10px] text-slate-400 mt-0.5 block">Counted - Expected</span>
+      </div>
+    </div>
+  ) : null;
+
+  return (
+    <ReportShell
+      title="Cash Drawer Logs & Tender Breakdown"
+      description="Physical cash drawer custody, cashier shift balance logs, and comprehensive cash vs online accounts breakdown."
+      icon={Banknote}
+      bannerTitle="Cash Drawer Custody, Sessions & Tender Collections"
+      metaNotice={
+        reportData ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <span>Branch: <strong className="text-slate-800">{reportData.meta.branchName || 'All'}</strong></span>
+            <span>·</span>
+            <span>Window: <strong className="text-slate-800">{reportData.meta.from.slice(0, 10)} to {reportData.meta.to.slice(0, 10)}</strong></span>
+            <span>·</span>
+            <span>Date Basis: <strong className="text-slate-800">{reportData.meta.dateBasis} ({reportData.meta.timezone})</strong></span>
+          </div>
+        ) : undefined
+      }
+      isFilterLoading={isLoading}
+      onFilterSubmit={handleApplyFilters}
+      onExportExcel={handleExportExcel}
+      onExportCsv={handleExportCsv}
+      onExportPdf={handlePrint}
+      onExportPrint={handlePrint}
+      filterChildren={filterForm}
+      kpiStrip={kpiStrip}
+    >
+      {/* ERROR BANNER */}
+      {errorMessage && (
+        <div className="mb-4 p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
+          <Info className="w-4 h-4 shrink-0 text-rose-500" />
+          <span>{errorMessage}</span>
+        </div>
+      )}
+
+      {/* LANDSCAPE TABLE */}
+      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
+        <ReportTable
+          columns={columns}
+          data={reportData?.rows || []}
+          loading={isLoading}
+          emptyMessage="No cash drawer sessions found for the selected filter range."
+        />
+      </div>
+    </ReportShell>
+  );
+};
