@@ -76,6 +76,8 @@ import {
   Sparkles,
   Info,
   Trash2,
+  X,
+  Loader2,
 } from 'lucide-react';
 
 export const ServicesPackagesPage: React.FC = () => {
@@ -128,6 +130,12 @@ export const ServicesPackagesPage: React.FC = () => {
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [categoryError, setCategoryError] = useState<string | null>(null);
+
+  // Inline category creation inside Service modal
+  const [isInlineCategoryAdd, setIsInlineCategoryAdd] = useState(false);
+  const [inlineCategoryName, setInlineCategoryName] = useState('');
+  const [inlineCategoryError, setInlineCategoryError] = useState<string | null>(null);
+  const [isCreatingInlineCategory, setIsCreatingInlineCategory] = useState(false);
 
   // Staff Assignment Preview Modal (for packages)
   const [isStaffPreviewModalOpen, setIsStaffPreviewModalOpen] = useState(false);
@@ -284,6 +292,27 @@ export const ServicesPackagesPage: React.FC = () => {
       const msg = err.message || 'Failed to create category.';
       setCategoryError(msg);
       toast.error(msg);
+    }
+  };
+
+  // Handler: Add category inline inside Service modal
+  const handleCreateInlineCategory = async () => {
+    if (!inlineCategoryName.trim()) return;
+    setInlineCategoryError(null);
+    setIsCreatingInlineCategory(true);
+    try {
+      const created = await salonService.createServiceCategory(selectedBranchId, inlineCategoryName.trim(), user);
+      setCategories((prev) => [...prev, created]);
+      setServiceFormData((prev) => ({ ...prev, category: created.name }));
+      setInlineCategoryName('');
+      setIsInlineCategoryAdd(false);
+      toast.success(`Category '${created.name}' created successfully!`);
+    } catch (err: any) {
+      const msg = err.message || 'Failed to create category.';
+      setInlineCategoryError(msg);
+      toast.error(msg);
+    } finally {
+      setIsCreatingInlineCategory(false);
     }
   };
 
@@ -504,6 +533,9 @@ export const ServicesPackagesPage: React.FC = () => {
       specificTaxRuleId: srv.specificTaxRuleId || '',
       isActive: srv.isActive,
     });
+    setInlineCategoryName('');
+    setInlineCategoryError(null);
+    setIsInlineCategoryAdd(false);
     setIsEditServiceModalOpen(true);
   };
 
@@ -700,10 +732,11 @@ export const ServicesPackagesPage: React.FC = () => {
                   size="sm"
                   leftIcon={<Plus className="w-3.5 h-3.5" />}
                   onClick={() => {
+                    const defaultCat = categories[0]?.name || '';
                     setServiceFormData({
                       code: generateNextServiceCode(allServices.length > 0 ? allServices : services),
                       name: '',
-                      category: categories[0]?.name || 'Hair Styling & Cuts',
+                      category: defaultCat,
                       durationMinutes: 45,
                       price: 3500,
                       description: '',
@@ -711,6 +744,9 @@ export const ServicesPackagesPage: React.FC = () => {
                       specificTaxRuleId: '',
                       isActive: true,
                     });
+                    setInlineCategoryName('');
+                    setInlineCategoryError(null);
+                    setIsInlineCategoryAdd(categories.length === 0);
                     setIsAddServiceModalOpen(true);
                   }}
                 >
@@ -1065,6 +1101,9 @@ export const ServicesPackagesPage: React.FC = () => {
           if (!open) {
             setIsAddServiceModalOpen(false);
             setIsEditServiceModalOpen(false);
+            setIsInlineCategoryAdd(false);
+            setInlineCategoryName('');
+            setInlineCategoryError(null);
           }
         }}
       >
@@ -1092,22 +1131,106 @@ export const ServicesPackagesPage: React.FC = () => {
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Category *</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-semibold text-slate-700 block">Category *</label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsInlineCategoryAdd((prev) => !prev);
+                      setInlineCategoryError(null);
+                    }}
+                    className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-0.5 cursor-pointer transition-colors"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>{isInlineCategoryAdd ? 'Cancel' : 'Add Category'}</span>
+                  </button>
+                </div>
+
+                {isInlineCategoryAdd && (
+                  <div className="p-2 mb-2 bg-blue-50/80 border border-blue-200 rounded-lg space-y-1.5 animate-in fade-in duration-150">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-900">
+                        Create New Category
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsInlineCategoryAdd(false);
+                          setInlineCategoryError(null);
+                          setInlineCategoryName('');
+                        }}
+                        className="text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    {inlineCategoryError && (
+                      <p className="text-[11px] text-rose-600 font-medium">{inlineCategoryError}</p>
+                    )}
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        value={inlineCategoryName}
+                        onChange={(e) => setInlineCategoryName(e.target.value)}
+                        placeholder="New category name (e.g. Hair Spa)..."
+                        className="h-8 text-xs bg-white"
+                        disabled={isCreatingInlineCategory}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleCreateInlineCategory();
+                          }
+                        }}
+                        autoFocus
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-8 px-3 text-xs bg-[#0047AB] hover:bg-[#003785] text-white shrink-0"
+                        onClick={handleCreateInlineCategory}
+                        disabled={isCreatingInlineCategory || !inlineCategoryName.trim()}
+                      >
+                        {isCreatingInlineCategory ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Add'}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
                 <Select
                   value={serviceFormData.category}
                   onValueChange={(val) => setServiceFormData({ ...serviceFormData, category: val })}
                 >
                   <SelectTrigger className="h-9 text-xs">
-                    <SelectValue placeholder="Select Category" />
+                    <SelectValue placeholder={categories.length === 0 ? 'No categories (Add above)' : 'Select Category'} />
                   </SelectTrigger>
                   <SelectContent>
-                    {categories.map((c) => (
-                      <SelectItem key={c.id} value={c.name} className="text-xs">
-                        {c.name}
-                      </SelectItem>
-                    ))}
+                    {categories.length === 0 ? (
+                      <div className="p-2 text-center text-xs text-slate-400">
+                        No categories found
+                      </div>
+                    ) : (
+                      categories.map((c) => (
+                        <SelectItem key={c.id} value={c.name} className="text-xs">
+                          {c.name}
+                        </SelectItem>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
+
+                {categories.length === 0 && !isInlineCategoryAdd && (
+                  <p className="text-[11px] text-amber-600 mt-1 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 shrink-0" />
+                    No category found. Please{' '}
+                    <button
+                      type="button"
+                      onClick={() => setIsInlineCategoryAdd(true)}
+                      className="underline font-semibold hover:text-amber-800 cursor-pointer"
+                    >
+                      add a category
+                    </button>
+                    .
+                  </p>
+                )}
               </div>
             </div>
 
@@ -1155,6 +1278,9 @@ export const ServicesPackagesPage: React.FC = () => {
                 onClick={() => {
                   setIsAddServiceModalOpen(false);
                   setIsEditServiceModalOpen(false);
+                  setIsInlineCategoryAdd(false);
+                  setInlineCategoryName('');
+                  setInlineCategoryError(null);
                 }}
               >
                 Cancel
