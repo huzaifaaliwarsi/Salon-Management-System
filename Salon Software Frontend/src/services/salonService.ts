@@ -463,6 +463,17 @@ export interface SalonServiceContract {
     notes?: string;
   }, actor?: User): Promise<{ markedCount: number; skippedCount: number; markedNames: string[]; skippedNames: string[] }>;
   correctAttendance(id: string, input: CorrectAttendanceInput, actor?: User): Promise<AttendanceRecord>;
+  saveDailyAttendance(input: {
+    branchId: string;
+    date: string;
+    records: Array<{
+      staffId: string;
+      status: string;
+      checkIn?: string;
+      checkOut?: string;
+      notes?: string;
+    }>;
+  }, actor?: User): Promise<{ savedCount: number }>;
   finalizeDayAttendance(branchId: string, date: string, actor?: User): Promise<{ finalizedCount: number; markedAbsentStaffNames: string[] }>;
   importAttendanceCSV(branchId: string, rows: CSVAttendanceImportRow[], actor?: User): Promise<CSVAttendanceImportResult>;
 

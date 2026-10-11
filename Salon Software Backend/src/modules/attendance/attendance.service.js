@@ -316,6 +316,140 @@ export const markAllAttendance = async ({ branchId: requested, date, status = 'P
   });
 };
 
+export const bulkSaveAttendance = async ({ branchId: requested, date, records }, actor) => {
+  const branchId = resolveWriteBranch(actor, requested, 'Access Denied: Cannot record attendance for another branch.');
+  return prisma.$transaction(async (tx) => {
+    await lockStaffPayBranch(tx, branchId);
+    let savedCount = 0;
+    const staffIds = records.map((r) => r.staffId);
+    const staffRows = await tx.staff.findMany({ where: { id: { in: staffIds }, branchId, isActive: true } });
+    const staffMap = new Map(staffRows.map((s) => [s.id, s]));
+
+    for (const item of records) {
+      const staff = staffMap.get(item.staffId);
+      if (!staff) continue;
+
+      await assertPayrollPeriodOpen(tx, staff.id, date);
+
+      const status = item.status || 'PRESENT';
+      let checkIn = item.checkIn?.trim() || '';
+      let checkOut = item.checkOut?.trim() || '';
+      let isLate = false;
+      let lateMinutes = 0;
+      let isEarlyExit = false;
+      let earlyExitMinutes = 0;
+      let workedHours = 0;
+      let scheduledHours = calculateScheduledHours(staff.startTime, staff.endTime, staff.isOvernightShift);
+      let calculationSnapshot = null;
+      let isMissingPunch = false;
+
+      if (status === 'PRESENT' || status === 'HALF_DAY') {
+        if (!checkIn) checkIn = staff.startTime || '09:00';
+        if (!checkOut) checkOut = staff.endTime || '18:00';
+        const dto = toStaffDTO(staff);
+        try {
+          const day = evaluateDay(dto, checkIn, checkOut, staff.isOvernightShift);
+          isLate = day.isLate;
+          lateMinutes = day.lateMinutes;
+          isEarlyExit = day.isEarlyExit;
+          earlyExitMinutes = day.earlyExitMinutes;
+          workedHours = day.workedHours;
+          scheduledHours = day.scheduledHours;
+          calculationSnapshot = day.calculationSnapshot;
+          isMissingPunch = day.isMissingPunch;
+        } catch {
+          // If checkOut earlier than checkIn or invalid, set gracefully
+          workedHours = 0;
+          isMissingPunch = true;
+        }
+      } else if (status === 'ABSENT') {
+        checkIn = 'ABSENT';
+        checkOut = 'ABSENT';
+        workedHours = 0;
+      } else if (status === 'HOLIDAY' || status === 'WEEKLY_OFF') {
+        checkIn = status;
+        checkOut = status;
+        workedHours = 0;
+      } else if (status === 'PAID_LEAVE' || status === 'UNPAID_LEAVE') {
+        checkIn = status;
+        checkOut = status;
+        workedHours = 0;
+      }
+
+      const existing = await tx.attendanceRecord.findUnique({
+        where: { staffId_workDate: { staffId: staff.id, workDate: dateOnly(date) } },
+      });
+
+      if (existing) {
+        await tx.attendanceRecord.update({
+          where: { id: existing.id },
+          data: {
+            checkIn,
+            checkOut: checkOut || null,
+            status,
+            isLate,
+            lateMinutes,
+            isEarlyExit,
+            earlyExitMinutes,
+            workedHours,
+            scheduledHours,
+            calculationSnapshot,
+            isMissingPunch,
+            notes: item.notes !== undefined ? item.notes : existing.notes,
+          },
+        });
+      } else {
+        await tx.attendanceRecord.create({
+          data: {
+            branchId,
+            staffId: staff.id,
+            workDate: dateOnly(date),
+            checkIn,
+            checkOut: checkOut || null,
+            status,
+            isLate,
+            lateMinutes,
+            isEarlyExit,
+            earlyExitMinutes,
+            workedHours,
+            scheduledHours,
+            calculationSnapshot,
+            isMissingPunch,
+            source: 'MANUAL',
+            isOvernightShift: staff.isOvernightShift,
+            notes: item.notes || null,
+            punches: {
+              create: [
+                ...(checkIn && !['ABSENT', 'HOLIDAY', 'WEEKLY_OFF', 'PAID_LEAVE', 'UNPAID_LEAVE'].includes(checkIn)
+                  ? [{ type: 'CHECK_IN', timestamp: checkIn, source: 'MANUAL' }]
+                  : []),
+                ...(checkOut && !['ABSENT', 'HOLIDAY', 'WEEKLY_OFF', 'PAID_LEAVE', 'UNPAID_LEAVE'].includes(checkOut)
+                  ? [{ type: 'CHECK_OUT', timestamp: checkOut, source: 'MANUAL' }]
+                  : []),
+              ],
+            },
+          },
+        });
+      }
+      savedCount++;
+    }
+
+    if (savedCount > 0) {
+      await auditLog(tx, {
+        userId: actor.id,
+        userName: actor.name,
+        action: 'ATTENDANCE_DAILY_SHEET_SAVED',
+        entity: 'AttendanceRecord',
+        entityId: date,
+        branchId,
+        after: { savedCount, totalRequested: records.length },
+      });
+    }
+
+    return { savedCount };
+  });
+};
+
 export const importCSV = async ({ branchId: requested, rows }, actor) => {
   const branchId = resolveWriteBranch(actor, requested, 'Access Denied: Cannot import attendance for another branch.');
   return prisma.$transaction(async (tx) => {

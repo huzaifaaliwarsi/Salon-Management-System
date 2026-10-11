@@ -298,6 +298,7 @@ const liveMethods: SalonServiceContract = {
   createAttendance: (input) => api.post<AttendanceRecord>('/attendance', input),
   markAllAttendance: (input) => api.post<{ markedCount: number; skippedCount: number; markedNames: string[]; skippedNames: string[] }>('/attendance/mark-all', input),
   correctAttendance: (id, input) => api.put<AttendanceRecord>(`/attendance/${id}/correct`, input),
+  saveDailyAttendance: (input) => api.post<{ savedCount: number }>('/attendance/bulk-save', input),
   finalizeDayAttendance: (branchId, date) => api.post('/attendance/finalize-day', { branchId, date }),
   importAttendanceCSV: (branchId, rows) => api.post<CSVAttendanceImportResult>('/attendance/import-csv', { branchId, rows }),
   getLeaves: (branchId, staffId) => api.get<LeaveRecord[]>('/leaves', { ...branchQuery(branchId), staffId }),

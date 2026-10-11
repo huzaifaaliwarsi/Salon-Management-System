@@ -57,6 +57,18 @@ const send = (fn, status = 200) => asyncHandler(async (req, res) => res.status(s
 const ADMINS = ['SUPER_ADMIN', 'ADMIN'];
 const READERS = [...ADMINS, 'STAFF'];
 
+const bulkSaveSchema = z.object({
+  branchId: z.string().optional(),
+  date: ymd,
+  records: z.array(z.object({
+    staffId: z.string().min(1),
+    status: z.string().min(1),
+    checkIn: z.string().optional(),
+    checkOut: z.string().optional(),
+    notes: z.string().optional(),
+  })).min(1, 'No attendance records provided.'),
+});
+
 // ── /attendance ──────────────────────────────────────────────────────────────
 export const attendanceRoutes = Router();
 attendanceRoutes.use(authenticate);
@@ -64,6 +76,7 @@ attendanceRoutes.get('/',               authorize(...READERS, 'ACCOUNTANT'), val
 attendanceRoutes.get('/me',             authorize('STAFF'), send((req) => a.personalAttendance(req.user)));
 attendanceRoutes.post('/',              authorize(...ADMINS), validate(createSchema), send((req) => a.createAttendance(req.body, req.user), 201));
 attendanceRoutes.post('/mark-all',      authorize(...ADMINS), validate(markAllSchema), send((req) => a.markAllAttendance(req.body, req.user)));
+attendanceRoutes.post('/bulk-save',     authorize(...ADMINS), validate(bulkSaveSchema), send((req) => a.bulkSaveAttendance(req.body, req.user)));
 attendanceRoutes.put('/:id/correct',    authorize(...ADMINS), validate(correctSchema), send((req) => a.correctAttendance(req.params.id, req.body, req.user)));
 attendanceRoutes.post('/finalize-day',  authorize(...ADMINS), validate(finalizeSchema), send((req) => a.finalizeDay(req.body, req.user)));
 attendanceRoutes.post('/import-csv',    authorize(...ADMINS), validate(importSchema), send((req) => a.importCSV(req.body, req.user)));

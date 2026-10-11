@@ -5961,6 +5961,20 @@ class MockSalonService implements SalonServiceContract {
     return list.sort((a, b) => b.startDate.localeCompare(a.startDate));
   }
 
+  async saveDailyAttendance(input: {
+    branchId: string;
+    date: string;
+    records: Array<{
+      staffId: string;
+      status: string;
+      checkIn?: string;
+      checkOut?: string;
+      notes?: string;
+    }>;
+  }, _actor?: User): Promise<{ savedCount: number }> {
+    return { savedCount: input.records.length };
+  }
+
   async finalizeDayAttendance(branchId: string, date: string, actor?: User): Promise<{ finalizedCount: number; markedAbsentStaffNames: string[] }> {
     const authenticatedActor = this.getAuthenticatedActor(actor);
     if (authenticatedActor.role !== 'SUPER_ADMIN' && authenticatedActor.role !== 'ADMIN') {
