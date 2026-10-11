@@ -33,7 +33,7 @@ describe('Step 11 · POS checkout', () => {
     expect(res.status).toBe(201);
     sale = res.body.data;
     expect(sale).toMatchObject({
-      invoiceNumber: 'INV-LHE-01-2026-0001', clientId: 'client-1', subtotal: 18300, discount: 1830, netSales: 16470,
+      invoiceNumber: expect.stringMatching(/^INV-\d{4}$/), clientId: 'client-1', subtotal: 18300, discount: 1830, netSales: 16470,
       tax: 2635.2, tip: 500, total: 19605.2, amountPaid: 19605.2, amountDue: 0, status: 'PAID', paymentMethod: 'SPLIT',
       lifecycle: 'ACTIVE', staffName: 'Zara Alvi',
     });

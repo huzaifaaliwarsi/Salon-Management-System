@@ -10,7 +10,7 @@ const nonNeg = (label) => z.number({ message: `${label} must be a number.` }).mi
 export const itemType = z.enum(['RETAIL_PRODUCT', 'SALON_CONSUMABLE', 'BOTH']);
 
 const itemFields = {
-  sku:                 z.string().trim().min(1, 'Item SKU is required.').transform((s) => s.toUpperCase()),
+  sku:                 z.string().trim().optional().transform((s) => (s ? s.toUpperCase() : undefined)),
   barcode:             z.string().trim().optional(),
   name:                z.string().trim().min(1, 'Item name is required.'),
   category:            z.string().trim().min(1).default('General'),

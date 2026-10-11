@@ -116,18 +116,21 @@ export const searchClients = async (actor, { branchId, q }) => {
  * Must run inside the caller's transaction.
  */
 export const findOrCreateClient = async (tx, { branchId, clientId, name, phone, email, source, sourceDetails }) => {
-  const norm = assertValidPhone(phone);
   let client = clientId ? await tx.client.findFirst({ where: { id: clientId, branchId } }) : null;
-  if (!client) client = await tx.client.findUnique({ where: { branchId_phoneNormalized: { branchId, phoneNormalized: norm } } });
-
   if (!client) {
-    client = await tx.client.create({
-      data: {
-        branchId, name, phone: formatPhoneNumber(phone), phoneNormalized: norm,
-        email: email || null, source: source || 'WALK_IN', sourceDetails: sourceDetails || null,
-      },
-    });
-  } else if ((source && !client.source) || (sourceDetails && !client.sourceDetails)) {
+    const norm = assertValidPhone(phone);
+    client = await tx.client.findUnique({ where: { branchId_phoneNormalized: { branchId, phoneNormalized: norm } } });
+    if (!client) {
+      client = await tx.client.create({
+        data: {
+          branchId, name, phone: formatPhoneNumber(phone), phoneNormalized: norm,
+          email: email || null, source: source || 'WALK_IN', sourceDetails: sourceDetails || null,
+        },
+      });
+    }
+  }
+
+  if ((source && !client.source) || (sourceDetails && !client.sourceDetails)) {
     client = await tx.client.update({
       where: { id: client.id },
       data: { source: client.source ?? source, sourceDetails: client.sourceDetails ?? sourceDetails },

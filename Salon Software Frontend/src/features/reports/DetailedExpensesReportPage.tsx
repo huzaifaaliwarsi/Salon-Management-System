@@ -1,48 +1,69 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { salonService } from '@/services';
 import {
   DetailedExpensesReport,
   DetailedExpenseRow,
   DetailedExpensesReportQuery,
-  OnlineAccountBreakdownItem,
-  DetailedExpenseCategoryItem,
-  Branch,
 } from '@/types/salon';
 import { AccessDeniedView } from '@/features/scaffold/AccessDeniedView';
-import { formatCurrency } from '@/lib/formatters';
-import { Badge } from '@/components/ui/badge';
-import { ReportShell } from '@/features/reports/components/ReportShell';
-import { ReportTable, ColumnDef } from '@/features/reports/components/ReportTable';
 import {
   downloadReportCsv,
   downloadReportExcel,
   printReportWindow,
-  DATE_PRESETS,
-  DatePreset,
 } from '@/features/reports/reportUtils';
 import {
-  Receipt,
-  Banknote,
-  Smartphone,
-  CreditCard,
-  Building2,
-  ArrowDownLeft,
-  ArrowUpRight,
-  TrendingDown,
-  Tag,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  RotateCcw,
-  Info,
-  DollarSign,
+  Filter,
   FileSpreadsheet,
+  FileText,
+  Printer,
+  Loader2,
+  Receipt,
 } from 'lucide-react';
 
-const selectField = 'text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] h-8';
-const inputField = 'text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] h-8';
-const filterLabel = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1';
+const selectClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const inputClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const labelClass = 'block text-[11px] font-semibold text-[#0B2545] mb-1.5';
+
+const formatPKR = (amt: number, withSign = false) => {
+  const num = Number(amt) || 0;
+  const abs = Math.abs(num);
+  const formatted = abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (withSign) {
+    return num >= 0 ? `+${formatted}` : `-${formatted}`;
+  }
+  return formatted;
+};
+
+const formatDateParts = (dateStr: string) => {
+  if (!dateStr) return { dayMonth: '—', year: '' };
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return { dayMonth: dateStr, year: '' };
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = d.toLocaleString('en-US', { month: 'short' });
+    const year = d.getFullYear();
+    return { dayMonth: `${day} ${month}`, year: `${year}` };
+  } catch {
+    return { dayMonth: dateStr, year: '' };
+  }
+};
+
+const formatDateDisplay = (dateStr: string) => {
+  if (!dateStr) return '—';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    const day = d.getDate();
+    const month = d.toLocaleString('en-US', { month: 'short' });
+    const year = d.getFullYear();
+    return `${day} ${month}, ${year}`;
+  } catch {
+    return dateStr;
+  }
+};
 
 export const DetailedExpensesReportPage: React.FC = () => {
   const { user, activeBranchId, allBranches } = useAuth();
@@ -52,615 +73,484 @@ export const DetailedExpensesReportPage: React.FC = () => {
     return <AccessDeniedView attemptedPath="/reports/detailed-expenses" />;
   }
 
-  const isSuperAdmin = user.role === 'SUPER_ADMIN';
-  const defaultBranch = isSuperAdmin ? (activeBranchId || 'ALL') : (user.branchId || '');
-
   // Filter Form State
-  const [selectedBranch, setSelectedBranch] = useState<string>(defaultBranch);
+  const [selectedBranch, setSelectedBranch] = useState<string>(activeBranchId || user.branchId || 'ALL');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
   const [selectedPaymentSource, setSelectedPaymentSource] = useState<string>('ALL');
-  const [selectedPreset, setSelectedPreset] = useState<DatePreset>('THIS_MONTH');
-  const [customFrom, setCustomFrom] = useState<string>('');
-  const [customTo, setCustomTo] = useState<string>('');
+  const [fromDate, setFromDate] = useState<string>('');
+  const [toDate, setToDate] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Applied Query State (triggers API fetch)
-  const [appliedQuery, setAppliedQuery] = useState<DetailedExpensesReportQuery>({
-    branchId: defaultBranch,
-    category: 'ALL',
-    status: 'ALL',
-    paymentSource: 'ALL',
-    preset: 'THIS_MONTH',
-  });
-
+  // Page state: Only fetch when user explicitly clicks Filter ("filter karna sa aae default nhi")
+  const [hasFiltered, setHasFiltered] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [reportData, setReportData] = useState<DetailedExpensesReport | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Fetch Report Data from Live Express Backend
-  const fetchReport = useCallback(async (q: DetailedExpensesReportQuery) => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    try {
-      const data = await salonService.getDetailedExpensesReport(q);
-      setReportData(data);
-    } catch (err: any) {
-      console.error('Failed to load Detailed Expenses report:', err);
-      setErrorMessage(err.message || 'Failed to fetch live expenses report from server.');
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  // Update branch state when active branch in context changes
-  useEffect(() => {
-    if (isSuperAdmin && activeBranchId && activeBranchId !== selectedBranch) {
-      setSelectedBranch(activeBranchId);
-      setAppliedQuery((prev) => ({ ...prev, branchId: activeBranchId }));
-    }
-  }, [activeBranchId, isSuperAdmin]);
-
-  // Load report when applied query changes
-  useEffect(() => {
-    fetchReport(appliedQuery);
-  }, [appliedQuery, fetchReport]);
-
-  // Handle Form Submit / Filter Button
-  const handleApplyFilters = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    setAppliedQuery({
-      branchId: selectedBranch,
-      category: selectedCategory,
-      status: selectedStatus,
-      paymentSource: selectedPaymentSource,
-      preset: selectedPreset,
-      startDate: selectedPreset === 'CUSTOM' ? customFrom : undefined,
-      endDate: selectedPreset === 'CUSTOM' ? customTo : undefined,
-      from: selectedPreset === 'CUSTOM' ? customFrom : undefined,
-      to: selectedPreset === 'CUSTOM' ? customTo : undefined,
-      search: searchQuery.trim(),
-    });
-  };
-
-  // Export Metadata
-  const exportMeta: [string, string][] = useMemo(() => {
-    if (!reportData) return [];
-    return [
-      ['Report Name', 'Detailed Operational Expenses Register'],
-      ['Branch / Campus', reportData.meta.branchName || 'All Branches'],
-      ['Reporting Window', `${reportData.meta.from.slice(0, 10)} to ${reportData.meta.to.slice(0, 10)}`],
-      ['Date Basis', `${reportData.meta.dateBasis} (${reportData.meta.timezone})`],
-      ['Total Operational Expenses', formatCurrency(reportData.kpis.totalExpenses)],
-      ['Cash Disbursed', formatCurrency(reportData.kpis.cashExpenses)],
-      ['Online Disbursed', formatCurrency(reportData.kpis.onlineExpenses)],
-      ['Total Vouchers Logged', String(reportData.kpis.totalVouchersCount)],
-      ['Posted Vouchers', String(reportData.kpis.postedCount)],
-      ['Reversed Vouchers', String(reportData.kpis.reversedCount)],
-      ['Generated At', reportData.meta.generatedAt],
-      ['Generated By', reportData.meta.generatedBy],
-    ];
-  }, [reportData]);
-
-  // Export Headers
-  const exportHeaders = useMemo(
-    () => [
-      'Voucher #',
-      'Date',
-      'Time',
-      'Category',
-      'Title / Description',
-      'Payee / Vendor',
-      'Branch',
-      'Recorded By',
-      'Payment Source',
-      'Account / Drawer',
-      'Amount (PKR)',
-      'Status',
-      'External Ref',
-      'Notes',
-    ],
+  // Fetch report data on demand from backend API
+  const fetchReport = useCallback(
+    async (q: DetailedExpensesReportQuery) => {
+      setIsLoading(true);
+      setErrorMessage(null);
+      try {
+        const data = await salonService.getDetailedExpensesReport(q);
+        setReportData(data);
+      } catch (err: any) {
+        console.error('Failed to load Detailed Expenses report:', err);
+        setErrorMessage(err.message || 'Failed to fetch live expenses report from server.');
+      } finally {
+        setIsLoading(false);
+      }
+    },
     []
   );
 
-  const exportRows = useMemo(() => {
-    if (!reportData?.rows) return [];
-    return reportData.rows.map((r: DetailedExpenseRow) => [
+  const handleApplyFilters = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setHasFiltered(true);
+
+    const query: DetailedExpensesReportQuery = {
+      branchId: selectedBranch,
+      startDate: fromDate || undefined,
+      endDate: toDate || undefined,
+      from: fromDate || undefined,
+      to: toDate || undefined,
+      preset: !fromDate && !toDate ? 'THIS_MONTH' : 'CUSTOM',
+      category: selectedCategory !== 'ALL' ? selectedCategory : undefined,
+      status: (selectedStatus as any) || 'ALL',
+      paymentSource: (selectedPaymentSource as any) || 'ALL',
+      search: searchQuery.trim() || undefined,
+    };
+
+    fetchReport(query);
+  };
+
+  // Export handlers
+  const handleExportExcel = () => {
+    if (!reportData || !reportData.rows.length) return;
+    const meta: [string, string][] = [
+      ['Report', 'Detailed Expenses Report'],
+      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
+      ['From Date', fromDate || reportData.meta.from || '—'],
+      ['To Date', toDate || reportData.meta.to || '—'],
+      ['Generated At', new Date().toLocaleString()],
+    ];
+
+    const headers = [
+      '#',
+      'Voucher #',
+      'Date',
+      'Campus',
+      'Category',
+      'Title',
+      'Payee',
+      'Payment Source',
+      'Status',
+      'Created By',
+      'Amount (PKR)',
+    ];
+
+    const rows = reportData.rows.map((r, i) => [
+      i + 1,
       r.voucherNumber,
-      r.date,
-      r.time,
+      formatDateDisplay(r.date),
+      r.branchName,
       r.category,
       r.title,
       r.payee,
-      r.branchName,
-      r.createdByName,
-      r.paymentSource === 'CASH_DRAWER' ? 'Cash Drawer' : 'Online Account',
-      r.paymentAccountName || (r.paymentSource === 'CASH_DRAWER' ? 'Cash Drawer' : '-'),
-      r.amount,
+      r.paymentSource,
       r.status,
-      r.externalReference || '-',
-      r.notes || '-',
+      r.createdByName || 'Staff',
+      r.amount.toFixed(2),
     ]);
-  }, [reportData]);
 
-  // Export Handlers
-  const handleExportCsv = () => {
-    if (!reportData || !reportData.rows.length) return;
-    downloadReportCsv('detailed_expenses_report', exportMeta, [
-      { headers: exportHeaders, rows: exportRows },
-    ]);
+    downloadReportExcel('Detailed_Expenses_Report', meta, [{ headers, rows }]);
   };
 
-  const handleExportExcel = () => {
+  const handleExportPdf = () => {
     if (!reportData || !reportData.rows.length) return;
-    downloadReportExcel('detailed_expenses_report', exportMeta, [
-      { title: 'Expenses Register', headers: exportHeaders, rows: exportRows },
+    const meta: [string, string][] = [
+      ['Report', 'Detailed Expenses Report'],
+      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
+      ['From Date', fromDate || reportData.meta.from || '—'],
+      ['To Date', toDate || reportData.meta.to || '—'],
+      ['Generated At', new Date().toLocaleString()],
+    ];
+
+    const headers = [
+      '#',
+      'Voucher #',
+      'Date',
+      'Campus',
+      'Category',
+      'Title',
+      'Payee',
+      'Payment Source',
+      'Status',
+      'Created By',
+      'Amount (PKR)',
+    ];
+
+    const rows = reportData.rows.map((r, i) => [
+      i + 1,
+      r.voucherNumber,
+      formatDateDisplay(r.date),
+      r.branchName,
+      r.category,
+      r.title,
+      r.payee,
+      r.paymentSource,
+      r.status,
+      r.createdByName || 'Staff',
+      r.amount.toFixed(2),
     ]);
+
+    downloadReportCsv('Detailed_Expenses_Report', meta, [{ headers, rows }]);
   };
 
   const handlePrint = () => {
-    if (!reportData || !reportData.rows.length) return;
-    const totalsRow = [
-      'TOTAL',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      reportData.totals.amount,
-      '',
-      '',
-      '',
+    if (!reportData || !reportData.rows.length) {
+      window.print();
+      return;
+    }
+    const meta: [string, string][] = [
+      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
+      ['From Date', fromDate || reportData.meta.from || '—'],
+      ['To Date', toDate || reportData.meta.to || '—'],
+      ['Total Expenses', formatPKR(reportData.totals.amount)],
     ];
+    const headers = ['#', 'Voucher #', 'Date', 'Campus', 'Category', 'Title', 'Payee', 'Source', 'Status', 'Amount'];
+    const rows = reportData.rows.map((r, i) => [
+      i + 1,
+      r.voucherNumber,
+      formatDateDisplay(r.date),
+      r.branchName,
+      r.category,
+      r.title,
+      r.payee,
+      r.paymentSource,
+      r.status,
+      formatPKR(r.amount),
+    ]);
+
     printReportWindow({
-      title: 'Detailed Operational Expenses Register',
-      subtitle: `Branch: ${reportData.meta.branchName} · Window: ${reportData.meta.from.slice(0, 10)} to ${reportData.meta.to.slice(0, 10)}`,
-      meta: exportMeta,
-      headers: exportHeaders,
-      rows: exportRows,
-      totals: totalsRow,
+      title: 'Detailed Expenses Report',
+      meta,
+      headers,
+      rows,
     });
   };
 
-  // Table Columns Definition
-  const columns: ColumnDef<DetailedExpenseRow>[] = useMemo(
-    () => [
-      {
-        key: 'voucherNumber',
-        header: 'Voucher #',
-        width: '120px',
-        render: (row) => (
-          <div>
-            <span
-              className={`font-bold font-mono text-xs block ${
-                row.isReversalRecord ? 'text-amber-600' : 'text-[#0047AB]'
-              }`}
-            >
-              {row.voucherNumber}
-            </span>
-            <span className="text-[10px] text-slate-400 block">{row.date} {row.time}</span>
-          </div>
-        ),
-      },
-      {
-        key: 'category',
-        header: 'Category',
-        width: '130px',
-        render: (row) => (
-          <Badge variant="outline" className="font-semibold text-[11px] text-slate-700 bg-slate-50 border-slate-200">
-            {row.category}
-          </Badge>
-        ),
-      },
-      {
-        key: 'title',
-        header: 'Title / Description',
-        width: '200px',
-        render: (row) => (
-          <div>
-            <span className="font-semibold text-slate-800 text-xs block truncate" title={row.title}>
-              {row.title}
-            </span>
-            {row.description && (
-              <span className="text-[10px] text-slate-500 block truncate max-w-[190px]" title={row.description}>
-                {row.description}
-              </span>
-            )}
-          </div>
-        ),
-      },
-      {
-        key: 'payee',
-        header: 'Payee / Vendor',
-        width: '140px',
-        render: (row) => (
-          <span className="font-medium text-slate-700 text-xs block truncate" title={row.payee}>
-            {row.payee}
-          </span>
-        ),
-      },
-      {
-        key: 'branchName',
-        header: 'Branch',
-        width: '120px',
-        render: (row) => <span className="text-slate-600 text-xs">{row.branchName}</span>,
-      },
-      {
-        key: 'paymentSource',
-        header: 'Payment Source',
-        width: '140px',
-        render: (row) => (
-          <div>
-            <div className="flex items-center gap-1.5">
-              {row.paymentSource === 'CASH_DRAWER' ? (
-                <Banknote className="w-3.5 h-3.5 text-emerald-600" />
-              ) : (
-                <CreditCard className="w-3.5 h-3.5 text-blue-600" />
-              )}
-              <span className="text-xs font-semibold text-slate-800">
-                {row.paymentSource === 'CASH_DRAWER' ? 'Cash Drawer' : 'Online Account'}
-              </span>
-            </div>
-            {row.paymentAccountName && (
-              <span className="text-[10px] text-slate-400 block truncate font-mono">
-                {row.paymentAccountName}
-              </span>
-            )}
-          </div>
-        ),
-      },
-      {
-        key: 'amount',
-        header: 'Amount',
-        align: 'right',
-        width: '125px',
-        render: (row) => (
-          <span
-            className={`font-mono text-xs font-bold ${
-              row.status === 'REVERSED'
-                ? 'line-through text-slate-400'
-                : 'text-rose-600'
-            }`}
-          >
-            {formatCurrency(row.amount)}
-          </span>
-        ),
-      },
-      {
-        key: 'status',
-        header: 'Status',
-        width: '110px',
-        render: (row) => {
-          if (row.status === 'POSTED') {
-            return (
-              <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-semibold gap-1">
-                <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Posted
-              </Badge>
-            );
-          }
-          if (row.status === 'REVERSED') {
-            return (
-              <Badge className="bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-semibold gap-1">
-                <XCircle className="w-3 h-3 text-rose-600" /> Reversed
-              </Badge>
-            );
-          }
-          return (
-            <Badge className="bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-semibold gap-1">
-              <Clock className="w-3 h-3 text-amber-600" /> Draft
-            </Badge>
-          );
-        },
-      },
-      {
-        key: 'createdByName',
-        header: 'Recorded By',
-        width: '130px',
-        render: (row) => (
-          <div>
-            <span className="text-xs text-slate-700 block truncate">{row.createdByName}</span>
-            {row.externalReference && (
-              <span className="text-[10px] font-mono text-slate-400 block truncate" title={row.externalReference}>
-                Ref: {row.externalReference}
-              </span>
-            )}
-          </div>
-        ),
-      },
-    ],
-    []
-  );
-
-  // Filter Form Controls
-  const filterForm = (
-    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 items-end">
-      {/* Branch / Campus */}
-      <div>
-        <label className={filterLabel}>Campus / Branch</label>
-        <select
-          value={selectedBranch}
-          onChange={(e) => setSelectedBranch(e.target.value)}
-          disabled={!isSuperAdmin}
-          className={`${selectField} w-full`}
-        >
-          {isSuperAdmin && <option value="ALL">All Branches</option>}
-          {allBranches?.map((b: Branch) => (
-            <option key={b.id} value={b.id}>
-              {b.name}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Category Filter */}
-      <div>
-        <label className={filterLabel}>Expense Category</label>
-        <select
-          value={selectedCategory}
-          onChange={(e) => setSelectedCategory(e.target.value)}
-          className={`${selectField} w-full`}
-        >
-          <option value="ALL">All Categories</option>
-          {reportData?.categories?.map((cat: string) => (
-            <option key={cat} value={cat}>
-              {cat}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Payment Source */}
-      <div>
-        <label className={filterLabel}>Payment Source</label>
-        <select
-          value={selectedPaymentSource}
-          onChange={(e) => setSelectedPaymentSource(e.target.value)}
-          className={`${selectField} w-full`}
-        >
-          <option value="ALL">All Sources</option>
-          <option value="CASH_DRAWER">Cash Drawer (Cash)</option>
-          <option value="ONLINE_ACCOUNT">Online / Bank Account</option>
-        </select>
-      </div>
-
-      {/* Status Filter */}
-      <div>
-        <label className={filterLabel}>Voucher Status</label>
-        <select
-          value={selectedStatus}
-          onChange={(e) => setSelectedStatus(e.target.value)}
-          className={`${selectField} w-full`}
-        >
-          <option value="ALL">All (Posted & Reversed)</option>
-          <option value="POSTED">Posted Only</option>
-          <option value="REVERSED">Reversals Only</option>
-          <option value="DRAFT">Drafts</option>
-        </select>
-      </div>
-
-      {/* Date Presets */}
-      <div>
-        <label className={filterLabel}>Date Preset</label>
-        <select
-          value={selectedPreset}
-          onChange={(e) => setSelectedPreset(e.target.value as DatePreset)}
-          className={`${selectField} w-full`}
-        >
-          {DATE_PRESETS.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Search Input */}
-      <div>
-        <label className={filterLabel}>Search Records</label>
-        <input
-          type="text"
-          placeholder="Voucher #, Payee, title..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className={`${inputField} w-full`}
-        />
-      </div>
-
-      {/* Custom Date Pickers */}
-      {selectedPreset === 'CUSTOM' && (
-        <div className="col-span-full grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-          <div>
-            <label className={filterLabel}>From Date</label>
-            <input
-              type="date"
-              value={customFrom}
-              onChange={(e) => setCustomFrom(e.target.value)}
-              className={`${inputField} w-full`}
-            />
-          </div>
-          <div>
-            <label className={filterLabel}>To Date</label>
-            <input
-              type="date"
-              value={customTo}
-              onChange={(e) => setCustomTo(e.target.value)}
-              className={`${inputField} w-full`}
-            />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-
-  // KPI Summary Strip
-  const kpiStrip = reportData ? (
-    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-2">
-      {/* Total Expenses */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
-            Total Recognized Expenses
-          </span>
-          <TrendingDown className="w-3.5 h-3.5 text-rose-500" />
-        </div>
-        <span className="text-base font-bold text-rose-600 font-mono block">
-          {formatCurrency(reportData.kpis.totalExpenses)}
-        </span>
-        <span className="text-[10px] text-slate-400 mt-0.5 block">Operating Disbursements</span>
-      </div>
-
-      {/* Cash Expenses */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
-            Cash Expenses
-          </span>
-          <Banknote className="w-3.5 h-3.5 text-emerald-500" />
-        </div>
-        <span className="text-base font-bold text-emerald-600 font-mono block">
-          {formatCurrency(reportData.kpis.cashExpenses)}
-        </span>
-        <span className="text-[10px] text-slate-400 mt-0.5 block">From Drawer Float</span>
-      </div>
-
-      {/* Online Expenses */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
-            Online Expenses
-          </span>
-          <CreditCard className="w-3.5 h-3.5 text-blue-500" />
-        </div>
-        <span className="text-base font-bold text-blue-600 font-mono block">
-          {formatCurrency(reportData.kpis.onlineExpenses)}
-        </span>
-        <span className="text-[10px] text-slate-400 mt-0.5 block">Bank / Digital Wallets</span>
-      </div>
-
-      {/* Total Vouchers */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
-          Total Vouchers
-        </span>
-        <span className="text-base font-bold text-slate-800 font-mono block">
-          {reportData.kpis.totalVouchersCount}
-        </span>
-        <span className="text-[10px] text-slate-400 mt-0.5 block">Audit Records</span>
-      </div>
-
-      {/* Posted Count */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
-          Active Posted
-        </span>
-        <span className="text-base font-bold text-emerald-600 font-mono block">
-          {reportData.kpis.postedCount}
-        </span>
-        <span className="text-[10px] text-slate-400 mt-0.5 block">Financial Impact</span>
-      </div>
-
-      {/* Reversals Count */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
-          Reversed Vouchers
-        </span>
-        <span className="text-base font-bold text-amber-600 font-mono block">
-          {reportData.kpis.reversedCount}
-        </span>
-        <span className="text-[10px] text-slate-400 mt-0.5 block">Voided / Corrected</span>
-      </div>
-
-      {/* Categories Count */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
-          Categories
-        </span>
-        <span className="text-base font-bold text-slate-700 font-mono block">
-          {reportData.kpis.categoryCount}
-        </span>
-        <span className="text-[10px] text-slate-400 mt-0.5 block">Cost Centers</span>
-      </div>
-    </div>
-  ) : null;
+  const kpis = reportData?.kpis || {
+    totalPostedAmount: 0,
+    totalReversedAmount: 0,
+    netExpenseAmount: 0,
+    totalVouchersCount: 0,
+    activeVouchersCount: 0,
+  };
 
   return (
-    <ReportShell
-      title="Detailed Operational Expenses"
-      description="Itemized operational expense register by category, voucher reference, payment source, and recorded staff."
-      icon={Receipt}
-      bannerTitle="Detailed Operational Expenses Register"
-      metaNotice={
-        reportData ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <span>Branch: <strong className="text-slate-800">{reportData.meta.branchName || 'All'}</strong></span>
-            <span>·</span>
-            <span>Window: <strong className="text-slate-800">{reportData.meta.from.slice(0, 10)} to {reportData.meta.to.slice(0, 10)}</strong></span>
-            <span>·</span>
-            <span>Date Basis: <strong className="text-slate-800">{reportData.meta.dateBasis} ({reportData.meta.timezone})</strong></span>
-          </div>
-        ) : undefined
-      }
-      isFilterLoading={isLoading}
-      onFilterSubmit={handleApplyFilters}
-      onExportExcel={handleExportExcel}
-      onExportCsv={handleExportCsv}
-      onExportPdf={handlePrint}
-      onExportPrint={handlePrint}
-      filterChildren={filterForm}
-      kpiStrip={kpiStrip}
-    >
-      {/* ERROR BANNER */}
-      {errorMessage && (
-        <div className="mb-4 p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
-          <Info className="w-4 h-4 shrink-0 text-rose-500" />
-          <span>{errorMessage}</span>
+    <div className="min-h-screen bg-[#F4F6F9] px-4 py-5 md:px-8 md:py-6 text-slate-800">
+      {/* Top Header Card with Title & Filters */}
+      <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 p-5 md:p-6 mb-6">
+        <div className="mb-5">
+          <h1 className="text-xl font-bold text-[#0B2545] tracking-tight">Detailed Expenses Reports</h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Itemized operational expenditure audit: voucher-level disbursements, payee accounting, expense categorization and tender breakdowns
+          </p>
         </div>
-      )}
 
-      {/* ── CATEGORY DISTRIBUTION STRIP ── */}
-      {reportData?.categoryBreakdown && reportData.categoryBreakdown.length > 0 && (
-        <div className="mb-4 bg-white border border-slate-200 rounded-xl p-3.5 shadow-2xs">
-          <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-100">
-            <div className="flex items-center gap-2">
-              <Tag className="w-3.5 h-3.5 text-[#0047AB]" />
-              <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">
-                Category Cost Breakdown
-              </span>
-            </div>
-            <span className="text-[11px] text-slate-400">
-              {reportData.categoryBreakdown.length} Active Categories
-            </span>
+        {/* Filters Form Row */}
+        <form onSubmit={handleApplyFilters} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3.5 items-end">
+          {/* Campus Filter */}
+          <div>
+            <label className={labelClass}>Campus</label>
+            <select
+              value={selectedBranch}
+              onChange={(e) => setSelectedBranch(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">All Campuses</option>
+              {allBranches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            {reportData.categoryBreakdown.map((cat: DetailedExpenseCategoryItem) => (
-              <div
-                key={cat.categoryName}
-                className="inline-flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200 text-xs"
-              >
-                <span className="font-medium text-slate-700">{cat.categoryName}:</span>
-                <span className="font-mono font-bold text-rose-600">
-                  {formatCurrency(cat.amount)}
-                </span>
-              </div>
-            ))}
+          {/* Payment Source Filter */}
+          <div>
+            <label className={labelClass}>Payment Source</label>
+            <select
+              value={selectedPaymentSource}
+              onChange={(e) => setSelectedPaymentSource(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">All Sources</option>
+              <option value="CASH_DRAWER">Cash Drawer</option>
+              <option value="ONLINE_ACCOUNT">Online / Bank Account</option>
+            </select>
           </div>
-        </div>
-      )}
 
-      {/* ── LANDSCAPE TABLE ── */}
-      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
-        <ReportTable
-          columns={columns}
-          data={reportData?.rows || []}
-          loading={isLoading}
-          emptyMessage="No operational expenses found for the selected filter range."
-        />
+          {/* Status Filter */}
+          <div>
+            <label className={labelClass}>Voucher Status</label>
+            <select
+              value={selectedStatus}
+              onChange={(e) => setSelectedStatus(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">All Statuses</option>
+              <option value="POSTED">Posted</option>
+              <option value="REVERSED">Reversed</option>
+              <option value="DRAFT">Draft</option>
+            </select>
+          </div>
+
+          {/* From Date */}
+          <div>
+            <label className={labelClass}>From Date</label>
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className={inputClass}
+            />
+          </div>
+
+          {/* To Date */}
+          <div>
+            <label className={labelClass}>To Date</label>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className={inputClass}
+            />
+          </div>
+
+          {/* Filter Action Button */}
+          <div>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full h-[35px] bg-[#0047AB] hover:bg-[#003785] active:bg-[#002b66] text-white font-medium text-xs rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-70"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Loading...</span>
+                </>
+              ) : (
+                <>
+                  <Filter className="w-3.5 h-3.5 fill-current" />
+                  <span>Filter</span>
+                </>
+              )}
+            </button>
+          </div>
+        </form>
       </div>
-    </ReportShell>
+
+      {/* Main Content Area */}
+      {!hasFiltered ? (
+        /* Empty State before Filter clicked */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 md:p-24 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <div className="text-slate-400 mb-3">
+            <Filter className="w-14 h-14 stroke-[1.25] text-slate-400" />
+          </div>
+          <p className="text-slate-400 text-sm font-medium">Please apply filters to view reports</p>
+        </div>
+      ) : isLoading ? (
+        /* Loading Skeleton */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <Loader2 className="w-10 h-10 animate-spin text-[#0047AB] mb-3" />
+          <p className="text-slate-600 text-sm font-medium">Loading Detailed Expenses Reports...</p>
+        </div>
+      ) : errorMessage ? (
+        /* Error Message */
+        <div className="bg-white rounded-xl border border-rose-200 p-8 shadow-xs text-center">
+          <p className="text-rose-600 text-sm font-medium mb-3">{errorMessage}</p>
+          <button
+            onClick={() => handleApplyFilters()}
+            className="px-4 py-1.5 bg-[#0047AB] text-white text-xs font-semibold rounded-md shadow-xs hover:bg-[#003785]"
+          >
+            Retry
+          </button>
+        </div>
+      ) : (
+        /* Filtered Data Layout */
+        <div className="mb-8">
+          {/* Royal Blue Banner Header */}
+          <div className="bg-[#0047AB] text-white px-5 py-3 rounded-t-xl flex flex-wrap items-center justify-between gap-3 shadow-sm">
+            <div className="flex items-center gap-2.5">
+              <Receipt className="w-5 h-5 text-white/90" />
+              <span className="font-semibold text-sm tracking-wide">Expense Disbursements Register</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="bg-[#009688] hover:bg-[#00897B] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                CSV
+              </button>
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                className="bg-[#DC2626] hover:bg-[#B91C1C] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                PDF
+              </button>
+              <button
+                type="button"
+                onClick={handlePrint}
+                className="bg-[#4B5563] hover:bg-[#374151] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                Print
+              </button>
+            </div>
+          </div>
+
+          {/* Table Container with Horizontal Scroll */}
+          <div className="bg-white overflow-x-auto rounded-b-xl border border-t-0 border-slate-200/90 shadow-sm">
+            <table className="w-full min-w-[1300px] text-left border-collapse font-['Inter',sans-serif] text-[13px] antialiased">
+              <thead>
+                <tr className="bg-[#EAF2FB] border-b border-blue-100 text-[#475569] font-medium text-[13px]">
+                  <th className="py-3.5 px-3 text-center w-8">#</th>
+                  <th className="py-3.5 px-4 whitespace-nowrap">Voucher #</th>
+                  <th className="py-3.5 px-4 whitespace-nowrap">Date</th>
+                  <th className="py-3.5 px-4">Campus</th>
+                  <th className="py-3.5 px-4">Category</th>
+                  <th className="py-3.5 px-4">Title</th>
+                  <th className="py-3.5 px-4">Payee</th>
+                  <th className="py-3.5 px-4">Source</th>
+                  <th className="py-3.5 px-4 text-center">Status</th>
+                  <th className="py-3.5 px-4">Created By</th>
+                  <th className="py-3.5 px-4 text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="text-[#334155]">
+                {reportData && reportData.rows.length > 0 ? (
+                  reportData.rows.map((row: DetailedExpenseRow, idx: number) => {
+                    const isPosted = row.status === 'POSTED';
+                    const dateParts = formatDateParts(row.date);
+
+                    return (
+                      <tr key={row.id || idx} className="hover:bg-blue-50/20 transition-colors border-b border-dashed border-slate-200">
+                        {/* 1. # */}
+                        <td className="py-3.5 px-3 text-center font-normal text-slate-400">
+                          {idx + 1}
+                        </td>
+
+                        {/* 2. Voucher # */}
+                        <td className="py-3.5 px-4 font-semibold text-[#0047AB] whitespace-nowrap">
+                          {row.voucherNumber}
+                        </td>
+
+                        {/* 3. Date */}
+                        <td className="py-3.5 px-4 whitespace-nowrap leading-tight">
+                          <div className="font-medium text-slate-800">{dateParts.dayMonth}</div>
+                          <div className="text-[11px] text-slate-400">{dateParts.year}</div>
+                        </td>
+
+                        {/* 4. Campus */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-slate-600">
+                          {row.branchName || 'Main Campus'}
+                        </td>
+
+                        {/* 5. Category */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-slate-800 font-medium">
+                          {row.category}
+                        </td>
+
+                        {/* 6. Title */}
+                        <td className="py-3.5 px-4 text-slate-800 max-w-[220px] truncate" title={row.title}>
+                          {row.title}
+                        </td>
+
+                        {/* 7. Payee */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-slate-600">
+                          {row.payee}
+                        </td>
+
+                        {/* 8. Source */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-slate-600">
+                          {row.paymentSource === 'CASH_DRAWER' ? 'Cash Drawer' : (row.paymentAccountName || 'Bank / Online')}
+                        </td>
+
+                        {/* 9. Status */}
+                        <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                          {isPosted ? (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#10B981] text-white shadow-2xs">
+                              POSTED
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#64748B] text-white shadow-2xs">
+                              {row.status}
+                            </span>
+                          )}
+                        </td>
+
+                        {/* 10. Created By */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-slate-600">
+                          {row.createdByName || 'Staff'}
+                        </td>
+
+                        {/* 11. Amount */}
+                        <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-[#EF4444] whitespace-nowrap">
+                          {formatPKR(row.amount)}
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={11} className="py-12 text-center text-slate-400 font-medium">
+                      No expense disbursements found for the selected campus, dates, and filters.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+
+              {/* Integrated Table Footer */}
+              <tfoot className="bg-[#F8FAFC] border-t-2 border-slate-200 font-['Inter',sans-serif] text-[13px] text-[#334155]">
+                {/* Row 1: TOTALS (PKR) */}
+                <tr className="border-b border-slate-200/70">
+                  <td colSpan={10} className="py-3.5 px-4 text-right font-bold text-slate-800 tracking-wide">
+                    TOTAL POSTED EXPENSES (PKR)
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums font-bold text-[#EF4444]">
+                    {formatPKR((kpis as any).totalExpenses ?? (kpis as any).totalPostedAmount ?? reportData?.totals?.amount ?? 0)}
+                  </td>
+                </tr>
+
+                {/* Row 2: Net Operating Disbursements */}
+                <tr>
+                  <td colSpan={10} className="py-3 px-4 text-right font-medium text-slate-600">
+                    Net Recognized Disbursements
+                  </td>
+                  <td className="py-3 px-4 text-right tabular-nums font-bold text-[#0047AB] text-sm">
+                    {formatPKR((kpis as any).totalExpenses ?? (kpis as any).netExpenseAmount ?? reportData?.totals?.amount ?? 0)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Footer Branding */}
+      <div className="text-center py-4 text-xs text-slate-400 font-medium tracking-wide">
+        © iSysware Management System
+      </div>
+    </div>
   );
 };
+
+export default DetailedExpensesReportPage;

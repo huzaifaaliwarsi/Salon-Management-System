@@ -38,6 +38,25 @@ import { formatMinutesToTime, parseTimeToMinutes } from '../../lib/attendanceCal
 import { AccessDeniedView } from '../scaffold/AccessDeniedView';
 import { toast } from '../../context/ToastContext';
 
+function formatTo24Hour(timeStr?: string): string {
+  if (!timeStr || !timeStr.trim()) return '';
+  const clean = timeStr.trim().toUpperCase();
+  if (/^([01]\d|2[0-3]):[0-5]\d$/.test(clean)) {
+    return clean;
+  }
+  const mins = parseTimeToMinutes(clean);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function formatTo12HourDisplay(timeStr?: string): string {
+  if (!timeStr || !timeStr.trim()) return '';
+  const mins = parseTimeToMinutes(timeStr);
+  return formatMinutesToTime(mins);
+}
+
+
 export const StaffAttendancePage: React.FC = () => {
   const { user, activeBranchId, allBranches, demoDate } = useAuth();
 
@@ -79,23 +98,23 @@ export const StaffAttendancePage: React.FC = () => {
   const [markAllForm, setMarkAllForm] = useState({
     date: selectedDate,
     status: 'PRESENT' as 'PRESENT' | 'ABSENT',
-    checkIn: '09:00 AM',
-    checkOut: '06:00 PM',
+    checkIn: '09:00',
+    checkOut: '18:00',
     notes: 'Bulk marked by manager',
   });
 
   const [addForm, setAddForm] = useState({
     staffId: '',
     date: selectedDate,
-    checkIn: '09:00 AM',
-    checkOut: '06:00 PM',
+    checkIn: '09:00',
+    checkOut: '18:00',
     isOvernightShift: false,
     notes: '',
   });
 
   const [correctForm, setCorrectForm] = useState({
-    checkIn: '',
-    checkOut: '',
+    checkIn: '09:00',
+    checkOut: '18:00',
     status: 'PRESENT' as AttendanceStatus,
     reason: '',
     notes: '',
@@ -213,8 +232,8 @@ export const StaffAttendancePage: React.FC = () => {
           branchId: effectiveBranchId === 'ALL' ? undefined : effectiveBranchId,
           date: markAllForm.date,
           status: markAllForm.status,
-          checkIn: markAllForm.checkIn,
-          checkOut: markAllForm.checkOut || undefined,
+          checkIn: formatTo12HourDisplay(markAllForm.checkIn),
+          checkOut: markAllForm.checkOut ? formatTo12HourDisplay(markAllForm.checkOut) : undefined,
           notes: markAllForm.notes,
         },
         user || undefined
@@ -246,8 +265,8 @@ export const StaffAttendancePage: React.FC = () => {
           branchId: effectiveBranchId === 'ALL' ? selectedStaff.branchId : effectiveBranchId,
           staffId: addForm.staffId,
           date: addForm.date,
-          checkIn: addForm.checkIn,
-          checkOut: addForm.checkOut || undefined,
+          checkIn: formatTo12HourDisplay(addForm.checkIn),
+          checkOut: addForm.checkOut ? formatTo12HourDisplay(addForm.checkOut) : undefined,
           isOvernightShift: addForm.isOvernightShift,
           notes: addForm.notes,
           source: 'MANUAL',
@@ -268,8 +287,8 @@ export const StaffAttendancePage: React.FC = () => {
   const openCorrectModal = (rec: AttendanceRecord) => {
     setActiveRecord(rec);
     setCorrectForm({
-      checkIn: rec.checkIn || '',
-      checkOut: rec.checkOut || '',
+      checkIn: rec.checkIn ? formatTo24Hour(rec.checkIn) : '09:00',
+      checkOut: rec.checkOut ? formatTo24Hour(rec.checkOut) : '',
       status: rec.status,
       reason: '',
       notes: rec.notes || '',
@@ -288,8 +307,8 @@ export const StaffAttendancePage: React.FC = () => {
       await salonService.correctAttendance(
         activeRecord.id,
         {
-          checkIn: correctForm.checkIn,
-          checkOut: correctForm.checkOut || undefined,
+          checkIn: formatTo12HourDisplay(correctForm.checkIn),
+          checkOut: correctForm.checkOut ? formatTo12HourDisplay(correctForm.checkOut) : undefined,
           status: correctForm.status,
           reason: correctForm.reason,
           notes: correctForm.notes,
@@ -431,7 +450,18 @@ export const StaffAttendancePage: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setShowAddModal(true)}
+            onClick={() => {
+              const defaultStaff = staffList[0];
+              setAddForm({
+                staffId: defaultStaff?.id || '',
+                date: selectedDate,
+                checkIn: defaultStaff?.startTime ? formatTo24Hour(defaultStaff.startTime) : '09:00',
+                checkOut: defaultStaff?.endTime ? formatTo24Hour(defaultStaff.endTime) : '18:00',
+                isOvernightShift: defaultStaff?.isOvernightShift || false,
+                notes: '',
+              });
+              setShowAddModal(true);
+            }}
             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#2254E1] text-white text-xs font-semibold hover:bg-blue-700 transition-colors shadow-xs cursor-pointer"
           >
             <Plus className="w-4 h-4" />
@@ -980,27 +1010,95 @@ export const StaffAttendancePage: React.FC = () => {
               {markAllForm.status === 'PRESENT' && (
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Default Check-In *</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-semibold text-slate-700">Default Check-In *</label>
+                      {markAllForm.checkIn && (
+                        <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                          {formatTo12HourDisplay(markAllForm.checkIn)}
+                        </span>
+                      )}
+                    </div>
                     <input
-                      type="text"
+                      type="time"
                       required
-                      placeholder="09:00 AM"
                       value={markAllForm.checkIn}
                       onChange={(e) => setMarkAllForm({ ...markAllForm, checkIn: e.target.value })}
-                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono"
+                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white font-medium text-slate-800"
                     />
+                    <div className="flex items-center gap-1.5 flex-wrap pt-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setMarkAllForm({ ...markAllForm, checkIn: '09:00' })}
+                        className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-colors"
+                      >
+                        09:00 AM
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMarkAllForm({ ...markAllForm, checkIn: '10:00' })}
+                        className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-colors"
+                      >
+                        10:00 AM
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const now = new Date();
+                          const hh = String(now.getHours()).padStart(2, '0');
+                          const mm = String(now.getMinutes()).padStart(2, '0');
+                          setMarkAllForm({ ...markAllForm, checkIn: `${hh}:${mm}` });
+                        }}
+                        className="text-[10px] font-medium px-2 py-0.5 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 cursor-pointer transition-colors"
+                      >
+                        Now
+                      </button>
+                    </div>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Default Check-Out *</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-semibold text-slate-700">Default Check-Out *</label>
+                      {markAllForm.checkOut && (
+                        <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                          {formatTo12HourDisplay(markAllForm.checkOut)}
+                        </span>
+                      )}
+                    </div>
                     <input
-                      type="text"
+                      type="time"
                       required
-                      placeholder="06:00 PM"
                       value={markAllForm.checkOut}
                       onChange={(e) => setMarkAllForm({ ...markAllForm, checkOut: e.target.value })}
-                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono"
+                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white font-medium text-slate-800"
                     />
+                    <div className="flex items-center gap-1.5 flex-wrap pt-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setMarkAllForm({ ...markAllForm, checkOut: '18:00' })}
+                        className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-colors"
+                      >
+                        06:00 PM
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMarkAllForm({ ...markAllForm, checkOut: '19:00' })}
+                        className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-colors"
+                      >
+                        07:00 PM
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const now = new Date();
+                          const hh = String(now.getHours()).padStart(2, '0');
+                          const mm = String(now.getMinutes()).padStart(2, '0');
+                          setMarkAllForm({ ...markAllForm, checkOut: `${hh}:${mm}` });
+                        }}
+                        className="text-[10px] font-medium px-2 py-0.5 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 cursor-pointer transition-colors"
+                      >
+                        Now
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1084,8 +1182,8 @@ export const StaffAttendancePage: React.FC = () => {
                       ...addForm,
                       staffId: e.target.value,
                       isOvernightShift: st?.isOvernightShift || false,
-                      checkIn: st ? formatMinutesToTime(parseTimeToMinutes(st.startTime)) : '09:00 AM',
-                      checkOut: st ? formatMinutesToTime(parseTimeToMinutes(st.endTime)) : '06:00 PM',
+                      checkIn: st?.startTime ? formatTo24Hour(st.startTime) : '09:00',
+                      checkOut: st?.endTime ? formatTo24Hour(st.endTime) : '18:00',
                     });
                   }}
                   className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
@@ -1126,25 +1224,120 @@ export const StaffAttendancePage: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Check-In Time *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-slate-700">Check-In Time *</label>
+                    {addForm.checkIn && (
+                      <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                        {formatTo12HourDisplay(addForm.checkIn)}
+                      </span>
+                    )}
+                  </div>
                   <input
-                    type="text"
+                    type="time"
                     required
-                    placeholder="e.g. 09:00 AM"
                     value={addForm.checkIn}
                     onChange={(e) => setAddForm({ ...addForm, checkIn: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white font-medium text-slate-800"
                   />
+                  <div className="flex items-center gap-1.5 flex-wrap pt-1.5">
+                    {staffList.find((s) => s.id === addForm.staffId)?.startTime && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const st = staffList.find((s) => s.id === addForm.staffId);
+                          if (st?.startTime) setAddForm({ ...addForm, checkIn: formatTo24Hour(st.startTime) });
+                        }}
+                        className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-colors"
+                      >
+                        Shift Start
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const now = new Date();
+                        const hh = String(now.getHours()).padStart(2, '0');
+                        const mm = String(now.getMinutes()).padStart(2, '0');
+                        setAddForm({ ...addForm, checkIn: `${hh}:${mm}` });
+                      }}
+                      className="text-[10px] font-medium px-2 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 cursor-pointer transition-colors"
+                    >
+                      Now
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAddForm({ ...addForm, checkIn: '09:00' })}
+                      className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-colors"
+                    >
+                      09:00 AM
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAddForm({ ...addForm, checkIn: '10:00' })}
+                      className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-colors"
+                    >
+                      10:00 AM
+                    </button>
+                  </div>
                 </div>
+
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Check-Out Time (Optional)</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-slate-700">Check-Out Time (Optional)</label>
+                    {addForm.checkOut && (
+                      <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                        {formatTo12HourDisplay(addForm.checkOut)}
+                      </span>
+                    )}
+                  </div>
                   <input
-                    type="text"
-                    placeholder="e.g. 06:00 PM"
+                    type="time"
                     value={addForm.checkOut}
                     onChange={(e) => setAddForm({ ...addForm, checkOut: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white font-medium text-slate-800"
                   />
+                  <div className="flex items-center gap-1.5 flex-wrap pt-1.5">
+                    {staffList.find((s) => s.id === addForm.staffId)?.endTime && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const st = staffList.find((s) => s.id === addForm.staffId);
+                          if (st?.endTime) setAddForm({ ...addForm, checkOut: formatTo24Hour(st.endTime) });
+                        }}
+                        className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-colors"
+                      >
+                        Shift End
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const now = new Date();
+                        const hh = String(now.getHours()).padStart(2, '0');
+                        const mm = String(now.getMinutes()).padStart(2, '0');
+                        setAddForm({ ...addForm, checkOut: `${hh}:${mm}` });
+                      }}
+                      className="text-[10px] font-medium px-2 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 cursor-pointer transition-colors"
+                    >
+                      Now
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAddForm({ ...addForm, checkOut: '18:00' })}
+                      className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-colors"
+                    >
+                      06:00 PM
+                    </button>
+                    {addForm.checkOut && (
+                      <button
+                        type="button"
+                        onClick={() => setAddForm({ ...addForm, checkOut: '' })}
+                        className="text-[10px] font-medium px-2 py-0.5 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer transition-colors"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -1219,24 +1412,88 @@ export const StaffAttendancePage: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">New Check-In *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-slate-700">New Check-In *</label>
+                    {correctForm.checkIn && (
+                      <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                        {formatTo12HourDisplay(correctForm.checkIn)}
+                      </span>
+                    )}
+                  </div>
                   <input
-                    type="text"
+                    type="time"
                     required
                     value={correctForm.checkIn}
                     onChange={(e) => setCorrectForm({ ...correctForm, checkIn: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white font-medium text-slate-800"
                   />
+                  <div className="flex items-center gap-1.5 flex-wrap pt-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setCorrectForm({ ...correctForm, checkIn: '09:00' })}
+                      className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-colors"
+                    >
+                      09:00 AM
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const now = new Date();
+                        const hh = String(now.getHours()).padStart(2, '0');
+                        const mm = String(now.getMinutes()).padStart(2, '0');
+                        setCorrectForm({ ...correctForm, checkIn: `${hh}:${mm}` });
+                      }}
+                      className="text-[10px] font-medium px-2 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 cursor-pointer transition-colors"
+                    >
+                      Now
+                    </button>
+                  </div>
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">New Check-Out</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-slate-700">New Check-Out</label>
+                    {correctForm.checkOut && (
+                      <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                        {formatTo12HourDisplay(correctForm.checkOut)}
+                      </span>
+                    )}
+                  </div>
                   <input
-                    type="text"
-                    placeholder="Leave empty if missing"
+                    type="time"
                     value={correctForm.checkOut}
                     onChange={(e) => setCorrectForm({ ...correctForm, checkOut: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white font-medium text-slate-800"
                   />
+                  <div className="flex items-center gap-1.5 flex-wrap pt-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setCorrectForm({ ...correctForm, checkOut: '18:00' })}
+                      className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-colors"
+                    >
+                      06:00 PM
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const now = new Date();
+                        const hh = String(now.getHours()).padStart(2, '0');
+                        const mm = String(now.getMinutes()).padStart(2, '0');
+                        setCorrectForm({ ...correctForm, checkOut: `${hh}:${mm}` });
+                      }}
+                      className="text-[10px] font-medium px-2 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 cursor-pointer transition-colors"
+                    >
+                      Now
+                    </button>
+                    {correctForm.checkOut && (
+                      <button
+                        type="button"
+                        onClick={() => setCorrectForm({ ...correctForm, checkOut: '' })}
+                        className="text-[10px] font-medium px-2 py-0.5 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer transition-colors"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 

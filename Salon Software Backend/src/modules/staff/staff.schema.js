@@ -49,7 +49,7 @@ export const createStaffSchema = z.object({
   name:               profileFields.name,
   phone:              profileFields.phone,
   designation:        profileFields.designation,
-  employeeCode:       z.string().trim().min(1, 'Unique employee code is required.').transform((s) => s.toUpperCase()),
+  employeeCode:       z.string().trim().optional().transform((s) => (s ? s.toUpperCase() : undefined)),
   branchId:           z.string().optional(),
   enablePortalAccess: z.boolean().optional(),
   portalIdentifier:   z.string().trim().toLowerCase().optional(),

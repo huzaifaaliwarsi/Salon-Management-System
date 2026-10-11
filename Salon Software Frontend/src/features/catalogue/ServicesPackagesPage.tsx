@@ -98,7 +98,9 @@ export const ServicesPackagesPage: React.FC = () => {
 
   // Data collections
   const [services, setServices] = useState<ServiceItem[]>([]);
+  const [allServices, setAllServices] = useState<ServiceItem[]>([]);
   const [packages, setPackages] = useState<PackageItem[]>([]);
+  const [allPackages, setAllPackages] = useState<PackageItem[]>([]);
   const [categories, setCategories] = useState<ServiceCategory[]>([]);
   const [taxRules, setTaxRules] = useState<TaxRule[]>([]);
   const [branchStaff, setBranchStaff] = useState<StaffMember[]>([]);
@@ -190,15 +192,19 @@ export const ServicesPackagesPage: React.FC = () => {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [srvList, pkgList, catList, taxList, staffList] = await Promise.all([
+      const [srvList, allSrv, pkgList, allPkg, catList, taxList, staffList] = await Promise.all([
         salonService.getServices(selectedBranchId),
+        salonService.getServices('ALL'),
         salonService.getPackages(selectedBranchId),
+        salonService.getPackages('ALL'),
         salonService.getServiceCategories(selectedBranchId),
         salonService.getTaxRules(selectedBranchId),
         salonService.getStaffMembers(user, selectedBranchId),
       ]);
       setServices(srvList);
+      setAllServices(allSrv);
       setPackages(pkgList);
+      setAllPackages(allPkg);
       setCategories(catList);
       setTaxRules(taxList);
       setBranchStaff(staffList.filter((s) => s.isActive));
@@ -554,6 +560,58 @@ export const ServicesPackagesPage: React.FC = () => {
     );
   };
 
+  const generateNextServiceCode = (currentList: ServiceItem[] = (allServices.length > 0 ? allServices : services)) => {
+    let maxNum = 0;
+    const existingCodes = new Set(
+      currentList
+        .map((s) => s.code?.trim().toUpperCase())
+        .filter(Boolean) as string[]
+    );
+
+    for (const s of currentList) {
+      if (!s.code) continue;
+      const m = s.code.match(/(\d+)$/);
+      if (m) {
+        const val = parseInt(m[1], 10);
+        if (!isNaN(val) && val > maxNum) maxNum = val;
+      }
+    }
+
+    let nextNum = maxNum + 1;
+    let candidate = `SRV-${String(nextNum).padStart(2, '0')}`;
+    while (existingCodes.has(candidate)) {
+      nextNum++;
+      candidate = `SRV-${String(nextNum).padStart(2, '0')}`;
+    }
+    return candidate;
+  };
+
+  const generateNextPackageCode = (currentList: PackageItem[] = (allPackages.length > 0 ? allPackages : packages)) => {
+    let maxNum = 0;
+    const existingCodes = new Set(
+      currentList
+        .map((p) => p.code?.trim().toUpperCase())
+        .filter(Boolean) as string[]
+    );
+
+    for (const p of currentList) {
+      if (!p.code) continue;
+      const m = p.code.match(/(\d+)$/);
+      if (m) {
+        const val = parseInt(m[1], 10);
+        if (!isNaN(val) && val > maxNum) maxNum = val;
+      }
+    }
+
+    let nextNum = maxNum + 1;
+    let candidate = `PKG-${String(nextNum).padStart(2, '0')}`;
+    while (existingCodes.has(candidate)) {
+      nextNum++;
+      candidate = `PKG-${String(nextNum).padStart(2, '0')}`;
+    }
+    return candidate;
+  };
+
   return (
     <div className="space-y-6 font-sans">
       {/* HEADER SECTION */}
@@ -643,7 +701,7 @@ export const ServicesPackagesPage: React.FC = () => {
                   leftIcon={<Plus className="w-3.5 h-3.5" />}
                   onClick={() => {
                     setServiceFormData({
-                      code: `SRV-${currentBranch?.code.split('-')[0] || 'LHE'}-00${services.length + 1}`,
+                      code: generateNextServiceCode(allServices.length > 0 ? allServices : services),
                       name: '',
                       category: categories[0]?.name || 'Hair Styling & Cuts',
                       durationMinutes: 45,
@@ -666,7 +724,7 @@ export const ServicesPackagesPage: React.FC = () => {
                 leftIcon={<Plus className="w-3.5 h-3.5" />}
                 onClick={() => {
                   setPackageFormData({
-                    code: `PKG-${currentBranch?.code.split('-')[0] || 'LHE'}-00${packages.length + 1}`,
+                    code: generateNextPackageCode(allPackages.length > 0 ? allPackages : packages),
                     name: '',
                     description: '',
                     price: 15000,
@@ -1023,11 +1081,11 @@ export const ServicesPackagesPage: React.FC = () => {
           <form onSubmit={handleSaveService} className="space-y-3.5 text-xs">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Service Code *</label>
+                <label className="font-semibold text-slate-700 block mb-1">Service Code * (Auto-generated)</label>
                 <Input
                   value={serviceFormData.code}
                   onChange={(e) => setServiceFormData({ ...serviceFormData, code: e.target.value.toUpperCase() })}
-                  placeholder="e.g. SRV-LHE-01"
+                  placeholder="e.g. SRV-01"
                   required
                   className="font-mono text-xs uppercase"
                 />
@@ -1132,11 +1190,11 @@ export const ServicesPackagesPage: React.FC = () => {
           <form onSubmit={handleSavePackage} className="space-y-4 text-xs">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Package Code *</label>
+                <label className="font-semibold text-slate-700 block mb-1">Package Code * (Auto-generated)</label>
                 <Input
                   value={packageFormData.code}
                   onChange={(e) => setPackageFormData({ ...packageFormData, code: e.target.value.toUpperCase() })}
-                  placeholder="e.g. PKG-LHE-01"
+                  placeholder="e.g. PKG-01"
                   required
                   className="font-mono text-xs uppercase"
                 />

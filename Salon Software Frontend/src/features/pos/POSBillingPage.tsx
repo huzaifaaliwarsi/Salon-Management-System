@@ -219,15 +219,16 @@ export const POSBillingPage: React.FC = () => {
       setProducts(retailProds);
 
       const sMap: Record<string, number> = {};
+      const todayStr = demoDate || new Date().toISOString().split('T')[0];
       for (const p of retailProds) {
-        const pBatches = batchList.filter(
-          (b) =>
-            b.itemId === p.id &&
-            b.branchId === bId &&
-            b.status === 'VALID' &&
-            b.remainingQuantity > 0
-        );
-        sMap[p.id] = pBatches.reduce((sum, b) => sum + b.remainingQuantity, 0);
+        const pBatches = batchList.filter((b) => {
+          if (b.itemId !== p.id) return false;
+          if (b.branchId && b.branchId !== bId) return false;
+          if (b.status === 'QUARANTINED' || b.status === 'EXPIRED') return false;
+          if (b.expiryDate && b.expiryDate < todayStr) return false;
+          return (Number(b.remainingQuantity) || 0) > 0;
+        });
+        sMap[p.id] = pBatches.reduce((sum, b) => sum + (Number(b.remainingQuantity) || 0), 0);
       }
       setProductStockMap(sMap);
 

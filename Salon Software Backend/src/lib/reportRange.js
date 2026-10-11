@@ -3,7 +3,7 @@
 // All calculations locked strictly to Asia/Karachi (UTC+5).
 
 import { startOfDay, endOfDay, toDateString, nowKarachi } from './dates.js';
-import { resolveReadBranch } from './scope.js';
+import { resolveReadBranch, isSuperAdmin } from './scope.js';
 import prisma from '../config/prisma.js';
 
 export const DATE_PRESETS = {
@@ -83,15 +83,25 @@ export const resolveReportContext = async (user, query = {}, dateBasis = 'RECOGN
   const fromDate = startOfDay(fromStr);
   const toDate = endOfDay(toStr);
 
-  const branchId = resolveReadBranch(user, query.branchId);
-  let branchName = 'All Branches';
+  let branchId = null;
+  if (query.branchId) {
+    if (query.branchId === 'ALL') {
+      branchId = null;
+    } else {
+      branchId = query.branchId;
+    }
+  } else if (!isSuperAdmin(user) && user?.branchId) {
+    branchId = user.branchId;
+  }
+
+  let branchName = 'All Campuses';
 
   if (branchId) {
     const branch = await prisma.branch.findUnique({
       where: { id: branchId },
       select: { name: true, city: true },
     });
-    branchName = branch ? `${branch.name} (${branch.city})` : 'Selected Branch';
+    branchName = branch ? branch.name : 'Selected Branch';
   }
 
   const generatedBy = user?.name ? `${user.name} (${user.role})` : user?.email || 'System';

@@ -122,6 +122,7 @@ export const InventoryPage: React.FC = () => {
 
   // Data Collections
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
+  const [allInventoryItems, setAllInventoryItems] = useState<InventoryItem[]>([]);
   const [stockMap, setStockMap] = useState<Record<string, { currentStock: number; valuation: number }>>({});
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [purchases, setPurchases] = useState<Purchase[]>([]);
@@ -153,8 +154,9 @@ export const InventoryPage: React.FC = () => {
     setIsLoading(true);
     setActionError(null);
     try {
-      const [items, sups, purs, moves, stls, bts, accs, drawers] = await Promise.all([
+      const [items, allItems, sups, purs, moves, stls, bts, accs, drawers] = await Promise.all([
         salonService.getInventoryItems(bId, user),
+        salonService.getInventoryItems('ALL', user),
         salonService.getSuppliers(bId, user),
         salonService.getPurchases(bId, user),
         salonService.getStockMovements(bId, undefined, user),
@@ -165,6 +167,7 @@ export const InventoryPage: React.FC = () => {
       ]);
 
       setInventoryItems(items);
+      setAllInventoryItems(allItems);
       setSuppliers(sups);
       setPurchases(purs);
       setStockMovements(moves);
@@ -190,7 +193,8 @@ export const InventoryPage: React.FC = () => {
 
         sMap[item.id] = { currentStock: currentQty, valuation: itemVal };
         totalCostVal += itemVal;
-        totalRetailVal += currentQty * item.sellingPrice;
+        const isConsumable = item.itemType === 'SALON_CONSUMABLE';
+        totalRetailVal += isConsumable ? 0 : currentQty * (item.sellingPrice || 0);
 
         if (currentQty <= 0) {
           outCount++;
@@ -285,12 +289,40 @@ export const InventoryPage: React.FC = () => {
     isActive: true,
   });
 
+  const generateNextSku = (currentList: InventoryItem[] = (allInventoryItems.length > 0 ? allInventoryItems : inventoryItems)) => {
+    let maxNum = 0;
+    const existingCodes = new Set(
+      currentList
+        .map((i) => (i.sku || i.code || '').trim().toUpperCase())
+        .filter(Boolean) as string[]
+    );
+
+    for (const item of currentList) {
+      const code = item.sku || item.code;
+      if (!code) continue;
+      const m = code.match(/(\d+)$/);
+      if (m) {
+        const val = parseInt(m[1], 10);
+        if (!isNaN(val) && val > maxNum) maxNum = val;
+      }
+    }
+
+    let nextNum = maxNum + 1;
+    let candidate = `SKU-${String(nextNum).padStart(2, '0')}`;
+    while (existingCodes.has(candidate)) {
+      nextNum++;
+      candidate = `SKU-${String(nextNum).padStart(2, '0')}`;
+    }
+    return candidate;
+  };
+
   const handleOpenCreateItem = () => {
     setEditingItem(null);
+    const nextSku = generateNextSku(allInventoryItems.length > 0 ? allInventoryItems : inventoryItems);
     setItemFormData({
       name: '',
-      sku: `SKU-${Date.now().toString(36).toUpperCase()}`,
-      code: '',
+      sku: nextSku,
+      code: nextSku,
       barcode: '',
       category: 'HAIR_CARE',
       description: '',
@@ -324,7 +356,7 @@ export const InventoryPage: React.FC = () => {
       brand: item.brand || '',
       itemType: item.itemType,
       defaultPurchaseCost: item.defaultPurchaseCost,
-      sellingPrice: item.sellingPrice,
+      sellingPrice: item.itemType === 'SALON_CONSUMABLE' ? 0 : item.sellingPrice,
       purchaseUnit: item.purchaseUnit,
       issueUnit: item.issueUnit,
       unitConversionRatio: item.unitConversionRatio || 1,
@@ -345,13 +377,17 @@ export const InventoryPage: React.FC = () => {
       if (!itemFormData.name || !itemFormData.sku) {
         throw new Error('Item name and SKU are required.');
       }
+      const isConsumable = itemFormData.itemType === 'SALON_CONSUMABLE';
+      const effectiveSellingPrice = isConsumable ? 0 : Number(itemFormData.sellingPrice) || 0;
+
       if (editingItem) {
         await salonService.updateInventoryItem(
           editingItem.id,
           {
             ...itemFormData,
             code: itemFormData.code || itemFormData.sku,
-            price: itemFormData.sellingPrice || 0,
+            sellingPrice: effectiveSellingPrice,
+            price: effectiveSellingPrice,
           },
           user
         );
@@ -368,8 +404,8 @@ export const InventoryPage: React.FC = () => {
             brand: itemFormData.brand,
             itemType: itemFormData.itemType || 'RETAIL_PRODUCT',
             defaultPurchaseCost: Number(itemFormData.defaultPurchaseCost) || 0,
-            sellingPrice: Number(itemFormData.sellingPrice) || 0,
-            price: Number(itemFormData.sellingPrice) || 0,
+            sellingPrice: effectiveSellingPrice,
+            price: effectiveSellingPrice,
             purchaseUnit: itemFormData.purchaseUnit || 'PIECE',
             issueUnit: itemFormData.issueUnit || 'PIECE',
             unitConversionRatio: Number(itemFormData.unitConversionRatio) || 1,
@@ -1285,8 +1321,12 @@ export const InventoryPage: React.FC = () => {
                         <TableCell className="text-right font-mono text-xs text-slate-700">
                           {formatCurrency(item.defaultPurchaseCost)}
                         </TableCell>
-                        <TableCell className="text-right font-mono font-bold text-xs text-[#2254E1]">
-                          {formatCurrency(item.sellingPrice)}
+                        <TableCell className="text-right font-mono text-xs">
+                          {item.itemType === 'SALON_CONSUMABLE' || !item.sellingPrice ? (
+                            <span className="text-slate-400 italic text-[11px]">N/A (In-House)</span>
+                          ) : (
+                            <span className="font-bold text-[#2254E1]">{formatCurrency(item.sellingPrice)}</span>
+                          )}
                         </TableCell>
                         <TableCell className="text-right">
                           <span className={`font-mono font-bold text-xs ${isOut ? 'text-rose-600' : isLow ? 'text-amber-600' : 'text-slate-900'}`}>
@@ -1738,12 +1778,12 @@ export const InventoryPage: React.FC = () => {
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-slate-700 block mb-1">SKU / Code *</label>
+              <label className="text-xs font-semibold text-slate-700 block mb-1">SKU / Code * (Auto-generated)</label>
               <Input
-                placeholder="e.g. SKU-SHAMPOO-001"
+                placeholder="e.g. SKU-01"
                 value={itemFormData.sku || ''}
-                onChange={(e) => setItemFormData((prev) => ({ ...prev, sku: e.target.value, code: e.target.value }))}
-                className="text-xs h-8 font-mono"
+                onChange={(e) => setItemFormData((prev) => ({ ...prev, sku: e.target.value.toUpperCase(), code: e.target.value.toUpperCase() }))}
+                className="text-xs h-8 font-mono uppercase"
               />
             </div>
 
@@ -1768,17 +1808,23 @@ export const InventoryPage: React.FC = () => {
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-slate-700 block mb-1">Item Type</label>
+              <label className="text-xs font-semibold text-slate-700 block mb-1">Item Type *</label>
               <Select
                 value={itemFormData.itemType || 'RETAIL_PRODUCT'}
-                onValueChange={(val) => setItemFormData((prev) => ({ ...prev, itemType: val as any }))}
+                onValueChange={(val) =>
+                  setItemFormData((prev) => ({
+                    ...prev,
+                    itemType: val as any,
+                    sellingPrice: val === 'SALON_CONSUMABLE' ? 0 : prev.sellingPrice,
+                  }))
+                }
               >
                 <SelectTrigger className="text-xs h-8">
                   <SelectValue placeholder="Select type" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="RETAIL_PRODUCT" className="text-xs">Retail Product (POS Sale)</SelectItem>
-                  <SelectItem value="CONSUMABLE" className="text-xs">Consumable (Salon In-House Use)</SelectItem>
+                  <SelectItem value="SALON_CONSUMABLE" className="text-xs">Consumable (Salon In-House Use)</SelectItem>
                   <SelectItem value="BOTH" className="text-xs">Both (Retail & Consumable)</SelectItem>
                 </SelectContent>
               </Select>
@@ -1805,16 +1851,25 @@ export const InventoryPage: React.FC = () => {
               />
             </div>
 
-            <div>
-              <label className="text-xs font-semibold text-slate-700 block mb-1">Selling Price (POS Retail) *</label>
-              <Input
-                type="number"
-                placeholder="1500"
-                value={itemFormData.sellingPrice || 0}
-                onChange={(e) => setItemFormData((prev) => ({ ...prev, sellingPrice: Number(e.target.value) }))}
-                className="text-xs h-8 font-mono font-bold text-[#2254E1]"
-              />
-            </div>
+            {itemFormData.itemType === 'SALON_CONSUMABLE' ? (
+              <div className="p-2.5 bg-amber-50/60 rounded-lg border border-amber-200">
+                <span className="text-xs font-semibold text-amber-900 block mb-0.5">Selling Price (N/A)</span>
+                <p className="text-[11px] text-amber-800">
+                  <span className="font-semibold">In-House Consumable:</span> Selling price is not applicable because this item is for salon internal consumption only, not for POS retail sale.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <label className="text-xs font-semibold text-slate-700 block mb-1">Selling Price (POS Retail) *</label>
+                <Input
+                  type="number"
+                  placeholder="1500"
+                  value={itemFormData.sellingPrice || 0}
+                  onChange={(e) => setItemFormData((prev) => ({ ...prev, sellingPrice: Number(e.target.value) }))}
+                  className="text-xs h-8 font-mono font-bold text-[#2254E1]"
+                />
+              </div>
+            )}
 
             <div>
               <label className="text-xs font-semibold text-slate-700 block mb-1">Purchase Unit</label>

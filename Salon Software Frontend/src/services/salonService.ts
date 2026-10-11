@@ -226,6 +226,7 @@ export interface SalonServiceContract {
   updateBranch(id: string, branch: Partial<Branch>, actor: User): Promise<Branch>;
   assignBranchAdmin(branchId: string, adminUserId: string, actor: User): Promise<Branch>;
   deactivateBranch(id: string, actor: User): Promise<{ success: boolean; message: string }>;
+  deleteBranch(id: string, actor: User): Promise<{ success: boolean; message: string }>;
   checkBranchDeactivationBlockers(id: string): Promise<{ canDeactivate: boolean; blockers: string[] }>;
 
   getUsers(actor: User, branchId?: string): Promise<User[]>;

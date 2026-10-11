@@ -1882,6 +1882,7 @@ export interface SalesInvoiceReportRow {
   gross: number;
   discount: number;
   netSales: number;
+  tax?: number;
   taxCharged: number;
   taxReversed: number;
   netTaxLiability: number;
@@ -1956,9 +1957,9 @@ export type IncomeExpenseItemType =
 export interface IncomeExpenseReportRow {
   id: string;
   date: string;
-  type: IncomeExpenseItemType;
+  type: IncomeExpenseItemType | string;
   category: string;
-  source: 'POS_INVOICE' | 'INVOICE_REFUND' | 'EXPENSE_VOUCHER' | 'PAYROLL' | 'COMMISSION' | 'INVENTORY';
+  source: string;
   reference: string;
   branchId: string;
   branchName: string;
@@ -1966,6 +1967,9 @@ export interface IncomeExpenseReportRow {
   description: string;
   income: number;
   expense: number;
+  paid?: number;
+  discount?: number;
+  remaining?: number;
   paymentMethod: string;
   status: string;
 }
@@ -1994,6 +1998,9 @@ export interface IncomeExpenseReportQuery {
   status?: string;
   paymentMethod?: string;
   search?: string;
+  userType?: string;
+  userId?: string;
+  user?: string;
 }
 
 export interface IncomeExpenseReport {
@@ -2013,6 +2020,9 @@ export interface IncomeExpenseReport {
   totals: {
     income: number;
     expense: number;
+    paid?: number;
+    discount?: number;
+    remaining?: number;
     net: number;
   };
   categories: string[];

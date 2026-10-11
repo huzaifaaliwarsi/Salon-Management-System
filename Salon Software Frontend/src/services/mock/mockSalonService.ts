@@ -297,9 +297,28 @@ class MockSalonService implements SalonServiceContract {
     const store = mockStorage.getStore();
 
     const name = branchData.name?.trim();
-    const code = branchData.code?.trim().toUpperCase();
-    if (!name || !code) {
-      throw new Error('Branch name and unique branch code are required.');
+    let code = branchData.code?.trim().toUpperCase();
+    if (!name) {
+      throw new Error('Branch name is required.');
+    }
+    if (!code) {
+      let maxNum = 0;
+      const existingCodes = new Set(store.branches.map((b) => b.code?.trim().toUpperCase()));
+      for (const b of store.branches) {
+        if (!b.code) continue;
+        const m = b.code.match(/(\d+)$/);
+        if (m) {
+          const val = parseInt(m[1], 10);
+          if (!isNaN(val) && val > maxNum) maxNum = val;
+        }
+      }
+      let nextNum = maxNum + 1;
+      let candidate = `BR-${String(nextNum).padStart(2, '0')}`;
+      while (existingCodes.has(candidate)) {
+        nextNum++;
+        candidate = `BR-${String(nextNum).padStart(2, '0')}`;
+      }
+      code = candidate;
     }
 
     if (store.branches.some((b) => b.code.toUpperCase() === code)) {
@@ -472,6 +491,28 @@ class MockSalonService implements SalonServiceContract {
     branch.isActive = false;
     mockStorage.saveStore(store);
     return { success: true, message: `Branch '${branch.name}' has been deactivated.` };
+  }
+
+  async deleteBranch(id: string, actor?: User): Promise<{ success: boolean; message: string }> {
+    const authenticatedActor = this.getAuthenticatedActor(actor);
+    if (authenticatedActor.role !== 'SUPER_ADMIN') {
+      throw new Error('Access Denied: Only Super Administrators can delete salon branches.');
+    }
+
+    const store = mockStorage.getStore();
+    if (store.branches.length <= 1) {
+      throw new Error('Cannot delete the only remaining branch in the system.');
+    }
+
+    const branchIdx = store.branches.findIndex((b) => b.id === id);
+    if (branchIdx === -1) {
+      throw new Error(`Branch '${id}' not found.`);
+    }
+
+    const branchName = store.branches[branchIdx].name;
+    store.branches.splice(branchIdx, 1);
+    mockStorage.saveStore(store);
+    return { success: true, message: `Branch '${branchName}' has been permanently deleted.` };
   }
 
   // --- USERS & ACCESS ---
@@ -1807,9 +1848,33 @@ class MockSalonService implements SalonServiceContract {
       throw new Error('Please select an explicit branch for this service.');
     }
 
+    let code = serviceData.code?.trim().toUpperCase();
+    if (!code) {
+      let maxNum = 0;
+      const existingCodes = new Set(
+        store.services
+          .map((s) => s.code?.trim().toUpperCase())
+      );
+      for (const s of store.services) {
+        if (!s.code) continue;
+        const m = s.code.match(/(\d+)$/);
+        if (m) {
+          const val = parseInt(m[1], 10);
+          if (!isNaN(val) && val > maxNum) maxNum = val;
+        }
+      }
+      let nextNum = maxNum + 1;
+      let candidate = `SRV-${String(nextNum).padStart(2, '0')}`;
+      while (existingCodes.has(candidate)) {
+        nextNum++;
+        candidate = `SRV-${String(nextNum).padStart(2, '0')}`;
+      }
+      code = candidate;
+    }
+
     const proposed: Omit<ServiceItem, 'id'> = {
       branchId,
-      code: serviceData.code?.trim().toUpperCase() || '',
+      code,
       name: serviceData.name?.trim() || '',
       category: serviceData.category || 'General',
       durationMinutes: Math.round(serviceData.durationMinutes || 0),
@@ -1927,9 +1992,33 @@ class MockSalonService implements SalonServiceContract {
       throw new Error('Please select an explicit branch for this package.');
     }
 
+    let code = pkgData.code?.trim().toUpperCase();
+    if (!code) {
+      let maxNum = 0;
+      const existingCodes = new Set(
+        store.packages
+          .map((p) => p.code?.trim().toUpperCase())
+      );
+      for (const p of store.packages) {
+        if (!p.code) continue;
+        const m = p.code.match(/(\d+)$/);
+        if (m) {
+          const val = parseInt(m[1], 10);
+          if (!isNaN(val) && val > maxNum) maxNum = val;
+        }
+      }
+      let nextNum = maxNum + 1;
+      let candidate = `PKG-${String(nextNum).padStart(2, '0')}`;
+      while (existingCodes.has(candidate)) {
+        nextNum++;
+        candidate = `PKG-${String(nextNum).padStart(2, '0')}`;
+      }
+      code = candidate;
+    }
+
     const proposed: Omit<PackageItem, 'id'> = {
       branchId,
-      code: pkgData.code?.trim().toUpperCase() || '',
+      code,
       name: pkgData.name?.trim() || '',
       description: pkgData.description?.trim(),
       price: roundCurrency(pkgData.price || 0),
@@ -10027,27 +10116,48 @@ class MockSalonService implements SalonServiceContract {
     if (!input.name?.trim()) {
       throw new Error('Item name is required.');
     }
-    if (!input.sku?.trim()) {
-      throw new Error('Item SKU is required.');
-    }
 
     const store = mockStorage.getStore();
+    let sku = input.sku?.trim().toUpperCase();
+    if (!sku) {
+      let maxNum = 0;
+      const existingCodes = new Set((store.inventoryItems || []).map((i) => i.sku?.trim().toUpperCase()));
+      for (const i of store.inventoryItems || []) {
+        if (!i.sku) continue;
+        const m = i.sku.match(/(\d+)$/);
+        if (m) {
+          const val = parseInt(m[1], 10);
+          if (!isNaN(val) && val > maxNum) maxNum = val;
+        }
+      }
+      let nextNum = maxNum + 1;
+      let candidate = `SKU-${String(nextNum).padStart(2, '0')}`;
+      while (existingCodes.has(candidate)) {
+        nextNum++;
+        candidate = `SKU-${String(nextNum).padStart(2, '0')}`;
+      }
+      sku = candidate;
+    }
+
     const existingSku = (store.inventoryItems || []).find(
-      (i) => i.sku.toLowerCase() === input.sku.toLowerCase().trim()
+      (i) => i.sku.toLowerCase() === sku.toLowerCase()
     );
     if (existingSku) {
-      throw new Error(`An inventory item with SKU '${input.sku}' already exists.`);
+      throw new Error(`An inventory item with SKU '${sku}' already exists.`);
     }
+
+    const isConsumable = input.itemType === 'SALON_CONSUMABLE';
+    const finalSellingPrice = isConsumable ? 0 : roundCurrency(input.sellingPrice || 0);
 
     const now = new Date().toISOString();
     const newItem: InventoryItem = {
       ...input,
       id: `item-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
       name: input.name.trim(),
-      sku: input.sku.trim().toUpperCase(),
-      code: input.sku.trim().toUpperCase(),
-      price: roundCurrency(input.sellingPrice || 0),
-      sellingPrice: roundCurrency(input.sellingPrice || 0),
+      sku,
+      code: sku,
+      price: finalSellingPrice,
+      sellingPrice: finalSellingPrice,
       defaultPurchaseCost: roundCurrency(input.defaultPurchaseCost || 0),
       minStockLevel: Math.max(0, input.minStockLevel || 0),
       nearExpiryAlertDays: Math.max(0, input.nearExpiryAlertDays || 0),
@@ -10087,7 +10197,13 @@ class MockSalonService implements SalonServiceContract {
       }
     }
 
-    const sellingPrice = input.sellingPrice !== undefined ? roundCurrency(input.sellingPrice) : currentItem.sellingPrice;
+    const targetItemType = input.itemType || currentItem.itemType;
+    const isConsumable = targetItemType === 'SALON_CONSUMABLE';
+    const sellingPrice = isConsumable
+      ? 0
+      : input.sellingPrice !== undefined
+      ? roundCurrency(input.sellingPrice)
+      : currentItem.sellingPrice;
 
     const updatedItem: InventoryItem = {
       ...currentItem,
@@ -10180,7 +10296,8 @@ class MockSalonService implements SalonServiceContract {
           }
         }
 
-        const potentialRetailValue = roundCurrency(currentStock * item.sellingPrice);
+        const isConsumable = item.itemType === 'SALON_CONSUMABLE';
+        const potentialRetailValue = isConsumable ? 0 : roundCurrency(currentStock * (item.sellingPrice || 0));
 
         snapshots.push({
           itemId: item.id,

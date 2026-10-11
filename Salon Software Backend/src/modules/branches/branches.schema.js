@@ -6,7 +6,7 @@ const optText = z.string().trim().optional();
 
 export const createBranchSchema = z.object({
   name:     z.string().trim().min(1, 'Branch name and unique branch code are required.'),
-  code:     z.string().trim().min(1, 'Branch name and unique branch code are required.').transform((s) => s.toUpperCase()),
+  code:     optText.transform((s) => (s ? s.toUpperCase() : undefined)),
   address:  optText,
   city:     optText,
   phone:    optText,

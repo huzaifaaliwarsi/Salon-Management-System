@@ -14,121 +14,67 @@ import {
 import { formatCurrency, formatPhoneNumber } from '@/lib/formatters';
 import { AccessDeniedView } from '@/features/scaffold/AccessDeniedView';
 import {
-  CalendarRange,
-  Calendar,
-  Clock,
   Filter,
-  Search,
-  Printer,
-  Download,
-  Building2,
-  Users,
-  CheckCircle2,
-  AlertCircle,
-  XCircle,
-  Receipt,
   FileSpreadsheet,
-  RefreshCw,
-  ExternalLink,
-  DollarSign,
-  TrendingUp,
   FileText,
-  Info,
-  X,
+  Printer,
+  Loader2,
+  ExternalLink,
+  CalendarCheck,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from '@/components/ui/dialog';
+  DATE_PRESETS,
+  DatePreset,
+  downloadReportCsv,
+  downloadReportExcel,
+  printReportWindow,
+  resolvePreset,
+} from './reportUtils';
 
-const STATUS_CONFIG: Record<
-  string,
-  { label: string; bg: string; text: string; border: string }
-> = {
-  PENDING: {
-    label: 'Pending',
-    bg: 'bg-amber-50',
-    text: 'text-amber-800',
-    border: 'border-amber-200',
-  },
-  CONFIRMED: {
-    label: 'Confirmed',
-    bg: 'bg-blue-50',
-    text: 'text-blue-800',
-    border: 'border-blue-200',
-  },
-  CHECKED_IN: {
-    label: 'Checked In',
-    bg: 'bg-purple-50',
-    text: 'text-purple-800',
-    border: 'border-purple-200',
-  },
-  IN_SERVICE: {
-    label: 'In Service',
-    bg: 'bg-indigo-50',
-    text: 'text-indigo-800',
-    border: 'border-indigo-200',
-  },
-  COMPLETED: {
-    label: 'Completed',
-    bg: 'bg-emerald-50',
-    text: 'text-emerald-800',
-    border: 'border-emerald-200',
-  },
-  CANCELLED: {
-    label: 'Cancelled',
-    bg: 'bg-rose-50',
-    text: 'text-rose-800',
-    border: 'border-rose-200',
-  },
-  NO_SHOW: {
-    label: 'No-Show',
-    bg: 'bg-slate-100',
-    text: 'text-slate-700',
-    border: 'border-slate-300',
-  },
+const selectClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const inputClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const labelClass = 'block text-[11px] font-semibold text-[#0B2545] mb-1.5';
+
+const formatPKR = (amt: number) => {
+  const num = Number(amt) || 0;
+  return Math.abs(num).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 };
 
 export const AppointmentReportPage: React.FC = () => {
-  const { user } = useAuth();
+  const { user, activeBranchId, allBranches, demoDate } = useAuth();
   const { navigate } = useRouter();
 
-  // Role guard: Super Admin and Branch Admin only. Accountant and Staff denied.
   if (!user || (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN')) {
     return <AccessDeniedView attemptedPath="/reports/appointments" />;
   }
 
   const isSuperAdmin = user.role === 'SUPER_ADMIN';
+  const businessDate = demoDate || new Date().toISOString().slice(0, 10);
+  const defaultMonth = resolvePreset('THIS_MONTH', businessDate)!;
 
-  // Filters State
+  // Filter Form State
   const [branches, setBranches] = useState<Branch[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState<string>(
-    isSuperAdmin ? 'ALL' : user.branchId || ''
+    activeBranchId || user.branchId || 'ALL'
   );
   const [staffList, setStaffList] = useState<StaffMember[]>([]);
-
-  // Date range presets (default: current month)
-  const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10);
-  const monthStartStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
-
-  const [startDate, setStartDate] = useState<string>(monthStartStr);
-  const [endDate, setEndDate] = useState<string>(todayStr);
-
+  const [selectedStaffId, setSelectedStaffId] = useState<string>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
   const [selectedBillingStatus, setSelectedBillingStatus] = useState<string>('ALL');
-  const [selectedStaffId, setSelectedStaffId] = useState<string>('ALL');
   const [selectedSource, setSelectedSource] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [preset, setPreset] = useState<DatePreset>('THIS_MONTH');
+  const [startDate, setStartDate] = useState<string>(defaultMonth.from);
+  const [endDate, setEndDate] = useState<string>(defaultMonth.to);
 
-  // Data State
+  // Page state: Only fetch when user explicitly clicks Filter ("filter karna sa aae default nhi")
+  const [hasFiltered, setHasFiltered] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [records, setRecords] = useState<AppointmentReportRecord[]>([]);
   const [summary, setSummary] = useState<AppointmentReportSummary>({
     totalAppointments: 0,
@@ -144,31 +90,42 @@ export const AppointmentReportPage: React.FC = () => {
     totalQuotedValue: 0,
     totalActualNetSales: 0,
   });
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-
-  // Print modal state
-  const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Load auxiliary branches and staff
   useEffect(() => {
-    async function loadAux() {
-      try {
-        const [bList, sList] = await Promise.all([
-          salonService.getBranches(),
-          salonService.getStaff('ALL'),
-        ]);
-        setBranches(bList);
-        setStaffList(sList);
-      } catch (err) {
-        console.error('Failed to load branches and staff for appointment report', err);
-      }
+    if (allBranches && allBranches.length > 0) {
+      setBranches(allBranches);
+    } else {
+      salonService.getBranches().then(setBranches).catch(() => undefined);
     }
-    loadAux();
-  }, []);
+  }, [allBranches]);
 
-  // Fetch report data
+  useEffect(() => {
+    salonService
+      .getStaff(selectedBranchId || 'ALL')
+      .then(setStaffList)
+      .catch(() => setStaffList([]));
+  }, [selectedBranchId]);
+
+  const handlePresetChange = (p: DatePreset) => {
+    setPreset(p);
+    const r = resolvePreset(p, businessDate);
+    if (r) {
+      setStartDate(r.from);
+      setEndDate(r.to);
+    }
+  };
+
+  const branchNameDisplay = useMemo(() => {
+    if (selectedBranchId === 'ALL') return 'All Campuses';
+    return branches.find((b) => b.id === selectedBranchId)?.name || selectedBranchId;
+  }, [selectedBranchId, branches]);
+
+  // Fetch report data on demand from backend API
   const fetchReport = useCallback(async () => {
     setIsLoading(true);
+    setErrorMessage(null);
     try {
       const data = await salonService.getAppointmentReport(
         selectedBranchId,
@@ -176,7 +133,10 @@ export const AppointmentReportPage: React.FC = () => {
         endDate,
         {
           status: selectedStatus !== 'ALL' ? (selectedStatus as AppointmentStatus) : undefined,
-          billingStatus: selectedBillingStatus !== 'ALL' ? (selectedBillingStatus as AppointmentBillingStatus) : undefined,
+          billingStatus:
+            selectedBillingStatus !== 'ALL'
+              ? (selectedBillingStatus as AppointmentBillingStatus)
+              : undefined,
           staffId: selectedStaffId !== 'ALL' ? selectedStaffId : undefined,
           customerSource: selectedSource !== 'ALL' ? (selectedSource as CustomerSource) : undefined,
           search: searchQuery.trim() || undefined,
@@ -186,8 +146,11 @@ export const AppointmentReportPage: React.FC = () => {
 
       setRecords(data.records);
       setSummary(data.summary);
-    } catch (err) {
-      console.error('Failed to fetch appointment report', err);
+    } catch (err: any) {
+      console.error('Failed to load Appointment report:', err);
+      setErrorMessage(
+        err.message || 'Failed to fetch live appointment report from server.'
+      );
     } finally {
       setIsLoading(false);
     }
@@ -203,497 +166,490 @@ export const AppointmentReportPage: React.FC = () => {
     user,
   ]);
 
-  useEffect(() => {
+  const handleApplyFilters = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setHasFiltered(true);
     fetchReport();
-  }, [fetchReport]);
-
-  // Date Preset Helpers
-  const handleSetDatePreset = (preset: 'TODAY' | 'THIS_WEEK' | 'THIS_MONTH' | 'LAST_MONTH') => {
-    const now = new Date();
-    if (preset === 'TODAY') {
-      const s = now.toISOString().slice(0, 10);
-      setStartDate(s);
-      setEndDate(s);
-    } else if (preset === 'THIS_WEEK') {
-      const day = now.getDay();
-      const diff = now.getDate() - day;
-      const start = new Date(now.setDate(diff));
-      const end = new Date(start);
-      end.setDate(end.getDate() + 6);
-      setStartDate(start.toISOString().slice(0, 10));
-      setEndDate(end.toISOString().slice(0, 10));
-    } else if (preset === 'THIS_MONTH') {
-      const s = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-      const e = now.toISOString().slice(0, 10);
-      setStartDate(s);
-      setEndDate(e);
-    } else if (preset === 'LAST_MONTH') {
-      const firstOfLast = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const lastOfLast = new Date(now.getFullYear(), now.getMonth(), 0);
-      setStartDate(firstOfLast.toISOString().slice(0, 10));
-      setEndDate(lastOfLast.toISOString().slice(0, 10));
-    }
   };
 
-  // CSV Export Handler
-  const handleExportCSV = () => {
-    let csv = 'APPOINTMENT AUDIT & REVENUE REPORT\n';
-    csv += `Scope: ${selectedBranchId === 'ALL' ? 'All Branches' : selectedBranchId}\n`;
-    csv += `Scheduled Date Window: ${startDate} to ${endDate}\n`;
-    csv += `Generated On: ${new Date().toLocaleString()}\n\n`;
+  // Export Handlers
+  const handleExportExcel = () => {
+    if (!records.length) return;
+    const meta: [string, string][] = [
+      ['Report', 'Appointment Audit Reports'],
+      ['Campus', branchNameDisplay],
+      ['From Date', startDate || '—'],
+      ['To Date', endDate || '—'],
+      ['Status Filter', selectedStatus],
+      ['Generated By', user.name],
+      ['Generated At', new Date().toLocaleString()],
+    ];
 
-    // Summary Section
-    csv += '--- REPORT KPI SUMMARY ---\n';
-    csv += `Total Scheduled Appointments,${summary.totalAppointments}\n`;
-    csv += `Pending Reservations,${summary.pendingCount}\n`;
-    csv += `Confirmed & Checked In,${summary.confirmedCount + summary.checkedInCount + summary.inServiceCount}\n`;
-    csv += `Completed Appointments,${summary.completedCount}\n`;
-    csv += `Cancelled Bookings,${summary.cancelledCount}\n`;
-    csv += `No-Show Bookings,${summary.noShowCount}\n`;
-    csv += `Billed Appointments,${summary.billedCount}\n`;
-    csv += `Unbilled Appointments,${summary.unbilledCount}\n`;
-    csv += `Total Quoted Booking Value (PKR),${summary.totalQuotedValue}\n`;
-    csv += `Actual Linked Invoice Net Sales (PKR),${summary.totalActualNetSales}\n\n`;
+    const headers = [
+      'Ref #',
+      'Scheduled Date',
+      'Time',
+      'Customer Name',
+      'Phone',
+      'Campus',
+      'Services / Packages',
+      'Staff',
+      'Status',
+      'Billing Status',
+      'Quoted Value (PKR)',
+      'Linked Invoice #',
+      'Invoice Net Sales (PKR)',
+      'Invoice Status',
+    ];
 
-    // Detail Records Section
-    csv += '--- APPOINTMENT DETAIL RECORDS ---\n';
-    csv += 'Ref #,Scheduled Date,Time,Customer Name,Phone,Branch,Services / Packages,Staff,Status,Billing Status,Quoted Price (PKR),Linked Invoice #,Invoice Net Sales (PKR),Invoice Status\n';
+    const rows = [
+      ...records.map((r) => [
+        r.appointmentNumber || r.id,
+        r.date,
+        r.startTime,
+        r.clientName,
+        r.clientPhone,
+        r.branchName || r.branchId,
+        r.serviceSummary,
+        r.staffSummary,
+        r.status,
+        r.billingStatus,
+        r.quotedPrice.toFixed(2),
+        r.linkedInvoiceNumber || '—',
+        (r.actualNetSales || 0).toFixed(2),
+        r.invoicePaymentStatus || '—',
+      ]),
+      [
+        'TOTALS',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        summary.totalQuotedValue.toFixed(2),
+        '',
+        summary.totalActualNetSales.toFixed(2),
+        '',
+      ],
+    ];
 
-    records.forEach((r) => {
-      csv += `"${r.appointmentNumber || r.id}","${r.date}","${r.startTime}","${r.clientName}","${r.clientPhone}","${r.branchName || r.branchId}","${r.serviceSummary}","${r.staffSummary}","${r.status}","${r.billingStatus}","${r.quotedPrice}","${r.linkedInvoiceNumber || '-'}","${r.actualNetSales || 0}","${r.invoicePaymentStatus || '-'}"\n`;
+    downloadReportExcel(`Appointments_Report_${startDate}_${endDate}.csv`, meta, [
+      { title: 'Appointment Records', headers, rows },
+    ]);
+  };
+
+  const handleExportCsv = () => {
+    if (!records.length) return;
+    const meta: [string, string][] = [
+      ['Report', 'Appointment Audit Reports'],
+      ['Campus', branchNameDisplay],
+      ['Date Range', `${startDate} to ${endDate}`],
+      ['Generated At', new Date().toLocaleString()],
+    ];
+
+    const headers = [
+      'Ref #',
+      'Scheduled Date',
+      'Time',
+      'Customer Name',
+      'Phone',
+      'Campus',
+      'Services / Packages',
+      'Staff',
+      'Status',
+      'Billing Status',
+      'Quoted Value (PKR)',
+      'Linked Invoice #',
+      'Invoice Net Sales (PKR)',
+      'Invoice Status',
+    ];
+
+    const rows = [
+      ...records.map((r) => [
+        r.appointmentNumber || r.id,
+        r.date,
+        r.startTime,
+        r.clientName,
+        r.clientPhone,
+        r.branchName || r.branchId,
+        r.serviceSummary,
+        r.staffSummary,
+        r.status,
+        r.billingStatus,
+        r.quotedPrice.toFixed(2),
+        r.linkedInvoiceNumber || '—',
+        (r.actualNetSales || 0).toFixed(2),
+        r.invoicePaymentStatus || '—',
+      ]),
+      [
+        'TOTALS',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        summary.totalQuotedValue.toFixed(2),
+        '',
+        summary.totalActualNetSales.toFixed(2),
+        '',
+      ],
+    ];
+
+    downloadReportCsv(`Appointments_Report_${startDate}_${endDate}.csv`, meta, [
+      { title: 'Appointment Records', headers, rows },
+    ]);
+  };
+
+  const handlePrint = () => {
+    if (!records.length) return;
+    const meta: [string, string][] = [
+      ['Campus', branchNameDisplay],
+      ['Date Range', `${startDate} to ${endDate}`],
+      ['Generated By', user.name],
+    ];
+
+    const headers = [
+      'Date',
+      'Ref #',
+      'Customer',
+      'Campus',
+      'Services & Staff',
+      'Quoted Value',
+      'Status',
+      'Billing',
+      'Invoice #',
+      'Invoice Net',
+    ];
+
+    const rows = records.map((r) => [
+      r.date,
+      r.appointmentNumber || r.id.slice(-6),
+      r.clientName,
+      r.branchName || r.branchId,
+      r.serviceSummary,
+      formatPKR(r.quotedPrice),
+      r.status,
+      r.billingStatus,
+      r.linkedInvoiceNumber || '—',
+      formatPKR(r.actualNetSales || 0),
+    ]);
+
+    const footers = [
+      'TOTALS',
+      '',
+      '',
+      '',
+      '',
+      formatPKR(summary.totalQuotedValue),
+      '',
+      '',
+      '',
+      formatPKR(summary.totalActualNetSales),
+    ];
+
+    printReportWindow({
+      title: 'Appointment Audit Report',
+      subtitle: `Scheduled Reservation Audits & Revenue Conversion`,
+      meta,
+      headers,
+      rows,
+      totals: footers,
     });
-
-    const encodedUri = encodeURI('data:text/csv;charset=utf-8,' + csv);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Appointments_Report_${selectedBranchId}_${startDate}_to_${endDate}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
   };
-
-  const branchNameDisplay = useMemo(() => {
-    if (selectedBranchId === 'ALL') return 'All Branches Consolidated';
-    return branches.find((b) => b.id === selectedBranchId)?.name || selectedBranchId;
-  }, [selectedBranchId, branches]);
 
   return (
-    <div className="space-y-6">
-      {/* Top Banner Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-5 rounded-xl border border-slate-200/80 shadow-xs">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
-              <CalendarRange className="w-5 h-5" />
-            </div>
+    <div className="min-h-screen bg-[#F4F6F9] px-4 py-5 md:px-8 md:py-6 text-slate-800">
+      {/* Top Header Card with Title & Filters */}
+      <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 p-5 md:p-6 mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
+          <div>
+            <h1 className="text-xl font-bold text-[#0B2545] tracking-tight">Appointment Audit Reports</h1>
+            <p className="text-xs text-slate-500 mt-1">
+              Audit of scheduled reservations, status velocity, estimated booking values & actual POS conversions.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigate('/operations/appointments')}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 bg-white rounded-md text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-2xs cursor-pointer"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            Go to Operational Calendar
+          </button>
+        </div>
+
+        {/* Filters Form Row */}
+        <form onSubmit={handleApplyFilters} className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3.5">
+            {/* Campus / Branch */}
             <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-                  Dedicated Appointment Report
-                </h1>
-                <Badge variant="outline" className="text-[10px] font-semibold bg-slate-50 text-slate-600">
-                  Read-Only Audit
-                </Badge>
-              </div>
-              <p className="text-xs text-slate-500 font-medium">
-                Analysis of scheduled reservations, status velocity, estimated booking values & actual POS conversions.
-              </p>
+              <label className={labelClass}>Campus</label>
+              <select
+                className={selectClass}
+                value={selectedBranchId}
+                onChange={(e) => {
+                  setSelectedBranchId(e.target.value);
+                  setSelectedStaffId('ALL');
+                }}
+              >
+                {isSuperAdmin && <option value="ALL">All Campuses</option>}
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
             </div>
-          </div>
-        </div>
 
-        <div className="flex items-center gap-2.5 flex-wrap">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={fetchReport}
-            disabled={isLoading}
-            className="text-xs gap-1.5 h-9"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setShowPrintModal(true)}
-            className="text-xs gap-1.5 h-9 border-indigo-200 text-indigo-700 bg-indigo-50/60 hover:bg-indigo-100"
-          >
-            <Printer className="w-4 h-4" />
-            Print Report
-          </Button>
-
-          <Button
-            type="button"
-            size="sm"
-            onClick={handleExportCSV}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold gap-1.5 h-9 shadow-xs"
-          >
-            <Download className="w-4 h-4" />
-            Export CSV
-          </Button>
-        </div>
-      </div>
-
-      {/* Discrepancy & Methodology Notice Alert */}
-      <div className="p-3.5 bg-blue-50/60 border border-blue-200/80 rounded-xl text-xs text-blue-900 flex items-start gap-2.5">
-        <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-        <div className="space-y-0.5">
-          <span className="font-bold">Scheduled Date Basis & Revenue Conversion Notice</span>
-          <p className="text-[11px] text-blue-800/90 leading-relaxed">
-            All filters and metrics in this report correspond to the <strong>appointment scheduled reservation date</strong>. Estimated Quoted Value represents original booking estimates. Actual Linked Net Sales derive exclusively from finalized, deduplicated POS sales invoices linked to these appointments. Appointment-scheduled sales must not be confused with invoice-date sales reports.
-          </p>
-        </div>
-      </div>
-
-      {/* Filter Control Bar */}
-      <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-xs space-y-3">
-        {/* Date presets and Date Inputs Row */}
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs font-semibold text-slate-500 mr-1 flex items-center gap-1">
-              <Calendar className="w-3.5 h-3.5 text-slate-400" />
-              Presets:
-            </span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => handleSetDatePreset('TODAY')}
-              className="h-7 text-xs px-2.5"
-            >
-              Today
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => handleSetDatePreset('THIS_WEEK')}
-              className="h-7 text-xs px-2.5"
-            >
-              This Week
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => handleSetDatePreset('THIS_MONTH')}
-              className="h-7 text-xs px-2.5"
-            >
-              This Month
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => handleSetDatePreset('LAST_MONTH')}
-              className="h-7 text-xs px-2.5"
-            >
-              Last Month
-            </Button>
-          </div>
-
-          <div className="flex items-center gap-2 text-xs">
-            <div className="flex items-center gap-1.5">
-              <span className="text-slate-500 font-medium">Scheduled From:</span>
-              <Input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="h-8 text-xs w-36 bg-slate-50 font-medium"
-              />
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-slate-500 font-medium">To:</span>
-              <Input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="h-8 text-xs w-36 bg-slate-50 font-medium"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Multi-dimension Dropdown Filters */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
-          {/* Branch Filter */}
-          <div>
-            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
-              Branch Scope
-            </label>
-            <select
-              value={selectedBranchId}
-              onChange={(e) => setSelectedBranchId(e.target.value)}
-              disabled={!isSuperAdmin}
-              className="w-full h-8 px-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-medium disabled:opacity-60"
-            >
-              {isSuperAdmin && <option value="ALL">All Branches</option>}
-              {branches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Status Filter */}
-          <div>
-            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
-              Appointment Status
-            </label>
-            <select
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
-              className="w-full h-8 px-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-medium"
-            >
-              <option value="ALL">All Statuses</option>
-              <option value="PENDING">Pending</option>
-              <option value="CONFIRMED">Confirmed</option>
-              <option value="CHECKED_IN">Checked In</option>
-              <option value="IN_SERVICE">In Service</option>
-              <option value="COMPLETED">Completed</option>
-              <option value="CANCELLED">Cancelled</option>
-              <option value="NO_SHOW">No-Show</option>
-            </select>
-          </div>
-
-          {/* Billing Status Filter */}
-          <div>
-            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
-              Billing Status
-            </label>
-            <select
-              value={selectedBillingStatus}
-              onChange={(e) => setSelectedBillingStatus(e.target.value)}
-              className="w-full h-8 px-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-medium"
-            >
-              <option value="ALL">All Billing States</option>
-              <option value="BILLED">Billed (POS Invoice Created)</option>
-              <option value="UNBILLED">Unbilled Bookings</option>
-            </select>
-          </div>
-
-          {/* Staff Filter */}
-          <div>
-            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
-              Assigned Staff
-            </label>
-            <select
-              value={selectedStaffId}
-              onChange={(e) => setSelectedStaffId(e.target.value)}
-              className="w-full h-8 px-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-medium"
-            >
-              <option value="ALL">All Stylists & Staff</option>
-              {staffList
-                .filter((s) => selectedBranchId === 'ALL' || s.branchId === selectedBranchId)
-                .map((s) => (
+            {/* Staff */}
+            <div>
+              <label className={labelClass}>Staff</label>
+              <select
+                className={selectClass}
+                value={selectedStaffId}
+                onChange={(e) => setSelectedStaffId(e.target.value)}
+              >
+                <option value="ALL">All Staff</option>
+                {staffList.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name}
                   </option>
                 ))}
-            </select>
-          </div>
+              </select>
+            </div>
 
-          {/* Acquisition Source Filter */}
-          <div>
-            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
-              Acquisition Source
-            </label>
-            <select
-              value={selectedSource}
-              onChange={(e) => setSelectedSource(e.target.value)}
-              className="w-full h-8 px-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-medium"
-            >
-              <option value="ALL">All Sources</option>
-              <option value="WALK_IN">Walk-In</option>
-              <option value="INSTAGRAM">Instagram</option>
-              <option value="FACEBOOK">Facebook</option>
-              <option value="TIKTOK">TikTok</option>
-              <option value="GOOGLE">Google Search / Maps</option>
-              <option value="WORD_OF_MOUTH">Word of Mouth</option>
-              <option value="REFERRAL">Client Referral</option>
-              <option value="OTHER">Other Channels</option>
-            </select>
-          </div>
+            {/* Status */}
+            <div>
+              <label className={labelClass}>Status</label>
+              <select
+                className={selectClass}
+                value={selectedStatus}
+                onChange={(e) => setSelectedStatus(e.target.value)}
+              >
+                <option value="ALL">All Statuses</option>
+                <option value="PENDING">Pending</option>
+                <option value="CONFIRMED">Confirmed</option>
+                <option value="CHECKED_IN">Checked In</option>
+                <option value="IN_SERVICE">In Service</option>
+                <option value="COMPLETED">Completed</option>
+                <option value="CANCELLED">Cancelled</option>
+                <option value="NO_SHOW">No-Show</option>
+              </select>
+            </div>
 
-          {/* Search Query */}
-          <div>
-            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
-              Search Text
-            </label>
-            <div className="relative">
-              <Search className="w-3 h-3 absolute left-2.5 top-2.5 text-slate-400" />
-              <Input
-                type="text"
-                placeholder="Client, phone, ref..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-7 h-8 text-xs bg-slate-50"
+            {/* Billing State */}
+            <div>
+              <label className={labelClass}>Billing State</label>
+              <select
+                className={selectClass}
+                value={selectedBillingStatus}
+                onChange={(e) => setSelectedBillingStatus(e.target.value)}
+              >
+                <option value="ALL">All Billing States</option>
+                <option value="BILLED">Billed</option>
+                <option value="UNBILLED">Unbilled</option>
+              </select>
+            </div>
+
+            {/* Date Preset */}
+            <div>
+              <label className={labelClass}>Date Preset</label>
+              <select
+                className={selectClass}
+                value={preset}
+                onChange={(e) => handlePresetChange(e.target.value as DatePreset)}
+              >
+                {DATE_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* From Date */}
+            <div>
+              <label className={labelClass}>From Date</label>
+              <input
+                type="date"
+                className={inputClass}
+                value={startDate}
+                max={endDate || undefined}
+                onChange={(e) => {
+                  setStartDate(e.target.value);
+                  setPreset('CUSTOM');
+                }}
               />
             </div>
           </div>
-        </div>
-      </div>
 
-      {/* KPI Summary Cards Bar */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2.5">
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">
-            Total Bookings
-          </span>
-          <span className="text-xl font-bold text-slate-900 mt-1 block">
-            {summary.totalAppointments}
-          </span>
-          <span className="text-[10px] text-slate-400">Scheduled in window</span>
-        </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3.5 items-end">
+            {/* To Date */}
+            <div>
+              <label className={labelClass}>To Date</label>
+              <input
+                type="date"
+                className={inputClass}
+                value={endDate}
+                min={startDate || undefined}
+                onChange={(e) => {
+                  setEndDate(e.target.value);
+                  setPreset('CUSTOM');
+                }}
+              />
+            </div>
 
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <span className="text-[11px] font-semibold text-amber-700 uppercase tracking-wider block">
-            Pending Holds
-          </span>
-          <span className="text-xl font-bold text-amber-700 mt-1 block">
-            {summary.pendingCount}
-          </span>
-          <span className="text-[10px] text-slate-400">Awaiting confirmation</span>
-        </div>
+            {/* Search Query */}
+            <div className="md:col-span-4">
+              <label className={labelClass}>Search</label>
+              <input
+                type="text"
+                placeholder="Search ref #, customer, phone, stylist..."
+                className={inputClass}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
 
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <span className="text-[11px] font-semibold text-blue-700 uppercase tracking-wider block">
-            Confirmed & Active
-          </span>
-          <span className="text-xl font-bold text-blue-700 mt-1 block">
-            {summary.confirmedCount + summary.checkedInCount + summary.inServiceCount}
-          </span>
-          <span className="text-[10px] text-slate-400">Ready or in progress</span>
-        </div>
-
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <span className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wider block">
-            Completed
-          </span>
-          <span className="text-xl font-bold text-emerald-700 mt-1 block">
-            {summary.completedCount}
-          </span>
-          <span className="text-[10px] text-slate-400">Service fulfilled</span>
-        </div>
-
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <span className="text-[11px] font-semibold text-rose-700 uppercase tracking-wider block">
-            Lost / Cancelled
-          </span>
-          <span className="text-xl font-bold text-rose-700 mt-1 block">
-            {summary.cancelledCount + summary.noShowCount}
-          </span>
-          <span className="text-[10px] text-slate-400">
-            {summary.cancelledCount} cncl / {summary.noShowCount} no-show
-          </span>
-        </div>
-
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">
-            Quoted Value (Est.)
-          </span>
-          <span className="text-lg font-bold text-slate-900 mt-1 block truncate">
-            {formatCurrency(summary.totalQuotedValue)}
-          </span>
-          <span className="text-[10px] text-slate-400">Total estimated bookings</span>
-        </div>
-
-        <div className="bg-white p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/20 shadow-xs">
-          <span className="text-[11px] font-semibold text-emerald-800 uppercase tracking-wider block">
-            Actual POS Net Sales
-          </span>
-          <span className="text-lg font-bold text-emerald-700 mt-1 block truncate">
-            {formatCurrency(summary.totalActualNetSales)}
-          </span>
-          <span className="text-[10px] text-emerald-600/90 font-medium">
-            {summary.billedCount} billed appointments
-          </span>
-        </div>
-      </div>
-
-      {/* Main Report Data Table */}
-      <div className="bg-white rounded-xl border border-slate-200/80 shadow-xs overflow-hidden">
-        <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div>
-            <h3 className="text-sm font-bold text-slate-900">
-              Appointment Audit Records ({records.length} Entries)
-            </h3>
-            <span className="text-xs text-slate-500">
-              Branch: <span className="font-semibold text-slate-700">{branchNameDisplay}</span> • Scheduled Range: {startDate} to {endDate}
-            </span>
+            {/* Filter Action Button */}
+            <div>
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full h-[35px] bg-[#0047AB] hover:bg-[#003785] active:bg-[#002b66] text-white font-medium text-xs rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-70"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Loading...</span>
+                  </>
+                ) : (
+                  <>
+                    <Filter className="w-3.5 h-3.5 fill-current" />
+                    <span>Filter</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
+        </form>
+      </div>
 
-          {/* Operational Page Link */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => navigate('/operations/appointments')}
-            className="text-xs text-blue-600 hover:text-blue-800 hover:bg-blue-50 gap-1 h-8"
+      {/* Main Content Area */}
+      {!hasFiltered ? (
+        /* Empty State before Filter clicked */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 md:p-24 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <div className="text-slate-400 mb-3">
+            <Filter className="w-14 h-14 stroke-[1.25] text-slate-400" />
+          </div>
+          <p className="text-slate-400 text-sm font-medium">Please apply filters to view reports</p>
+        </div>
+      ) : isLoading ? (
+        /* Loading Skeleton */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <Loader2 className="w-10 h-10 animate-spin text-[#0047AB] mb-3" />
+          <p className="text-slate-600 text-sm font-medium">Loading Appointment Reports...</p>
+        </div>
+      ) : errorMessage ? (
+        /* Error Message */
+        <div className="bg-white rounded-xl border border-rose-200 p-8 shadow-xs text-center">
+          <p className="text-rose-600 text-sm font-medium mb-3">{errorMessage}</p>
+          <button
+            onClick={() => handleApplyFilters()}
+            className="px-4 py-1.5 bg-[#0047AB] text-white text-xs font-semibold rounded-md shadow-xs hover:bg-[#003785]"
           >
-            Go to Operational Calendar
-            <ExternalLink className="w-3.5 h-3.5" />
-          </Button>
+            Retry
+          </button>
         </div>
+      ) : (
+        /* Filtered Data Layout */
+        <div className="shadow-sm rounded-xl overflow-hidden border border-slate-200/90 mb-8 bg-white">
+          {/* Royal Blue Banner Header */}
+          <div className="bg-[#0047AB] text-white px-5 py-3 flex flex-wrap items-center justify-between gap-3 rounded-t-xl">
+            <div className="flex items-center gap-2.5 font-bold text-sm tracking-wide text-white">
+              <CalendarCheck className="w-4 h-4 stroke-[2.5]" />
+              <span>Appointment Audit Reports ({records.length} records)</span>
+            </div>
 
-        {records.length === 0 ? (
-          <div className="p-16 text-center text-slate-500">
-            <CalendarRange className="w-10 h-10 mx-auto text-slate-300 mb-2 stroke-1" />
-            <p className="text-sm font-semibold">No appointments match the selected criteria</p>
-            <p className="text-xs text-slate-400 mt-1">Try widening the scheduled date window or removing filters.</p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                className="bg-[#009688] hover:bg-[#00897B] active:bg-[#00796B] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>CSV</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="bg-[#DC2626] hover:bg-[#B91C1C] active:bg-[#991B1B] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>PDF</span>
+              </button>
+              <button
+                type="button"
+                onClick={handlePrint}
+                className="bg-[#4B5563] hover:bg-[#374151] active:bg-[#1F2937] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Print</span>
+              </button>
+            </div>
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
+
+          {/* Table Container */}
+          <div className="bg-white overflow-x-auto rounded-b-xl border-t border-blue-200/40">
+            <table className="w-full text-left border-collapse min-w-[1100px] font-['Inter',sans-serif] text-[13px] antialiased">
               <thead>
-                <tr className="border-b border-slate-200 bg-slate-50/75 text-slate-600 font-semibold uppercase tracking-wider text-[11px]">
-                  <th className="py-3 px-4">Scheduled Date</th>
-                  <th className="py-3 px-4">Ref #</th>
-                  <th className="py-3 px-4">Customer</th>
-                  <th className="py-3 px-4">Branch</th>
-                  <th className="py-3 px-4">Services & Staff</th>
-                  <th className="py-3 px-4 text-right">Quoted Value</th>
-                  <th className="py-3 px-4">Status</th>
-                  <th className="py-3 px-4">Billing State</th>
-                  <th className="py-3 px-4">Linked Invoice</th>
-                  <th className="py-3 px-4 text-right">Invoice Net</th>
+                <tr className="bg-[#EAF2FB] border-b border-blue-100 text-[#475569] font-medium text-[13px]">
+                  <th className="py-3.5 px-4">Scheduled Date</th>
+                  <th className="py-3.5 px-4">Ref #</th>
+                  <th className="py-3.5 px-4">Customer</th>
+                  <th className="py-3.5 px-4">Campus</th>
+                  <th className="py-3.5 px-4">Services & Staff</th>
+                  <th className="py-3.5 px-4 text-right">Quoted Value</th>
+                  <th className="py-3.5 px-4">Status</th>
+                  <th className="py-3.5 px-4">Billing State</th>
+                  <th className="py-3.5 px-4">Linked Invoice</th>
+                  <th className="py-3.5 px-4 text-right">Invoice Net</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
-                {records.map((r) => {
-                  const cfg = STATUS_CONFIG[r.status] || STATUS_CONFIG.CONFIRMED;
-                  const isBilled = r.billingStatus === 'BILLED';
-
-                  return (
-                    <tr key={r.id} className="hover:bg-slate-50/60 transition-colors">
-                      {/* Scheduled Date */}
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        <span className="font-bold text-slate-900 block">{r.date}</span>
+              <tbody className="divide-y divide-dashed divide-slate-200">
+                {records.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="py-12 text-center text-slate-400">
+                      No appointments found matching the selected criteria.
+                    </td>
+                  </tr>
+                ) : (
+                  records.map((r) => (
+                    <tr key={r.id} className="hover:bg-blue-50/20 transition-colors border-b border-dashed border-slate-200">
+                      <td className="py-3.5 px-4 font-semibold text-[#0B2545] whitespace-nowrap">
+                        {r.date}
                       </td>
-
-                      {/* Ref */}
-                      <td className="py-3 px-4 whitespace-nowrap font-mono text-slate-600 text-[11px]">
+                      <td className="py-3.5 px-4 font-mono text-[12px] text-slate-600 whitespace-nowrap">
                         {r.appointmentNumber || r.id.slice(-6)}
                       </td>
-
-                      {/* Customer */}
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        <span className="font-bold text-slate-900 block">{r.clientName}</span>
-                        <span className="text-slate-500 text-[11px]">{formatPhoneNumber(r.clientPhone)}</span>
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        <div className="font-semibold text-slate-900">{r.clientName}</div>
+                        <div className="text-[11px] text-slate-500">
+                          {formatPhoneNumber(r.clientPhone)}
+                        </div>
                       </td>
-
-                      {/* Branch */}
-                      <td className="py-3 px-4 whitespace-nowrap text-slate-700">
+                      <td className="py-3.5 px-4 text-slate-600 whitespace-nowrap">
                         {r.branchName || r.branchId}
                       </td>
-
-                      {/* Services & Staff */}
-                      <td className="py-3 px-4 max-w-xs">
+                      <td className="py-3.5 px-4 max-w-xs">
                         <div className="font-medium text-slate-800 truncate" title={r.serviceSummary}>
                           {r.serviceSummary}
                         </div>
@@ -701,166 +657,64 @@ export const AppointmentReportPage: React.FC = () => {
                           Stylists: {r.staffSummary}
                         </div>
                       </td>
-
-                      {/* Quoted Price */}
-                      <td className="py-3 px-4 text-right font-bold text-slate-900 whitespace-nowrap">
-                        {formatCurrency(r.quotedPrice)}
+                      <td className="py-3.5 px-4 text-right font-semibold text-slate-900 whitespace-nowrap">
+                        {formatPKR(r.quotedPrice)}
                       </td>
-
-                      {/* Status */}
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${cfg.bg} ${cfg.text} ${cfg.border}`}>
-                          {cfg.label}
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-[#0047AB] border border-blue-200">
+                          {r.status}
                         </span>
                       </td>
-
-                      {/* Billing State */}
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        {isBilled ? (
-                          <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300 font-semibold text-[10px]">
-                            Billed
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-slate-600 border-slate-300 font-semibold text-[10px]">
-                            Unbilled
-                          </Badge>
-                        )}
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold ${
+                            r.billingStatus === 'BILLED'
+                              ? 'bg-blue-100 text-[#0B2545]'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {r.billingStatus}
+                        </span>
                       </td>
-
-                      {/* Linked Invoice */}
-                      <td className="py-3 px-4 whitespace-nowrap text-[11px]">
-                        {r.linkedInvoiceNumber ? (
-                          <div>
-                            <span className="font-bold text-slate-900 block">{r.linkedInvoiceNumber}</span>
-                            <span className="text-slate-500 text-[10px]">Status: {r.invoicePaymentStatus || 'PAID'}</span>
-                          </div>
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
+                      <td className="py-3.5 px-4 font-mono text-[12px] text-slate-600 whitespace-nowrap">
+                        {r.linkedInvoiceNumber || '—'}
                       </td>
-
-                      {/* Actual Invoice Net Sales */}
-                      <td className="py-3 px-4 text-right font-bold whitespace-nowrap">
-                        {r.actualNetSales ? (
-                          <span className="text-emerald-700">{formatCurrency(r.actualNetSales)}</span>
-                        ) : (
-                          <span className="text-slate-400 font-normal">PKR 0</span>
-                        )}
+                      <td className="py-3.5 px-4 text-right font-bold text-[#0B2545] whitespace-nowrap">
+                        {formatPKR(r.actualNetSales || 0)}
                       </td>
                     </tr>
-                  );
-                })}
+                  ))
+                )}
               </tbody>
+              {records.length > 0 && (
+                <tfoot className="bg-[#F8FAFC] font-bold text-[#0B2545] border-t-2 border-slate-200 text-[13px]">
+                  <tr>
+                    <td className="py-3.5 px-4 text-left">Totals</td>
+                    <td className="py-3.5 px-4">—</td>
+                    <td className="py-3.5 px-4">{records.length} Appointments</td>
+                    <td className="py-3.5 px-4">—</td>
+                    <td className="py-3.5 px-4">—</td>
+                    <td className="py-3.5 px-4 text-right text-[#0047AB]">
+                      {formatPKR(summary.totalQuotedValue)}
+                    </td>
+                    <td className="py-3.5 px-4">—</td>
+                    <td className="py-3.5 px-4">—</td>
+                    <td className="py-3.5 px-4">—</td>
+                    <td className="py-3.5 px-4 text-right text-[#0B2545]">
+                      {formatPKR(summary.totalActualNetSales)}
+                    </td>
+                  </tr>
+                </tfoot>
+              )}
             </table>
           </div>
-        )}
+        </div>
+      )}
+
+      {/* Footer Branding */}
+      <div className="mt-8 text-center text-xs text-slate-400 pb-6">
+        © iSysware Management System
       </div>
-
-      {/* Print Preview Modal */}
-      <Dialog open={showPrintModal} onOpenChange={setShowPrintModal}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="text-base font-bold text-slate-900 flex items-center justify-between">
-              <span>Appointment Report - Print Preview</span>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => window.print()}
-                className="bg-blue-600 hover:bg-blue-700 text-white text-xs gap-1.5"
-              >
-                <Printer className="w-3.5 h-3.5" />
-                Print Now
-              </Button>
-            </DialogTitle>
-          </DialogHeader>
-
-          <div className="p-6 bg-white space-y-6 text-xs text-slate-800" id="appointment-report-print-area">
-            {/* Report Header */}
-            <div className="border-b pb-4">
-              <div className="flex justify-between items-start">
-                <div>
-                  <h2 className="text-xl font-bold text-slate-900">iSysware SalonOS</h2>
-                  <p className="text-slate-500 font-medium">Dedicated Appointment Audit & Conversion Statement</p>
-                </div>
-                <div className="text-right">
-                  <span className="font-bold text-slate-900 block">{branchNameDisplay}</span>
-                  <span className="text-slate-500 text-[11px] block">Range: {startDate} to {endDate}</span>
-                  <span className="text-slate-400 text-[10px] block">Printed: {new Date().toLocaleString()}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Summary KPIs Table */}
-            <div className="grid grid-cols-4 gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
-              <div>
-                <span className="text-[10px] font-semibold text-slate-500 uppercase block">Total Bookings</span>
-                <span className="text-sm font-bold text-slate-900">{summary.totalAppointments}</span>
-              </div>
-              <div>
-                <span className="text-[10px] font-semibold text-slate-500 uppercase block">Completed</span>
-                <span className="text-sm font-bold text-emerald-700">{summary.completedCount}</span>
-              </div>
-              <div>
-                <span className="text-[10px] font-semibold text-slate-500 uppercase block">Total Quoted Value</span>
-                <span className="text-sm font-bold text-slate-900">{formatCurrency(summary.totalQuotedValue)}</span>
-              </div>
-              <div>
-                <span className="text-[10px] font-semibold text-slate-500 uppercase block">Actual POS Net Sales</span>
-                <span className="text-sm font-bold text-emerald-700">{formatCurrency(summary.totalActualNetSales)}</span>
-              </div>
-            </div>
-
-            {/* Detailed Table */}
-            <div>
-              <h4 className="font-bold text-slate-900 mb-2">Scheduled Reservations Breakdown ({records.length} Records)</h4>
-              <table className="w-full text-left text-[11px] border-collapse border border-slate-200">
-                <thead>
-                  <tr className="bg-slate-100 border-b border-slate-200 text-slate-700">
-                    <th className="p-1.5">Scheduled Date</th>
-                    <th className="p-1.5">Customer</th>
-                    <th className="p-1.5">Services & Staff</th>
-                    <th className="p-1.5">Status</th>
-                    <th className="p-1.5">Billing</th>
-                    <th className="p-1.5 text-right">Quoted Value</th>
-                    <th className="p-1.5 text-right">Actual Net Sales</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {records.map((r) => (
-                    <tr key={r.id}>
-                      <td className="p-1.5 whitespace-nowrap">{r.date} {r.startTime}</td>
-                      <td className="p-1.5">{r.clientName}</td>
-                      <td className="p-1.5">{r.serviceSummary} ({r.staffSummary})</td>
-                      <td className="p-1.5">{r.status}</td>
-                      <td className="p-1.5">{r.billingStatus}</td>
-                      <td className="p-1.5 text-right font-semibold">{formatCurrency(r.quotedPrice)}</td>
-                      <td className="p-1.5 text-right font-bold text-emerald-700">
-                        {formatCurrency(r.actualNetSales || 0)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="pt-4 border-t border-slate-200 text-[10px] text-slate-400">
-              iSysware SalonOS • Enterprise Multi-Branch Salon Management Platform • Audit Verification Copy
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setShowPrintModal(false)}
-              className="text-xs"
-            >
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 };

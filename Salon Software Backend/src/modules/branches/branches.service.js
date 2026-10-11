@@ -30,6 +30,27 @@ const assertCodeFree = async (tx, code, exceptId) => {
   if (clash) throw conflict('BRANCH_CODE_TAKEN', `Branch code '${code}' is already registered to another branch.`);
 };
 
+const generateNextBranchCode = async (tx) => {
+  const branches = await tx.branch.findMany({ select: { code: true } });
+  let maxNum = 0;
+  const existing = new Set(branches.map((b) => (b.code || '').trim().toUpperCase()));
+  for (const b of branches) {
+    if (!b.code) continue;
+    const m = b.code.match(/(\d+)$/);
+    if (m) {
+      const val = parseInt(m[1], 10);
+      if (!isNaN(val) && val > maxNum) maxNum = val;
+    }
+  }
+  let nextNum = maxNum + 1;
+  let candidate = `BR-${String(nextNum).padStart(2, '0')}`;
+  while (existing.has(candidate)) {
+    nextNum++;
+    candidate = `BR-${String(nextNum).padStart(2, '0')}`;
+  }
+  return candidate;
+};
+
 // Branch metadata (names, codes, tax config) is needed by every portal for headers,
 // receipts and selectors, so all authenticated users can list branches (same as the mock).
 export const listBranches = async () => {
@@ -45,13 +66,14 @@ export const getBranch = async (id) => {
 
 export const createBranch = async (input, actor) => {
   return prisma.$transaction(async (tx) => {
-    await assertCodeFree(tx, input.code);
+    const code = input.code ? input.code.trim().toUpperCase() : await generateNextBranchCode(tx);
+    await assertCodeFree(tx, code);
 
     // New branches start with ZERO opening float and tax disabled until explicitly configured.
     const branch = await tx.branch.create({
       data: {
         name:     input.name,
-        code:     input.code,
+        code,
         address:  input.address || 'Address Pending',
         city:     input.city || 'Lahore',
         phone:    input.phone || '+92 (42) 0000-000',
@@ -182,5 +204,125 @@ export const deactivateBranch = async (id, actor) => {
       userId: actor.id, userName: actor.name, action: 'BRANCH_DEACTIVATED', entity: 'Branch', entityId: id, branchId: id,
     });
     return { success: true, message: `Branch '${branch.name}' has been deactivated.` };
+  });
+};
+
+export const deleteBranch = async (id, actor) => {
+  if (actor.role !== 'SUPER_ADMIN') {
+    throw forbidden('FORBIDDEN', 'Access Denied: Only Super Administrators can delete salon branches.');
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const totalBranches = await tx.branch.count();
+    if (totalBranches <= 1) {
+      throw badRequest('CANNOT_DELETE_LAST_BRANCH', 'Cannot delete the only remaining branch in the system.');
+    }
+
+    const branch = await getOrThrow(tx, id);
+
+    // 1. Unassign users linked to this branch
+    await tx.user.updateMany({ where: { branchId: id }, data: { branchId: null } });
+
+    // 2. Refunds & Invoices
+    await tx.refundLine.deleteMany({ where: { refund: { invoice: { branchId: id } } } }).catch(() => {});
+    await tx.invoiceRefund.deleteMany({ where: { invoice: { branchId: id } } }).catch(() => {});
+    await tx.invoiceLineBatch.deleteMany({ where: { line: { invoice: { branchId: id } } } }).catch(() => {});
+    await tx.invoiceLineComponent.deleteMany({ where: { line: { invoice: { branchId: id } } } }).catch(() => {});
+    await tx.invoiceLine.deleteMany({ where: { invoice: { branchId: id } } }).catch(() => {});
+    await tx.invoicePayment.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.commissionEvent.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.invoice.deleteMany({ where: { branchId: id } }).catch(() => {});
+
+    // 3. Appointments
+    await tx.appointmentPackageComponent.deleteMany({ where: { appointmentItem: { appointment: { branchId: id } } } }).catch(() => {});
+    await tx.appointmentItem.deleteMany({ where: { appointment: { branchId: id } } }).catch(() => {});
+    await tx.appointmentReschedule.deleteMany({ where: { appointment: { branchId: id } } }).catch(() => {});
+    await tx.appointment.deleteMany({ where: { branchId: id } }).catch(() => {});
+
+    // 4. Tips & Commissions
+    await tx.tipPayout.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.tipAllocation.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.tipReceipt.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.commissionPayment.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.commissionStatement.deleteMany({ where: { run: { branchId: id } } }).catch(() => {});
+    await tx.commissionRun.deleteMany({ where: { branchId: id } }).catch(() => {});
+
+    // 5. Staff Loans & Payroll
+    await tx.advanceRecovery.deleteMany({ where: { advance: { branchId: id } } }).catch(() => {});
+    await tx.salaryAdvance.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.payrollAdjustment.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.payrollPayment.deleteMany({ where: { payslip: { run: { branchId: id } } } }).catch(() => {});
+    await tx.payslip.deleteMany({ where: { run: { branchId: id } } }).catch(() => {});
+    await tx.payrollRun.deleteMany({ where: { branchId: id } }).catch(() => {});
+
+    // 6. Attendance & Overtime
+    await tx.attendanceCorrection.deleteMany({ where: { record: { branchId: id } } }).catch(() => {});
+    await tx.attendancePunch.deleteMany({ where: { record: { branchId: id } } }).catch(() => {});
+    await tx.attendanceRecord.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.leaveRecord.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.overtimeRecord.deleteMany({ where: { branchId: id } }).catch(() => {});
+
+    // 7. Inventory & Purchases
+    await tx.stockSettlementLine.deleteMany({ where: { settlement: { branchId: id } } }).catch(() => {});
+    await tx.stockSettlement.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.supplierReturnLine.deleteMany({ where: { return: { branchId: id } } }).catch(() => {});
+    await tx.supplierReturn.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.purchaseLine.deleteMany({ where: { purchase: { branchId: id } } }).catch(() => {});
+    await tx.purchase.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.supplierPayment.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.supplierLedger.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.supplier.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.stockMovement.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.inventoryBatch.deleteMany({ where: { branchId: id } }).catch(() => {});
+
+    // 8. Expenses, Cash Drawers & Accounts
+    await tx.expense.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.expenseCategory.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.cashVarianceAdjustment.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.settlement.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.cashTransfer.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.drawerMovement.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.cashDrawer.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.accountMovement.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.paymentAccount.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.taxRule.deleteMany({ where: { branchId: id } }).catch(() => {});
+
+    // 9. Catalogue & Packages
+    await tx.packageComponent.deleteMany({ where: { package: { branchId: id } } }).catch(() => {});
+    await tx.package.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.service.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.serviceCategory.deleteMany({ where: { branchId: id } }).catch(() => {});
+
+    // 10. Staff
+    await tx.staffCompensationHistory.deleteMany({ where: { staff: { branchId: id } } }).catch(() => {});
+    await tx.staffAllowance.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.staff.deleteMany({ where: { branchId: id } }).catch(() => {});
+
+    // 11. Clients & Sequences
+    await tx.client.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.auditEvent.deleteMany({ where: { branchId: id } }).catch(() => {});
+    await tx.sequence.deleteMany({
+      where: {
+        OR: [
+          { branchCode: branch.code },
+          { branchCode: { startsWith: `${branch.code}:` } },
+        ],
+      },
+    }).catch(() => {});
+
+    // 12. Delete Branch itself
+    await tx.branch.delete({ where: { id } });
+
+    await auditLog(tx, {
+      userId: actor.id,
+      userName: actor.name,
+      action: 'BRANCH_DELETED',
+      entity: 'Branch',
+      entityId: id,
+      branchId: null,
+      before: branch,
+    });
+
+    return { success: true, message: `Branch '${branch.name}' (${branch.code}) has been permanently deleted.` };
   });
 };
