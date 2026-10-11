@@ -934,6 +934,7 @@ export interface InvoiceLineItem {
     staffId: string;
     staffName: string;
     staffCommissionRate?: number;
+    allocatedAmount?: number;
   }>;
   packageComponents?: InvoiceLineItemComponent[];
   packageComponentsSnapshot?: InvoiceLineItemComponent[];
@@ -1006,6 +1007,7 @@ export interface POSCartItem {
     staffId: string;
     staffName: string;
     staffCommissionRate: number;
+    allocatedAmount?: number;
   }>;
   packageComponents?: POSCartComponentAssignment[];
   batchId?: string;
