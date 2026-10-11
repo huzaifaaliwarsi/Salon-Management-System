@@ -184,7 +184,7 @@ export const PayrollPage: React.FC = () => {
 
       // Pre-select ungenerated active staff
       const genIds = new Set<string>();
-      runs.filter((r) => r.status !== 'CANCELLED').forEach((r) => {
+      runs.filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT').forEach((r) => {
         r.payslips.forEach((p) => genIds.add(p.staffId));
       });
       const ungen = staff.filter((s) => s.isActive && !genIds.has(s.id)).map((s) => s.id);
@@ -240,16 +240,22 @@ export const PayrollPage: React.FC = () => {
     return MONTHS.find((m) => m.value === selectedMonthNum)?.label || 'October';
   }, [selectedMonthNum]);
 
-  // Active staff in this branch
+  // Active staff in this branch (deduplicated by staff ID)
   const branchStaff = useMemo(() => {
-    return staffList.filter((s) => s.isActive);
+    const map = new Map<string, StaffMember>();
+    staffList.forEach((s) => {
+      if (s.isActive && !map.has(s.id)) {
+        map.set(s.id, s);
+      }
+    });
+    return Array.from(map.values());
   }, [staffList]);
 
-  // Set of staff IDs that already have a payslip in a non-cancelled run for current month
+  // Set of staff IDs that already have a finalized payslip in current month
   const generatedStaffIdSet = useMemo(() => {
     const set = new Set<string>();
     payrollRuns
-      .filter((r) => r.status !== 'CANCELLED' && r.month === `${selectedYear}-${selectedMonthNum}`)
+      .filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT' && r.month === `${selectedYear}-${selectedMonthNum}`)
       .forEach((r) => {
         r.payslips.forEach((p) => set.add(p.staffId));
       });
@@ -265,17 +271,26 @@ export const PayrollPage: React.FC = () => {
     return map;
   }, [salaryAdvances]);
 
-  // Payslips from non-cancelled runs for the selected month
+  // Payslips from finalized (non-draft, non-cancelled) runs for the selected month, strictly unique per employee
   const generatedPayslipRows = useMemo(() => {
-    const rows: { run: PayrollRun; payslip: PayslipRecord }[] = [];
+    const map = new Map<string, { run: PayrollRun; payslip: PayslipRecord }>();
     payrollRuns
-      .filter((r) => r.status !== 'CANCELLED' && r.month === `${selectedYear}-${selectedMonthNum}`)
+      .filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT' && r.month === `${selectedYear}-${selectedMonthNum}`)
       .forEach((r) => {
         r.payslips.forEach((p) => {
-          rows.push({ run: r, payslip: p });
+          if (!map.has(p.staffId)) {
+            map.set(p.staffId, { run: r, payslip: p });
+          } else {
+            const existing = map.get(p.staffId)!;
+            const rTime = new Date(r.finalizedAt || r.generatedAt).getTime();
+            const eTime = new Date(existing.run.finalizedAt || existing.run.generatedAt).getTime();
+            if (rTime > eTime) {
+              map.set(p.staffId, { run: r, payslip: p });
+            }
+          }
         });
       });
-    return rows;
+    return Array.from(map.values());
   }, [payrollRuns, selectedYear, selectedMonthNum]);
 
   const generatedTotals = useMemo(() => {
@@ -330,7 +345,7 @@ export const PayrollPage: React.FC = () => {
       setHasFiltered(true);
 
       const generatedStaffIds = new Set<string>();
-      runs.filter((r) => r.status !== 'CANCELLED').forEach((r) => {
+      runs.filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT').forEach((r) => {
         r.payslips.forEach((p) => generatedStaffIds.add(p.staffId));
       });
       const ungenerated = staff.filter((s) => s.isActive && !generatedStaffIds.has(s.id)).map((s) => s.id);
@@ -963,14 +978,12 @@ export const PayrollPage: React.FC = () => {
                 <table className="w-full text-left border-collapse min-w-[1100px]">
                   <thead>
                     <tr className="bg-[#f0f4f8] text-slate-700 text-xs font-semibold border-b border-slate-200">
-                      <th className="py-3 px-3 text-center">ID</th>
+                      <th className="py-3 px-3 text-center">#</th>
                       <th className="py-3 px-3 text-center">Photo</th>
                       <th className="py-3 px-4">Name</th>
                       <th className="py-3 px-3 text-center">Salary Month</th>
                       <th className="py-3 px-3 text-center">Present</th>
                       <th className="py-3 px-3 text-center">Absent</th>
-                      <th className="py-3 px-3 text-center">Late</th>
-                      <th className="py-3 px-3 text-center">Early Exit</th>
                       <th className="py-3 px-4 text-center">Basic</th>
                       <th className="py-3 px-4 text-center">Salary Generated</th>
                       <th className="py-3 px-4 text-center">Amount Paid</th>
@@ -983,7 +996,7 @@ export const PayrollPage: React.FC = () => {
                   <tbody className="divide-y divide-slate-100 text-sm">
                     {generatedPayslipRows.length === 0 ? (
                       <tr>
-                        <td colSpan={15} className="py-12 text-center text-slate-400 text-sm">
+                        <td colSpan={13} className="py-12 text-center text-slate-400 text-sm">
                           No salaries generated for {effectiveBranchName} ({monthLabel} {selectedYear}) yet. Select eligible staff above and click "Generate Salary".
                         </td>
                       </tr>
@@ -1003,9 +1016,9 @@ export const PayrollPage: React.FC = () => {
 
                         return (
                           <tr key={p.id} className="hover:bg-slate-50/80 transition-colors">
-                            {/* ID */}
+                            {/* # */}
                             <td className="py-3.5 px-3 text-center text-xs font-semibold text-slate-600">
-                              {idx + 109}
+                              {idx + 1}
                             </td>
 
                             {/* Photo */}
@@ -1039,20 +1052,6 @@ export const PayrollPage: React.FC = () => {
                             <td className="py-3.5 px-3 text-center">
                               <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#f44336] text-white font-bold text-xs shadow-xs">
                                 {p.absentDays ?? 0}
-                              </span>
-                            </td>
-
-                            {/* Late */}
-                            <td className="py-3.5 px-3 text-center">
-                              <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#ff9800] text-white font-bold text-xs shadow-xs">
-                                {p.lateDays ?? 0}
-                              </span>
-                            </td>
-
-                            {/* Early Exit */}
-                            <td className="py-3.5 px-3 text-center">
-                              <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#ff9800] text-white font-bold text-xs shadow-xs">
-                                {p.earlyExitDays ?? 0}
                               </span>
                             </td>
 
@@ -1139,7 +1138,7 @@ export const PayrollPage: React.FC = () => {
                   {generatedPayslipRows.length > 0 && (
                     <tfoot>
                       <tr className="bg-slate-50 font-bold border-t border-slate-200">
-                        <td colSpan={8} className="py-3.5 px-4 text-right text-slate-800 text-sm">
+                        <td colSpan={6} className="py-3.5 px-4 text-right text-slate-800 text-sm">
                           Total:
                         </td>
                         <td className="py-3.5 px-4 text-center text-[#1976d2] text-sm">
