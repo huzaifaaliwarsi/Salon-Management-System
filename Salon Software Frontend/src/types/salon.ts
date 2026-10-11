@@ -1645,6 +1645,8 @@ export interface PayrollPreviewOptions {
   startDate?: string;
   endDate?: string;
   compensationType?: CompensationType | 'ALL';
+  staffIds?: string[];
+  includeDaily?: boolean;
 }
 
 export interface PayrollRun {

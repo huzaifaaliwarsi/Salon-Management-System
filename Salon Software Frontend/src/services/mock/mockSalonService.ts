@@ -6685,7 +6685,7 @@ class MockSalonService implements SalonServiceContract {
     actor?: User,
     options?: PayrollPreviewOptions
   ): Promise<PayrollRun> {
-    if (options?.runType || options?.startDate || options?.endDate || options?.compensationType) {
+    if ((options?.runType && options.runType !== 'MONTHLY') || options?.startDate || options?.endDate || (options?.compensationType && options.compensationType !== 'ALL')) {
       throw new Error('Payroll periods and canonical commission require the live API (VITE_USE_MOCK=false).');
     }
     const authenticatedActor = this.getAuthenticatedActor(actor);
@@ -6707,7 +6707,11 @@ class MockSalonService implements SalonServiceContract {
 
     const policy = await this.getPayrollPolicy(branchId);
     const staffList = store.staff.filter(
-      (s: StaffMember) => s.branchId === branchId && s.isActive && (!staffId || s.id === staffId)
+      (s: StaffMember) =>
+        s.branchId === branchId &&
+        s.isActive &&
+        (!staffId || s.id === staffId) &&
+        (!options?.staffIds || options.staffIds.includes(s.id))
     );
 
     const holidays = (store.branchHolidays || []).filter((h: BranchHoliday) => h.branchId === branchId);

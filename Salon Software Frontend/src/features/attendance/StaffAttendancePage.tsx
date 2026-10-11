@@ -492,9 +492,9 @@ export const StaffAttendancePage: React.FC = () => {
         {/* ── FILTER CARD (Matching User Reference) ────────────────────────── */}
         <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 items-end">
-            {/* Campus / Branch Selector */}
+            {/* Branch Selector */}
             <div>
-              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Campus / Branch</label>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Branch</label>
               <div className="relative">
                 <select
                   value={selectedBranchId}
@@ -583,7 +583,7 @@ export const StaffAttendancePage: React.FC = () => {
           {/* Branch Pill Badge */}
           <div>
             <span className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-[#0047AB] text-white text-xs font-semibold shadow-xs">
-              Campus: {currentBranch?.name || 'Main Branch'}
+              Branch: {currentBranch?.name || 'Main Branch'}
             </span>
           </div>
 

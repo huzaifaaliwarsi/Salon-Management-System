@@ -97,6 +97,8 @@ const evaluateBranchMonth = async (tx, actor, branchId, month, staffId, options 
   const endDate = options.endDate || (options.runType === 'DAILY' ? startDate : defaultEnd);
   const runType = options.runType || (startDate === endDate ? 'DAILY' : (startDate !== defaultStart || endDate !== defaultEnd) ? 'CUSTOM_RANGE' : 'MONTHLY');
   const compensationType = options.compensationType;
+  const staffIds = options.staffIds;
+  const includeDaily = options.includeDaily ?? true;
 
   const from = dateOnly(startDate);
   const to = dateOnly(endDate);
@@ -131,7 +133,7 @@ const evaluateBranchMonth = async (tx, actor, branchId, month, staffId, options 
     where: {
       branchId,
       joiningDate: { lte: to },
-      ...(staffId ? { id: staffId } : {}),
+      ...(staffIds && staffIds.length ? { id: { in: staffIds } } : staffId ? { id: staffId } : {}),
       OR: [{ isActive: true }, { exitDate: { gte: from } }],
     },
     include: { compensationHistory: true },
@@ -169,7 +171,7 @@ const evaluateBranchMonth = async (tx, actor, branchId, month, staffId, options 
     if (runType === 'DAILY') {
       if (!isDaily) continue;
     } else if (runType === 'MONTHLY') {
-      if (!isMonthly) continue;
+      if (!isMonthly && !includeDaily) continue;
     }
 
     const staffFinalizedDates = alreadyFinalizedByStaff.get(s.id) || new Set();
@@ -218,7 +220,7 @@ export const listRuns = async (actor, { branchId, month } = {}) => {
 
 // ── Preview / finalize / cancel ──────────────────────────────────────────────
 
-export const generatePreview = async (actor, { branchId: requested, month: reqMonth, staffId, startDate, endDate, runType, compensationType }) => {
+export const generatePreview = async (actor, { branchId: requested, month: reqMonth, staffId, staffIds, startDate, endDate, runType, compensationType, includeDaily }) => {
   noAccountant(actor);
   const branchId = resolveWriteBranch(actor, requested, 'Access Denied: Cannot generate payroll for another branch.');
   return prisma.$transaction(async (tx) => {
@@ -247,6 +249,8 @@ export const generatePreview = async (actor, { branchId: requested, month: reqMo
       endDate: effEndDate,
       runType: effRunType,
       compensationType,
+      staffIds,
+      includeDaily: includeDaily ?? true,
     });
     if (!results.length) throw badRequest('NO_ELIGIBLE_STAFF', 'No employees match this payroll period and compensation type. Daily payroll includes daily contracts; monthly payroll includes monthly contracts. Use a custom range for a mixed group.');
 
@@ -269,6 +273,8 @@ export const generatePreview = async (actor, { branchId: requested, month: reqMo
           runType: effRunType,
           compensationTypeFilter: compensationType || 'ALL',
           staffIdFilter: staffId || null,
+          staffIdsFilter: staffIds || null,
+          includeDaily: includeDaily ?? true,
         },
         generatedByUserId: actor.id,
         generatedByName: actor.name,
@@ -308,6 +314,8 @@ export const finalizeRun = async (actor, runId) => {
         endDate: draft.policySnapshot?.endDate,
         runType: draft.policySnapshot?.runType,
         compensationType: draft.policySnapshot?.compensationTypeFilter,
+        staffIds: draft.policySnapshot?.staffIdsFilter || undefined,
+        includeDaily: draft.policySnapshot?.includeDaily ?? true,
         excludeRunId: runId,
       }
     );

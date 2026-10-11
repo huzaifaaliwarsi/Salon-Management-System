@@ -24,10 +24,12 @@ router.post('/preview', validate(z.object({
   branchId: z.string().optional(),
   month: month.optional(),
   staffId: z.string().optional(),
+  staffIds: z.array(z.string()).optional(),
   startDate: z.string().refine(isYmd, 'startDate must be a valid YYYY-MM-DD date').optional(),
   endDate: z.string().refine(isYmd, 'endDate must be a valid YYYY-MM-DD date').optional(),
   runType: z.enum(['MONTHLY', 'DAILY', 'CUSTOM_RANGE']).optional(),
   compensationType: z.enum(['ALL', 'DAILY_SALARY', 'DAILY_PLUS_COMMISSION', 'MONTHLY_SALARY', 'MONTHLY_PLUS_COMMISSION', 'COMMISSION_ONLY']).optional(),
+  includeDaily: z.boolean().optional(),
 })), send((req) => s.generatePreview(req.user, req.body), 201));
 router.post('/runs/:id/finalize', send((req) => s.finalizeRun(req.user, req.params.id)));
 router.post('/runs/:id/cancel', validate(reason), send((req) => s.cancelRun(req.user, req.params.id, req.body.reason)));
