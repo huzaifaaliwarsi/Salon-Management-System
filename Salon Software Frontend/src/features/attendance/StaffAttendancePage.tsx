@@ -91,7 +91,8 @@ export const StaffAttendancePage: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState<string>(initialDate);
 
   // Data state
-  const [loading, setLoading] = useState<boolean>(true);
+  const [hasFiltered, setHasFiltered] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
   const [rawStaffList, setRawStaffList] = useState<StaffMember[]>([]);
   const [rawAttendanceList, setRawAttendanceList] = useState<AttendanceRecord[]>([]);
@@ -199,7 +200,12 @@ export const StaffAttendancePage: React.FC = () => {
   };
 
   useEffect(() => {
-    loadAttendanceData(effectiveBranchId, selectedDate);
+    if (!effectiveBranchId) return;
+    salonService.getStaff(effectiveBranchId).then((allStaff) => {
+      setRawStaffList(allStaff.filter((s) => s.isActive));
+    }).catch((err) => console.error(err));
+    setHasFiltered(false);
+    setRows([]);
   }, [effectiveBranchId]);
 
   // Unique staff categories derived dynamically from active staff
@@ -224,6 +230,7 @@ export const StaffAttendancePage: React.FC = () => {
 
   // Handler: Manual Filter Button Click
   const handleApplyFilter = () => {
+    setHasFiltered(true);
     loadAttendanceData(effectiveBranchId, selectedDate);
   };
 
@@ -547,7 +554,11 @@ export const StaffAttendancePage: React.FC = () => {
               <input
                 type="date"
                 value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
+                onChange={(e) => {
+                  setSelectedDate(e.target.value);
+                  setHasFiltered(false);
+                  setRows([]);
+                }}
                 className="w-full h-9 text-xs border border-slate-300 rounded-lg px-3 bg-white text-slate-800 font-medium focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors cursor-pointer"
               />
             </div>
@@ -580,8 +591,9 @@ export const StaffAttendancePage: React.FC = () => {
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
+              disabled={!hasFiltered || loading || visibleRows.length === 0}
               onClick={() => handleMarkAll('PRESENT')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#10b981] hover:bg-[#059669] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#10b981] hover:bg-[#059669] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Check className="w-3.5 h-3.5 stroke-[2.5]" />
               <span>Mark All Present</span>
@@ -589,8 +601,9 @@ export const StaffAttendancePage: React.FC = () => {
 
             <button
               type="button"
+              disabled={!hasFiltered || loading || visibleRows.length === 0}
               onClick={() => handleMarkAll('ABSENT')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#ef4444] hover:bg-[#dc2626] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#ef4444] hover:bg-[#dc2626] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <X className="w-3.5 h-3.5 stroke-[2.5]" />
               <span>Mark All Absent</span>
@@ -598,8 +611,9 @@ export const StaffAttendancePage: React.FC = () => {
 
             <button
               type="button"
+              disabled={!hasFiltered || loading || visibleRows.length === 0}
               onClick={() => handleMarkAll('HOLIDAY')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#f59e0b] hover:bg-[#d97706] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#f59e0b] hover:bg-[#d97706] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Calendar className="w-3.5 h-3.5" />
               <span>Mark All Holiday</span>
@@ -607,8 +621,9 @@ export const StaffAttendancePage: React.FC = () => {
 
             <button
               type="button"
+              disabled={!hasFiltered || loading || visibleRows.length === 0}
               onClick={() => handleMarkAll('WEEKLY_OFF')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Calendar className="w-3.5 h-3.5" />
               <span>Mark All Sunday / Off</span>
@@ -634,7 +649,19 @@ export const StaffAttendancePage: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {loading ? (
+                {!hasFiltered ? (
+                  <tr>
+                    <td colSpan={9} className="py-20 text-center text-slate-500">
+                      <div className="max-w-md mx-auto space-y-2">
+                        <Filter className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                        <p className="font-semibold text-slate-700 text-sm">No Records Displayed</p>
+                        <p className="text-xs text-slate-400">
+                          Please select criteria above and click <span className="font-semibold text-[#0047AB]">= Filter</span> to load staff attendance records.
+                        </p>
+                      </div>
+                    </td>
+                  </tr>
+                ) : loading ? (
                   <tr>
                     <td colSpan={9} className="py-12 text-center text-slate-400">
                       <Loader2 className="w-6 h-6 animate-spin mx-auto text-[#0047AB] mb-2" />
@@ -644,7 +671,7 @@ export const StaffAttendancePage: React.FC = () => {
                 ) : visibleRows.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="py-12 text-center text-slate-400">
-                      No active staff found for this branch or category.
+                      No active staff found for this branch or category on {selectedDate}.
                     </td>
                   </tr>
                 ) : (
@@ -817,8 +844,8 @@ export const StaffAttendancePage: React.FC = () => {
             <button
               type="button"
               onClick={handleSaveAttendance}
-              disabled={saving || loading}
-              className="w-full sm:w-auto px-7 py-2.5 rounded-lg bg-[#10b981] hover:bg-[#059669] active:bg-[#047857] text-white text-xs font-bold shadow-sm flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+              disabled={!hasFiltered || saving || loading || visibleRows.length === 0}
+              className="w-full sm:w-auto px-7 py-2.5 rounded-lg bg-[#10b981] hover:bg-[#059669] active:bg-[#047857] text-white text-xs font-bold shadow-sm flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {saving ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
