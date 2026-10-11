@@ -251,16 +251,28 @@ export const PayrollPage: React.FC = () => {
     return Array.from(map.values());
   }, [staffList]);
 
-  // Set of staff IDs that already have a finalized payslip in current month
+  const periodLabel = useMemo(() => {
+    if (runType === 'DAILY') return startDate;
+    if (runType === 'CUSTOM_RANGE') return `${startDate} to ${endDate}`;
+    return `${monthLabel} ${selectedYear}`;
+  }, [runType, startDate, endDate, monthLabel, selectedYear]);
+
+  // Set of staff IDs that already have a finalized payslip in current month/run
   const generatedStaffIdSet = useMemo(() => {
     const set = new Set<string>();
+    const targetMonth = runType === 'MONTHLY' ? `${selectedYear}-${selectedMonthNum}` : startDate.slice(0, 7);
     payrollRuns
-      .filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT' && r.month === `${selectedYear}-${selectedMonthNum}`)
+      .filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT' && r.month === targetMonth)
+      .filter((r) => {
+        if (runType === 'DAILY') return r.runType === 'DAILY' && r.startDate === startDate;
+        if (runType === 'CUSTOM_RANGE') return r.runType === 'CUSTOM_RANGE' && r.startDate === startDate && r.endDate === endDate;
+        return r.runType === 'MONTHLY' || !r.runType;
+      })
       .forEach((r) => {
         r.payslips.forEach((p) => set.add(p.staffId));
       });
     return set;
-  }, [payrollRuns, selectedYear, selectedMonthNum]);
+  }, [payrollRuns, runType, selectedYear, selectedMonthNum, startDate, endDate]);
 
   // Active advance map by staffId
   const staffLoanMap = useMemo(() => {
@@ -271,11 +283,17 @@ export const PayrollPage: React.FC = () => {
     return map;
   }, [salaryAdvances]);
 
-  // Payslips from finalized (non-draft, non-cancelled) runs for the selected month, strictly unique per employee
+  // Payslips from finalized (non-draft, non-cancelled) runs for the selected month / period, strictly unique per employee
   const generatedPayslipRows = useMemo(() => {
     const map = new Map<string, { run: PayrollRun; payslip: PayslipRecord }>();
+    const targetMonth = runType === 'MONTHLY' ? `${selectedYear}-${selectedMonthNum}` : startDate.slice(0, 7);
     payrollRuns
-      .filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT' && r.month === `${selectedYear}-${selectedMonthNum}`)
+      .filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT' && r.month === targetMonth)
+      .filter((r) => {
+        if (runType === 'DAILY') return r.runType === 'DAILY' && r.startDate === startDate;
+        if (runType === 'CUSTOM_RANGE') return r.runType === 'CUSTOM_RANGE' && r.startDate === startDate && r.endDate === endDate;
+        return r.runType === 'MONTHLY' || !r.runType;
+      })
       .forEach((r) => {
         r.payslips.forEach((p) => {
           if (!map.has(p.staffId)) {
@@ -291,7 +309,7 @@ export const PayrollPage: React.FC = () => {
         });
       });
     return Array.from(map.values());
-  }, [payrollRuns, selectedYear, selectedMonthNum]);
+  }, [payrollRuns, runType, selectedYear, selectedMonthNum, startDate, endDate]);
 
   const generatedTotals = useMemo(() => {
     let basic = 0;
@@ -332,8 +350,12 @@ export const PayrollPage: React.FC = () => {
     try {
       setActionLoading(true);
       setFeedback(null);
-      const targetMonth = `${selectedYear}-${selectedMonthNum}`;
+      const targetMonth = runType === 'MONTHLY' ? `${selectedYear}-${selectedMonthNum}` : startDate.slice(0, 7);
       setSelectedMonth(targetMonth);
+      if (runType !== 'MONTHLY') {
+        setSelectedYear(startDate.slice(0, 4));
+        setSelectedMonthNum(startDate.slice(5, 7));
+      }
       const [runs, staff, advances] = await Promise.all([
         salonService.getPayrollRuns(effectiveBranchId, targetMonth, user),
         salonService.getStaff(effectiveBranchId),
@@ -345,9 +367,16 @@ export const PayrollPage: React.FC = () => {
       setHasFiltered(true);
 
       const generatedStaffIds = new Set<string>();
-      runs.filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT').forEach((r) => {
-        r.payslips.forEach((p) => generatedStaffIds.add(p.staffId));
-      });
+      runs
+        .filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT')
+        .filter((r) => {
+          if (runType === 'DAILY') return r.runType === 'DAILY' && r.startDate === startDate;
+          if (runType === 'CUSTOM_RANGE') return r.runType === 'CUSTOM_RANGE' && r.startDate === startDate && r.endDate === endDate;
+          return r.runType === 'MONTHLY' || !r.runType;
+        })
+        .forEach((r) => {
+          r.payslips.forEach((p) => generatedStaffIds.add(p.staffId));
+        });
       const ungenerated = staff.filter((s) => s.isActive && !generatedStaffIds.has(s.id)).map((s) => s.id);
       setSelectedStaffIds(ungenerated);
     } catch (err: any) {
@@ -369,14 +398,19 @@ export const PayrollPage: React.FC = () => {
     try {
       setActionLoading(true);
       setFeedback(null);
-      const targetMonth = `${selectedYear}-${selectedMonthNum}`;
+      const targetMonth = runType === 'MONTHLY' ? `${selectedYear}-${selectedMonthNum}` : startDate.slice(0, 7);
+      const effStartDate = runType === 'MONTHLY' ? undefined : startDate;
+      const effEndDate = runType === 'MONTHLY' ? undefined : (runType === 'DAILY' ? startDate : endDate);
+
       const preview = await salonService.generatePayrollPreview(
         effectiveBranchId,
         targetMonth,
         undefined,
         user,
         {
-          runType: 'MONTHLY',
+          runType,
+          startDate: effStartDate,
+          endDate: effEndDate,
           compensationType: 'ALL',
           staffIds: selectedStaffIds,
           includeDaily: true,
@@ -725,59 +759,171 @@ export const PayrollPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* Month */}
+              {/* Payroll Type */}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Month <span className="text-rose-500">*</span>
+                  Payroll Type <span className="text-rose-500">*</span>
                 </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-                    <Calendar className="w-4 h-4 text-blue-600" />
-                  </div>
-                  <select
-                    value={selectedMonthNum}
-                    onChange={(e) => {
-                      setSelectedMonthNum(e.target.value);
-                      setSelectedMonth(`${selectedYear}-${e.target.value}`);
+                <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRunType('MONTHLY');
                       setHasFiltered(false);
                     }}
-                    className="w-full text-sm pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
+                    className={`py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                      runType === 'MONTHLY'
+                        ? 'bg-white text-blue-700 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
                   >
-                    {MONTHS.map((m) => (
-                      <option key={m.value} value={m.value}>
-                        {m.label}
-                      </option>
-                    ))}
-                  </select>
+                    Monthly
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRunType('DAILY');
+                      setHasFiltered(false);
+                    }}
+                    className={`py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                      runType === 'DAILY'
+                        ? 'bg-white text-blue-700 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Daily
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRunType('CUSTOM_RANGE');
+                      setHasFiltered(false);
+                    }}
+                    className={`py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                      runType === 'CUSTOM_RANGE'
+                        ? 'bg-white text-blue-700 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Custom
+                  </button>
                 </div>
               </div>
 
-              {/* Year */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Year <span className="text-rose-500">*</span>
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-                    <Calendar className="w-4 h-4 text-blue-600" />
+              {/* Monthly Date Controls */}
+              {runType === 'MONTHLY' && (
+                <>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Month <span className="text-rose-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                        <Calendar className="w-4 h-4 text-blue-600" />
+                      </div>
+                      <select
+                        value={selectedMonthNum}
+                        onChange={(e) => {
+                          setSelectedMonthNum(e.target.value);
+                          setSelectedMonth(`${selectedYear}-${e.target.value}`);
+                          setHasFiltered(false);
+                        }}
+                        className="w-full text-sm pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
+                      >
+                        {MONTHS.map((m) => (
+                          <option key={m.value} value={m.value}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
-                  <select
-                    value={selectedYear}
-                    onChange={(e) => {
-                      setSelectedYear(e.target.value);
-                      setSelectedMonth(`${e.target.value}-${selectedMonthNum}`);
-                      setHasFiltered(false);
-                    }}
-                    className="w-full text-sm pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
-                  >
-                    {YEARS.map((y) => (
-                      <option key={y} value={y}>
-                        {y}
-                      </option>
-                    ))}
-                  </select>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Year <span className="text-rose-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                        <Calendar className="w-4 h-4 text-blue-600" />
+                      </div>
+                      <select
+                        value={selectedYear}
+                        onChange={(e) => {
+                          setSelectedYear(e.target.value);
+                          setSelectedMonth(`${e.target.value}-${selectedMonthNum}`);
+                          setHasFiltered(false);
+                        }}
+                        className="w-full text-sm pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
+                      >
+                        {YEARS.map((y) => (
+                          <option key={y} value={y}>
+                            {y}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Daily Date Controls */}
+              {runType === 'DAILY' && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                    Date <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                      <Calendar className="w-4 h-4 text-blue-600" />
+                    </div>
+                    <input
+                      type="date"
+                      value={startDate}
+                      onChange={(e) => {
+                        setStartDate(e.target.value);
+                        setEndDate(e.target.value);
+                        setHasFiltered(false);
+                      }}
+                      className="w-full text-sm pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
+                    />
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* Custom Range Date Controls */}
+              {runType === 'CUSTOM_RANGE' && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Start Date <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={startDate}
+                      onChange={(e) => {
+                        setStartDate(e.target.value);
+                        setHasFiltered(false);
+                      }}
+                      className="w-full text-sm px-2.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      End Date <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={endDate}
+                      onChange={(e) => {
+                        setEndDate(e.target.value);
+                        setHasFiltered(false);
+                      }}
+                      className="w-full text-sm px-2.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
+                    />
+                  </div>
+                </div>
+              )}
 
               {/* Action Buttons */}
               <div className="pt-2 space-y-2.5">
@@ -893,7 +1039,7 @@ export const PayrollPage: React.FC = () => {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <h3 className="text-lg font-bold text-slate-800">Generated Salaries</h3>
                 <span className="px-4 py-1.5 bg-[#00bcd4] text-white text-xs font-bold rounded-full shadow-xs w-fit">
-                  {effectiveBranchName} - {monthLabel} {selectedYear}
+                  {effectiveBranchName} - {periodLabel}
                 </span>
               </div>
 
@@ -903,7 +1049,7 @@ export const PayrollPage: React.FC = () => {
                     <thead>
                       <tr className="bg-[#f0f4f8] text-slate-700 text-xs font-semibold border-b border-slate-200">
                         <th className="py-3 px-4">Staff</th>
-                        <th className="py-3 px-3 text-center">Salary Month</th>
+                        <th className="py-3 px-3 text-center">{runType === 'MONTHLY' ? 'Salary Month' : 'Period'}</th>
                         <th className="py-3 px-3 text-center">Present</th>
                         <th className="py-3 px-3 text-center">Absent</th>
                         <th className="py-3 px-3 text-center">Late</th>
@@ -920,7 +1066,7 @@ export const PayrollPage: React.FC = () => {
                       {generatedPayslipRows.length === 0 ? (
                         <tr>
                           <td colSpan={12} className="py-12 text-center text-slate-400 text-sm">
-                            No salaries generated for {effectiveBranchName} ({monthLabel} {selectedYear}) yet. Select eligible staff above and click "Generate Salary".
+                            No salaries generated for {effectiveBranchName} ({periodLabel}) yet. Select eligible staff above and click "Generate Salary".
                           </td>
                         </tr>
                       ) : (
@@ -945,10 +1091,10 @@ export const PayrollPage: React.FC = () => {
                                 <div className="text-[11px] text-slate-400 capitalize">{p.employeeCode}</div>
                               </td>
 
-                              {/* Salary Month */}
+                              {/* Salary Period */}
                               <td className="py-3.5 px-3 text-center">
                                 <span className="px-2.5 py-1 bg-[#00bcd4] text-white text-xs font-semibold rounded-full shadow-xs">
-                                  {monthLabel} {selectedYear}
+                                  {run.runType === 'DAILY' ? (run.startDate || run.month) : run.runType === 'CUSTOM_RANGE' ? `${run.startDate} to ${run.endDate}` : `${monthLabel} ${selectedYear}`}
                                 </span>
                               </td>
 
