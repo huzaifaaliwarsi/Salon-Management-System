@@ -1,75 +1,94 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { salonService } from '@/services';
 import {
   Invoice,
-  Branch,
-  InvoiceStatus,
-  InvoiceLifecycle,
   SalesInvoicesReport,
   SalesInvoiceReportRow,
   SalesInvoicesReportQuery,
 } from '@/types/salon';
 import { AccessDeniedView } from '@/features/scaffold/AccessDeniedView';
 import { ReceiptModal } from '@/features/pos/ReceiptModal';
-import { formatCurrency } from '@/lib/formatters';
-import { Badge } from '@/components/ui/badge';
-import { ReportShell } from '@/features/reports/components/ReportShell';
-import { ReportTable, ColumnDef } from '@/features/reports/components/ReportTable';
 import {
   downloadReportCsv,
   downloadReportExcel,
   printReportWindow,
-  DATE_PRESETS,
-  DatePreset,
 } from '@/features/reports/reportUtils';
 import {
-  Receipt,
+  Filter,
+  FileSpreadsheet,
+  FileText,
+  Printer,
+  Loader2,
   Eye,
-  RotateCcw,
-  Banknote,
-  Smartphone,
-  CreditCard,
+  Receipt,
 } from 'lucide-react';
 
-const selectField = 'text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] h-8';
-const inputField = 'text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] h-8';
-const filterLabel = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1';
+const selectClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const inputClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const labelClass = 'block text-[11px] font-semibold text-[#0B2545] mb-1.5';
+
+const formatPKR = (amt: number, withSign = false) => {
+  const num = Number(amt) || 0;
+  const abs = Math.abs(num);
+  const formatted = abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (withSign) {
+    return num >= 0 ? `+${formatted}` : `-${formatted}`;
+  }
+  return formatted;
+};
+
+const formatDateParts = (dateStr: string) => {
+  if (!dateStr) return { dayMonth: '—', year: '' };
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return { dayMonth: dateStr, year: '' };
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = d.toLocaleString('en-US', { month: 'short' });
+    const year = String(d.getFullYear());
+    return { dayMonth: `${day} ${month}`, year };
+  } catch {
+    return { dayMonth: dateStr, year: '' };
+  }
+};
+
+const formatDateDisplay = (dateStr: string) => {
+  if (!dateStr) return '—';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    const day = d.getDate();
+    const month = d.toLocaleString('en-US', { month: 'short' });
+    const year = d.getFullYear();
+    return `${day} ${month}, ${year}`;
+  } catch {
+    return dateStr;
+  }
+};
 
 export const SalesInvoicesPage: React.FC = () => {
-  const { user, activeBranchId, allBranches, demoDate } = useAuth();
+  const { user, activeBranchId, allBranches } = useAuth();
 
   // Role guard: Super Admin, Admin, and Accountant
   if (!user || user.role === 'STAFF') {
     return <AccessDeniedView attemptedPath="/reports/sales-invoices" />;
   }
 
-  const isSuperAdmin = user.role === 'SUPER_ADMIN';
-  const defaultBranch = isSuperAdmin ? (activeBranchId || 'ALL') : (user.branchId || '');
-
   // Filter Form State
-  const [selectedBranch, setSelectedBranch] = useState<string>(defaultBranch);
-  const [selectedPreset, setSelectedPreset] = useState<DatePreset>('THIS_MONTH');
-  const [customFrom, setCustomFrom] = useState<string>('');
-  const [customTo, setCustomTo] = useState<string>('');
+  const [selectedBranch, setSelectedBranch] = useState<string>(activeBranchId || user.branchId || 'ALL');
   const [paymentStatus, setPaymentStatus] = useState<string>('ALL');
   const [lifecycle, setLifecycle] = useState<string>('ALL');
   const [paymentMethod, setPaymentMethod] = useState<string>('ALL');
+  const [fromDate, setFromDate] = useState<string>('');
+  const [toDate, setToDate] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Applied Query State (triggers API fetch)
-  const [appliedQuery, setAppliedQuery] = useState<SalesInvoicesReportQuery>({
-    branchId: defaultBranch,
-    preset: 'THIS_MONTH',
-    paymentStatus: 'ALL',
-    lifecycle: 'ALL',
-    paymentMethod: 'ALL',
-    search: '',
-  });
-
-  // Report Data State
+  // Page state: Only fetch when user explicitly clicks Filter ("filter karna sa aae default nhi")
+  const [hasFiltered, setHasFiltered] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [reportData, setReportData] = useState<SalesInvoicesReport | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Receipt Modal State
@@ -77,58 +96,42 @@ export const SalesInvoicesPage: React.FC = () => {
   const [isReceiptOpen, setIsReceiptOpen] = useState<boolean>(false);
   const [isLoadingReceipt, setIsLoadingReceipt] = useState<boolean>(false);
 
-  // Fetch report data from live backend API (100% Real DB)
-  const fetchReport = useCallback(async (q: SalesInvoicesReportQuery) => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    try {
-      const data = await salonService.getSalesInvoicesReport(q);
-      setReportData(data);
-    } catch (err: any) {
-      console.error('Failed to load Sales & Invoices report:', err);
-      setErrorMessage(err.message || 'Failed to fetch live sales & invoices report from server.');
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  // Fetch report data on demand from backend API
+  const fetchReport = useCallback(
+    async (q: SalesInvoicesReportQuery) => {
+      setIsLoading(true);
+      setErrorMessage(null);
+      try {
+        const data = await salonService.getSalesInvoicesReport(q);
+        setReportData(data);
+      } catch (err: any) {
+        console.error('Failed to load Sales & Invoices report:', err);
+        setErrorMessage(err.message || 'Failed to fetch live sales & invoices report from server.');
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    []
+  );
 
-  useEffect(() => {
-    fetchReport(appliedQuery);
-  }, [appliedQuery, fetchReport]);
-
-  // Handle Filter Submit
-  const handleFilterSubmit = (e?: React.FormEvent) => {
+  const handleApplyFilters = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    setAppliedQuery({
+    setHasFiltered(true);
+
+    const query: SalesInvoicesReportQuery = {
       branchId: selectedBranch,
-      preset: selectedPreset,
-      from: selectedPreset === 'CUSTOM' ? customFrom : undefined,
-      to: selectedPreset === 'CUSTOM' ? customTo : undefined,
+      startDate: fromDate || undefined,
+      endDate: toDate || undefined,
+      from: fromDate || undefined,
+      to: toDate || undefined,
+      preset: !fromDate && !toDate ? 'THIS_MONTH' : 'CUSTOM',
       paymentStatus: (paymentStatus as any) || 'ALL',
       lifecycle: (lifecycle as any) || 'ALL',
       paymentMethod: paymentMethod === 'ALL' ? undefined : paymentMethod,
       search: searchQuery.trim() || undefined,
-    });
-  };
+    };
 
-  // Handle Reset Filters
-  const handleResetFilters = () => {
-    setSelectedBranch(defaultBranch);
-    setSelectedPreset('THIS_MONTH');
-    setCustomFrom('');
-    setCustomTo('');
-    setPaymentStatus('ALL');
-    setLifecycle('ALL');
-    setPaymentMethod('ALL');
-    setSearchQuery('');
-    setAppliedQuery({
-      branchId: defaultBranch,
-      preset: 'THIS_MONTH',
-      paymentStatus: 'ALL',
-      lifecycle: 'ALL',
-      paymentMethod: 'ALL',
-      search: '',
-    });
+    fetchReport(query);
   };
 
   // Open Receipt Modal
@@ -148,557 +151,555 @@ export const SalesInvoicesPage: React.FC = () => {
   };
 
   // Export handlers
-  const exportMeta: [string, string][] = useMemo(() => {
-    const meta = reportData?.meta;
-    return [
-      ['Report', 'Sales & Invoices Register'],
-      ['Branch', meta?.branchName || 'All Branches'],
-      ['Date Range', `${meta?.from || ''} to ${meta?.to || ''}`],
-      ['Date Basis', meta?.dateBasis || 'INVOICE_POSTING'],
-      ['Timezone', meta?.timezone || 'Asia/Karachi'],
-      ['Generated By', meta?.generatedBy || user?.name || 'User'],
-      ['Generated At', meta?.generatedAt || new Date().toISOString()],
+  const handleExportExcel = () => {
+    if (!reportData || !reportData.rows.length) return;
+    const meta: [string, string][] = [
+      ['Report', 'Sales & Invoices Report'],
+      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
+      ['From Date', fromDate || reportData.meta.from || '—'],
+      ['To Date', toDate || reportData.meta.to || '—'],
+      ['Generated At', new Date().toLocaleString()],
     ];
-  }, [reportData, user]);
 
-  const exportHeaders = [
-    'Invoice #',
-    'Date',
-    'Time',
-    'Customer',
-    'Phone',
-    'Branch',
-    'Sold By',
-    'Staff',
-    'Items Summary',
-    'Gross (PKR)',
-    'Discount (PKR)',
-    'Net Sales (PKR)',
-    'Tax Charged (PKR)',
-    'Tax Reversed (PKR)',
-    'Net Tax (PKR)',
-    'Tip (PKR)',
-    'Total (PKR)',
-    'Paid (PKR)',
-    'Refunded (PKR)',
-    'Outstanding (PKR)',
-    'Payment Status',
-    'Lifecycle',
-  ];
+    const headers = [
+      '#',
+      'Invoice #',
+      'Date',
+      'Client',
+      'Campus',
+      'Sold By',
+      'Status',
+      'Lifecycle',
+      'Gross (PKR)',
+      'Discount (PKR)',
+      'Net Sales (PKR)',
+      'Tax (PKR)',
+      'Tip (PKR)',
+      'Total (PKR)',
+      'Paid (PKR)',
+      'Remaining (PKR)',
+    ];
 
-  const exportRows = useMemo(() => {
-    if (!reportData?.rows) return [];
-    return reportData.rows.map((r) => [
+    const rows = reportData.rows.map((r, i) => [
+      i + 1,
       r.invoiceNumber,
-      r.date,
-      r.time,
-      r.clientName,
-      r.clientPhone,
+      formatDateDisplay(r.date),
+      r.clientName || 'Walk-in',
       r.branchName,
-      r.soldByName,
-      r.staffSummary,
-      r.linesSummary,
-      r.gross,
-      r.discount,
-      r.netSales,
-      r.taxCharged,
-      r.taxReversed,
-      r.netTaxLiability,
-      r.tip,
-      r.total,
-      r.paid,
-      r.refunded,
-      r.outstanding,
+      r.soldByName || 'Staff',
       r.paymentStatus,
       r.lifecycle,
+      r.gross.toFixed(2),
+      r.discount.toFixed(2),
+      r.netSales.toFixed(2),
+      (r.taxCharged ?? r.tax ?? 0).toFixed(2),
+      (r.tip || 0).toFixed(2),
+      r.total.toFixed(2),
+      r.paid.toFixed(2),
+      r.outstanding.toFixed(2),
     ]);
-  }, [reportData]);
 
-  const handleExportCsv = () => {
-    downloadReportCsv('sales_invoices_report', exportMeta, [
-      { headers: exportHeaders, rows: exportRows },
-    ]);
+    downloadReportExcel('Sales_Invoices_Report', meta, [{ headers, rows }]);
   };
 
-  const handleExportExcel = () => {
-    downloadReportExcel('sales_invoices_report', exportMeta, [
-      { headers: exportHeaders, rows: exportRows },
+  const handleExportPdf = () => {
+    if (!reportData || !reportData.rows.length) return;
+    const meta: [string, string][] = [
+      ['Report', 'Sales & Invoices Report'],
+      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
+      ['From Date', fromDate || reportData.meta.from || '—'],
+      ['To Date', toDate || reportData.meta.to || '—'],
+      ['Generated At', new Date().toLocaleString()],
+    ];
+
+    const headers = [
+      '#',
+      'Invoice #',
+      'Date',
+      'Client',
+      'Campus',
+      'Sold By',
+      'Status',
+      'Lifecycle',
+      'Gross (PKR)',
+      'Discount (PKR)',
+      'Net Sales (PKR)',
+      'Tax (PKR)',
+      'Tip (PKR)',
+      'Total (PKR)',
+      'Paid (PKR)',
+      'Remaining (PKR)',
+    ];
+
+    const rows = reportData.rows.map((r, i) => [
+      i + 1,
+      r.invoiceNumber,
+      formatDateDisplay(r.date),
+      r.clientName || 'Walk-in',
+      r.branchName,
+      r.soldByName || 'Staff',
+      r.paymentStatus,
+      r.lifecycle,
+      r.gross.toFixed(2),
+      r.discount.toFixed(2),
+      r.netSales.toFixed(2),
+      (r.taxCharged ?? r.tax ?? 0).toFixed(2),
+      (r.tip || 0).toFixed(2),
+      r.total.toFixed(2),
+      r.paid.toFixed(2),
+      r.outstanding.toFixed(2),
     ]);
+
+    downloadReportCsv('Sales_Invoices_Report', meta, [{ headers, rows }]);
   };
 
-  const handleExportPrint = () => {
-    const totals = reportData?.totals;
-    const totalsRow = totals
-      ? [
-          'TOTAL',
-          '',
-          '',
-          '',
-          '',
-          '',
-          '',
-          '',
-          '',
-          totals.gross,
-          totals.discount,
-          totals.netSales,
-          totals.taxCharged,
-          totals.taxReversed,
-          totals.netTaxLiability,
-          totals.tip,
-          totals.total,
-          totals.paid,
-          totals.refunded,
-          totals.outstanding,
-          '',
-          '',
-        ]
-      : undefined;
+  const handlePrint = () => {
+    if (!reportData || !reportData.rows.length) {
+      window.print();
+      return;
+    }
+    const meta: [string, string][] = [
+      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
+      ['From Date', fromDate || reportData.meta.from || '—'],
+      ['To Date', toDate || reportData.meta.to || '—'],
+      ['Total Gross', formatPKR(reportData.totals.gross || 0)],
+      ['Total Net Sales', formatPKR(reportData.totals.netSales || 0)],
+      ['Total Tax', formatPKR(reportData.totals.taxCharged ?? reportData.totals.tax ?? 0)],
+      ['Total Tips', formatPKR(reportData.totals.tip || 0)],
+      ['Total Paid', formatPKR(reportData.totals.paid || 0)],
+    ];
+    const headers = ['#', 'Invoice #', 'Date', 'Client', 'Campus', 'Sold By', 'Status', 'Net Sales', 'Tax', 'Tip', 'Total', 'Paid', 'Remaining'];
+    const rows = reportData.rows.map((r, i) => [
+      i + 1,
+      r.invoiceNumber,
+      formatDateDisplay(r.date),
+      r.clientName || 'Walk-in',
+      r.branchName,
+      r.soldByName || 'Staff',
+      r.paymentStatus,
+      formatPKR(r.netSales),
+      formatPKR(r.taxCharged ?? r.tax ?? 0),
+      formatPKR(r.tip || 0),
+      formatPKR(r.total),
+      formatPKR(r.paid),
+      formatPKR(r.outstanding),
+    ]);
 
     printReportWindow({
-      title: 'Sales & Invoices Register',
-      subtitle: `Branch: ${reportData?.meta.branchName || 'All'} · Range: ${reportData?.meta.from} to ${reportData?.meta.to}`,
-      meta: exportMeta,
-      headers: exportHeaders,
-      rows: exportRows,
-      totals: totalsRow,
+      title: 'Sales & Invoices Report',
+      meta,
+      headers,
+      rows,
     });
   };
 
-  // Define Columns for Landscape ReportTable
-  const columns: ColumnDef<SalesInvoiceReportRow>[] = [
-    {
-      key: 'invoiceNumber',
-      header: 'Invoice #',
-      align: 'left',
-      width: '130px',
-      render: (r) => (
-        <button
-          type="button"
-          onClick={() => handleOpenReceipt(r.id)}
-          className="font-bold text-[#0047AB] hover:text-[#003075] hover:underline cursor-pointer flex items-center gap-1"
-          title="Click to view invoice details & receipt"
-        >
-          <span>{r.invoiceNumber}</span>
-          <Eye className="w-3 h-3 text-slate-400" />
-        </button>
-      ),
-    },
-    {
-      key: 'date',
-      header: 'Date & Time',
-      align: 'left',
-      width: '110px',
-      render: (r) => (
-        <div>
-          <span className="font-medium text-slate-800">{r.date}</span>
-          <span className="text-[10px] text-slate-400 block">{r.time}</span>
-        </div>
-      ),
-    },
-    {
-      key: 'clientName',
-      header: 'Customer',
-      align: 'left',
-      width: '150px',
-      render: (r) => (
-        <div>
-          <span className="font-semibold text-slate-900 block truncate max-w-[140px]">{r.clientName}</span>
-          <span className="text-[10px] text-slate-500">{r.clientPhone}</span>
-        </div>
-      ),
-    },
-    {
-      key: 'branchName',
-      header: 'Branch',
-      align: 'left',
-      width: '120px',
-      render: (r) => <span className="text-slate-700">{r.branchName}</span>,
-    },
-    {
-      key: 'linesSummary',
-      header: 'Items & Services',
-      align: 'left',
-      width: '180px',
-      render: (r) => (
-        <span className="text-slate-600 truncate block max-w-[170px]" title={r.linesSummary}>
-          {r.linesSummary}
-        </span>
-      ),
-    },
-    {
-      key: 'staffSummary',
-      header: 'Stylists',
-      align: 'left',
-      width: '140px',
-      render: (r) => (
-        <span className="text-slate-600 truncate block max-w-[130px]" title={r.staffSummary}>
-          {r.staffSummary}
-        </span>
-      ),
-    },
-    {
-      key: 'gross',
-      header: 'Gross (PKR)',
-      align: 'right',
-      render: (r) => formatCurrency(r.gross),
-    },
-    {
-      key: 'discount',
-      header: 'Discount (PKR)',
-      align: 'right',
-      render: (r) => (r.discount > 0 ? <span className="text-amber-600">-{formatCurrency(r.discount)}</span> : '0.00'),
-    },
-    {
-      key: 'netSales',
-      header: 'Net Sales (PKR)',
-      align: 'right',
-      render: (r) => <span className="font-bold text-slate-900">{formatCurrency(r.netSales)}</span>,
-    },
-    {
-      key: 'taxCharged',
-      header: 'Tax',
-      align: 'right',
-      render: (r) => formatCurrency(r.taxCharged),
-    },
-    {
-      key: 'tip',
-      header: 'Tip',
-      align: 'right',
-      render: (r) => (r.tip > 0 ? <span className="text-blue-600 font-medium">{formatCurrency(r.tip)}</span> : '0.00'),
-    },
-    {
-      key: 'total',
-      header: 'Total (PKR)',
-      align: 'right',
-      render: (r) => <span className="font-bold text-slate-900">{formatCurrency(r.total)}</span>,
-    },
-    {
-      key: 'paid',
-      header: 'Paid (PKR)',
-      align: 'right',
-      render: (r) => <span className="text-emerald-700 font-medium">{formatCurrency(r.paid)}</span>,
-    },
-    {
-      key: 'outstanding',
-      header: 'Due (PKR)',
-      align: 'right',
-      render: (r) => (
-        <span className={r.outstanding > 0 ? 'font-bold text-rose-600' : 'text-slate-400'}>
-          {formatCurrency(r.outstanding)}
-        </span>
-      ),
-    },
-    {
-      key: 'paymentStatus',
-      header: 'Pay Status',
-      align: 'center',
-      width: '90px',
-      render: (r) => {
-        if (r.paymentStatus === 'PAID') {
-          return <Badge variant="success" className="text-[10px] px-1.5 py-0.5">PAID</Badge>;
-        }
-        if (r.paymentStatus === 'PARTIAL') {
-          return <Badge variant="warning" className="text-[10px] px-1.5 py-0.5">PARTIAL</Badge>;
-        }
-        return <Badge variant="danger" className="text-[10px] px-1.5 py-0.5">UNPAID</Badge>;
-      },
-    },
-    {
-      key: 'lifecycle',
-      header: 'Lifecycle',
-      align: 'center',
-      width: '110px',
-      render: (r) => {
-        if (r.lifecycle === 'ACTIVE') {
-          return <Badge variant="neutral" className="text-[10px] bg-blue-50 text-[#0047AB] border-blue-200">ACTIVE</Badge>;
-        }
-        if (r.lifecycle === 'PARTIALLY_REFUNDED') {
-          return <Badge variant="warning" className="text-[10px]">PARTIAL REFUND</Badge>;
-        }
-        if (r.lifecycle === 'REFUNDED') {
-          return <Badge variant="danger" className="text-[10px]">REFUNDED</Badge>;
-        }
-        return <Badge variant="danger" className="text-[10px] bg-rose-100 text-rose-800">VOIDED</Badge>;
-      },
-    },
-    {
-      key: 'id',
-      header: 'Action',
-      align: 'center',
-      width: '70px',
-      render: (r) => (
-        <button
-          type="button"
-          onClick={() => handleOpenReceipt(r.id)}
-          className="p-1 text-slate-500 hover:text-[#0047AB] hover:bg-blue-50 rounded transition-colors cursor-pointer"
-          title="Print POS Receipt"
-        >
-          <Receipt className="w-3.5 h-3.5" />
-        </button>
-      ),
-    },
-  ];
-
-  // Render Totals Footer
-  const renderTotalsFooter = () => {
-    const t = reportData?.totals;
-    if (!t) return null;
-
-    return (
-      <tr className="bg-slate-100/90 text-slate-900 font-bold border-t-2 border-slate-300">
-        <td className="py-2.5 px-3 text-center border-r border-slate-200">Σ</td>
-        <td colSpan={5} className="py-2.5 px-3 text-left border-r border-slate-200 text-xs">
-          SUMMARY TOTALS ({reportData.rows.length} Invoices)
-        </td>
-        <td className="py-2.5 px-3 text-right border-r border-slate-200">{formatCurrency(t.gross)}</td>
-        <td className="py-2.5 px-3 text-right border-r border-slate-200 text-amber-600">
-          {t.discount > 0 ? `-${formatCurrency(t.discount)}` : '0.00'}
-        </td>
-        <td className="py-2.5 px-3 text-right border-r border-slate-200 text-[#0047AB]">{formatCurrency(t.netSales)}</td>
-        <td className="py-2.5 px-3 text-right border-r border-slate-200">{formatCurrency(t.taxCharged)}</td>
-        <td className="py-2.5 px-3 text-right border-r border-slate-200">{formatCurrency(t.tip)}</td>
-        <td className="py-2.5 px-3 text-right border-r border-slate-200">{formatCurrency(t.total)}</td>
-        <td className="py-2.5 px-3 text-right border-r border-slate-200 text-emerald-700">{formatCurrency(t.paid)}</td>
-        <td className="py-2.5 px-3 text-right border-r border-slate-200 text-rose-600">{formatCurrency(t.outstanding)}</td>
-        <td colSpan={3} className="py-2.5 px-3 text-center text-slate-400">—</td>
-      </tr>
-    );
+  const totals = reportData?.totals || {
+    gross: 0,
+    discount: 0,
+    netSales: 0,
+    tax: 0,
+    taxCharged: 0,
+    netTax: 0,
+    tip: 0,
+    total: 0,
+    paid: 0,
+    outstanding: 0,
   };
 
-  // KPI Summary Cards
-  const kpis = reportData?.kpis;
-  const kpiCards = kpis ? (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
-        <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block">Total Invoices</span>
-        <span className="text-lg font-bold text-slate-900 mt-1 block">{kpis.totalInvoices}</span>
-        <span className="text-[10px] text-slate-400">Active: {kpis.activeCount}</span>
-      </div>
-
-      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
-        <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block">Gross Sales</span>
-        <span className="text-lg font-bold text-slate-900 mt-1 block">{formatCurrency(kpis.grossSales)}</span>
-        <span className="text-[10px] text-amber-600">Disc: -{formatCurrency(kpis.totalDiscounts)}</span>
-      </div>
-
-      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
-        <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block">Net Sales</span>
-        <span className="text-lg font-bold text-emerald-600 mt-1 block">{formatCurrency(kpis.netSales)}</span>
-        <span className="text-[10px] text-slate-400">Excl. tax & tips</span>
-      </div>
-
-      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
-        <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block">Tax Liability</span>
-        <span className="text-lg font-bold text-slate-900 mt-1 block">{formatCurrency(kpis.netTaxLiability)}</span>
-        <span className="text-[10px] text-slate-400">Charged: {formatCurrency(kpis.taxCharged)}</span>
-      </div>
-
-      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
-        <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block">Paid Total</span>
-        <span className="text-lg font-bold text-emerald-700 mt-1 block">{formatCurrency(kpis.totalPaid)}</span>
-        <span className="text-[10px] text-slate-400">Billed: {formatCurrency(kpis.invoiceTotal)}</span>
-      </div>
-
-      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
-        <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block">Customer Due</span>
-        <span className="text-lg font-bold text-rose-600 mt-1 block">{formatCurrency(kpis.totalOutstanding)}</span>
-        <span className="text-[10px] text-slate-400">Refunds: {formatCurrency(kpis.totalRefunded)}</span>
-      </div>
-    </div>
-  ) : null;
-
   return (
-    <>
-      <ReportShell
-        title="Sales & Invoices Report"
-        description="Comprehensive register of posted POS invoices, customer billings, discounts, tax liabilities, collected tips, and settlements."
-        bannerTitle="Fee / Sales & Invoices Register"
-        onFilterSubmit={handleFilterSubmit}
-        isFilterLoading={isLoading}
-        kpiStrip={kpiCards}
-        metaNotice={
-          reportData?.meta && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500 text-[11px]">
-              <span>
-                <strong className="text-slate-700">Branch:</strong> {reportData.meta.branchName}
-              </span>
-              <span>•</span>
-              <span>
-                <strong className="text-slate-700">Period:</strong> {reportData.meta.from} to {reportData.meta.to} ({reportData.meta.preset})
-              </span>
-              <span>•</span>
-              <span>
-                <strong className="text-slate-700">Basis:</strong> Invoice Posting Date
-              </span>
-              <span>•</span>
-              <span>
-                <strong className="text-slate-700">Timezone:</strong> {reportData.meta.timezone}
-              </span>
-            </div>
-          )
-        }
-        onExportExcel={handleExportExcel}
-        onExportCsv={handleExportCsv}
-        onExportPdf={handleExportPrint}
-        onExportPrint={handleExportPrint}
-        filterChildren={
-          <>
-            {/* 1. Branch Selector */}
-            {isSuperAdmin && (
-              <div className="min-w-[140px]">
-                <label className={filterLabel}>Campus / Branch</label>
-                <select
-                  className={selectField}
-                  value={selectedBranch}
-                  onChange={(e) => setSelectedBranch(e.target.value)}
-                >
-                  <option value="ALL">All Branches</option>
-                  {allBranches.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+    <div className="min-h-screen bg-[#F4F6F9] px-4 py-5 md:px-8 md:py-6 text-slate-800">
+      {/* Top Header Card with Title & Filters */}
+      <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 p-5 md:p-6 mb-6">
+        <div className="mb-5">
+          <h1 className="text-xl font-bold text-[#0B2545] tracking-tight">Sales & Invoices Reports</h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Complete billing register: posted POS invoices, discounts, taxes, tender collections and lifecycle statuses
+          </p>
+        </div>
 
-            {/* 2. Date Preset */}
-            <div className="min-w-[130px]">
-              <label className={filterLabel}>Date Preset</label>
-              <select
-                className={selectField}
-                value={selectedPreset}
-                onChange={(e) => setSelectedPreset(e.target.value as DatePreset)}
-              >
-                {DATE_PRESETS.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* 3. Custom Date From/To */}
-            {selectedPreset === 'CUSTOM' && (
-              <>
-                <div className="min-w-[120px]">
-                  <label className={filterLabel}>From Date</label>
-                  <input
-                    type="date"
-                    className={inputField}
-                    value={customFrom}
-                    onChange={(e) => setCustomFrom(e.target.value)}
-                  />
-                </div>
-                <div className="min-w-[120px]">
-                  <label className={filterLabel}>To Date</label>
-                  <input
-                    type="date"
-                    className={inputField}
-                    value={customTo}
-                    onChange={(e) => setCustomTo(e.target.value)}
-                  />
-                </div>
-              </>
-            )}
-
-            {/* 4. Payment Status */}
-            <div className="min-w-[110px]">
-              <label className={filterLabel}>Pay Status</label>
-              <select
-                className={selectField}
-                value={paymentStatus}
-                onChange={(e) => setPaymentStatus(e.target.value)}
-              >
-                <option value="ALL">All Statuses</option>
-                <option value="PAID">Paid</option>
-                <option value="PARTIAL">Partially Paid</option>
-                <option value="UNPAID">Unpaid</option>
-              </select>
-            </div>
-
-            {/* 5. Lifecycle Status */}
-            <div className="min-w-[120px]">
-              <label className={filterLabel}>Lifecycle</label>
-              <select
-                className={selectField}
-                value={lifecycle}
-                onChange={(e) => setLifecycle(e.target.value)}
-              >
-                <option value="ALL">All Lifecycles</option>
-                <option value="ACTIVE">Active</option>
-                <option value="PARTIALLY_REFUNDED">Partial Refund</option>
-                <option value="REFUNDED">Refunded</option>
-                <option value="VOIDED">Voided</option>
-              </select>
-            </div>
-
-            {/* 6. Payment Method */}
-            <div className="min-w-[120px]">
-              <label className={filterLabel}>Payment Type</label>
-              <select
-                className={selectField}
-                value={paymentMethod}
-                onChange={(e) => setPaymentMethod(e.target.value)}
-              >
-                <option value="ALL">All Types</option>
-                <option value="CASH">Cash</option>
-                <option value="ONLINE_ACCOUNT">Online / Card</option>
-                <option value="SPLIT">Split Payment</option>
-              </select>
-            </div>
-
-            {/* 7. Search Input */}
-            <div className="min-w-[180px] flex-1">
-              <label className={filterLabel}>Search Records</label>
-              <input
-                type="text"
-                placeholder="Invoice #, Client name, phone..."
-                className={`${inputField} w-full`}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-            </div>
-
-            {/* Reset button */}
-            <div className="shrink-0">
-              <button
-                type="button"
-                onClick={handleResetFilters}
-                className="h-8 px-2.5 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 text-xs flex items-center gap-1 cursor-pointer"
-                title="Reset filters to default"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Reset</span>
-              </button>
-            </div>
-          </>
-        }
-      >
-        {errorMessage && (
-          <div className="p-3 mb-4 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center justify-between">
-            <span>{errorMessage}</span>
-            <button
-              type="button"
-              onClick={() => fetchReport(appliedQuery)}
-              className="text-[#0047AB] underline font-semibold cursor-pointer"
+        {/* Filters Form Row */}
+        <form onSubmit={handleApplyFilters} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-7 gap-3.5 items-end">
+          {/* Campus Filter */}
+          <div>
+            <label className={labelClass}>Campus</label>
+            <select
+              value={selectedBranch}
+              onChange={(e) => setSelectedBranch(e.target.value)}
+              className={selectClass}
             >
-              Retry
+              <option value="ALL">All Campuses</option>
+              {allBranches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Pay Status Filter */}
+          <div>
+            <label className={labelClass}>Pay Status</label>
+            <select
+              value={paymentStatus}
+              onChange={(e) => setPaymentStatus(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">All Statuses</option>
+              <option value="PAID">Paid</option>
+              <option value="PARTIAL">Partially Paid</option>
+              <option value="UNPAID">Unpaid</option>
+            </select>
+          </div>
+
+          {/* Lifecycle Filter */}
+          <div>
+            <label className={labelClass}>Lifecycle</label>
+            <select
+              value={lifecycle}
+              onChange={(e) => setLifecycle(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">All Lifecycles</option>
+              <option value="ACTIVE">Active</option>
+              <option value="PARTIALLY_REFUNDED">Partial Refund</option>
+              <option value="REFUNDED">Refunded</option>
+              <option value="VOIDED">Voided</option>
+            </select>
+          </div>
+
+          {/* Payment Type */}
+          <div>
+            <label className={labelClass}>Payment Type</label>
+            <select
+              value={paymentMethod}
+              onChange={(e) => setPaymentMethod(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">All Types</option>
+              <option value="CASH">Cash</option>
+              <option value="ONLINE_ACCOUNT">Online / Card</option>
+              <option value="SPLIT">Split Payment</option>
+            </select>
+          </div>
+
+          {/* From Date */}
+          <div>
+            <label className={labelClass}>From Date</label>
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className={inputClass}
+            />
+          </div>
+
+          {/* To Date */}
+          <div>
+            <label className={labelClass}>To Date</label>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className={inputClass}
+            />
+          </div>
+
+          {/* Filter Action Button */}
+          <div>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full h-[35px] bg-[#0047AB] hover:bg-[#003785] active:bg-[#002b66] text-white font-medium text-xs rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-70"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Loading...</span>
+                </>
+              ) : (
+                <>
+                  <Filter className="w-3.5 h-3.5 fill-current" />
+                  <span>Filter</span>
+                </>
+              )}
             </button>
           </div>
-        )}
+        </form>
+      </div>
 
-        {/* ── LANDSCAPE TABLE CONTAINER ── */}
-        <ReportTable<SalesInvoiceReportRow>
-          columns={columns}
-          data={reportData?.rows || []}
-          loading={isLoading}
-          emptyMessage="No sales invoices found matching the selected filter criteria."
-          rowKey={(r) => r.id}
-          renderTotals={renderTotalsFooter}
-        />
-      </ReportShell>
+      {/* Main Content Area */}
+      {!hasFiltered ? (
+        /* Empty State before Filter clicked */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 md:p-24 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <div className="text-slate-400 mb-3">
+            <Filter className="w-14 h-14 stroke-[1.25] text-slate-400" />
+          </div>
+          <p className="text-slate-400 text-sm font-medium">Please apply filters to view reports</p>
+        </div>
+      ) : isLoading ? (
+        /* Loading Skeleton */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <Loader2 className="w-10 h-10 animate-spin text-[#0047AB] mb-3" />
+          <p className="text-slate-600 text-sm font-medium">Loading Sales & Invoices Reports...</p>
+        </div>
+      ) : errorMessage ? (
+        /* Error Message */
+        <div className="bg-white rounded-xl border border-rose-200 p-8 shadow-xs text-center">
+          <p className="text-rose-600 text-sm font-medium mb-3">{errorMessage}</p>
+          <button
+            onClick={() => handleApplyFilters()}
+            className="px-4 py-1.5 bg-[#0047AB] text-white text-xs font-semibold rounded-md shadow-xs hover:bg-[#003785]"
+          >
+            Retry
+          </button>
+        </div>
+      ) : (
+        /* Filtered Data Layout */
+        <div className="shadow-sm rounded-xl overflow-hidden border border-slate-200/90 mb-8 bg-white">
+          {/* Royal Blue Banner Header */}
+          <div className="bg-[#0047AB] text-white px-5 py-3 flex flex-wrap items-center justify-between gap-3 rounded-t-xl">
+            <div className="flex items-center gap-2.5 font-bold text-sm tracking-wide text-white">
+              <Receipt className="w-4 h-4 stroke-[2.5]" />
+              <span>Sales & Invoices Register</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                className="bg-[#009688] hover:bg-[#00897B] active:bg-[#00796B] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>CSV</span>
+              </button>
+              <button
+                type="button"
+                onClick={handlePrint}
+                className="bg-[#DC2626] hover:bg-[#B91C1C] active:bg-[#991B1B] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>PDF</span>
+              </button>
+              <button
+                type="button"
+                onClick={handlePrint}
+                className="bg-[#4B5563] hover:bg-[#374151] active:bg-[#1F2937] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Print</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Table Container with smooth horizontal scroll and generous column space */}
+          <div className="bg-white overflow-x-auto rounded-b-xl border-t border-blue-200/40">
+            <table className="w-full min-w-[1380px] text-left border-collapse font-['Inter',sans-serif] text-[13px] antialiased">
+              <thead>
+                <tr className="bg-[#EAF2FB] border-b border-blue-100 text-[#475569] font-medium text-[13px]">
+                  <th className="py-3.5 px-4 text-center w-12 font-medium text-[#475569]">#</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] whitespace-nowrap">Invoice #</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] whitespace-nowrap">Date</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569]">Client</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569]">Campus</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569]">Cashier / Sold By</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] text-center w-24">Status</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] text-center w-24">Lifecycle</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] text-right whitespace-nowrap">Gross</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] text-right whitespace-nowrap">Discount</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] text-right whitespace-nowrap">Net Sales</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] text-right whitespace-nowrap">Tax</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] text-right whitespace-nowrap">Tip</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] text-right whitespace-nowrap">Total</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] text-right whitespace-nowrap">Paid</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] text-right whitespace-nowrap">Remaining</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] text-center w-16">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-dashed divide-slate-200">
+                {reportData && reportData.rows.length > 0 ? (
+                  reportData.rows.map((row: SalesInvoiceReportRow, idx: number) => {
+                    const dateParts = formatDateParts(row.date);
+
+                    return (
+                      <tr key={row.id || idx} className="hover:bg-blue-50/20 transition-colors border-b border-dashed border-slate-200">
+                        {/* 1. # */}
+                        <td className="py-3.5 px-4 text-center font-normal text-slate-500 text-[13px]">
+                          {idx + 1}
+                        </td>
+
+                        {/* 2. Invoice # */}
+                        <td className="py-3.5 px-4 font-semibold text-[#0047AB] whitespace-nowrap text-[13px]">
+                          {row.invoiceNumber}
+                        </td>
+
+                        {/* 3. Date */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-[#475569] text-[13px]">
+                          <div className="leading-tight">
+                            <div>{dateParts.dayMonth}</div>
+                            {dateParts.year && <div className="text-[12px] text-slate-400">{dateParts.year}</div>}
+                          </div>
+                        </td>
+
+                        {/* 4. Client */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-[#334155] font-normal text-[13px]">
+                          {row.clientName || 'Walk-in'}
+                        </td>
+
+                        {/* 5. Campus */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-[#475569] font-normal text-[13px]">
+                          {row.branchName || 'Main Campus'}
+                        </td>
+
+                        {/* 6. Sold By */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-[#475569] font-normal text-[13px]">
+                          {row.soldByName || 'Staff'}
+                        </td>
+
+                        {/* 7. Status */}
+                        <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                          {row.paymentStatus === 'PAID' ? (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#10B981] text-white">
+                              Paid
+                            </span>
+                          ) : row.paymentStatus === 'PARTIAL' ? (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#F59E0B] text-white">
+                              Partial
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#64748B] text-white">
+                              {row.paymentStatus || 'Unpaid'}
+                            </span>
+                          )}
+                        </td>
+
+                        {/* 8. Lifecycle */}
+                        <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                            {row.lifecycle || 'ACTIVE'}
+                          </span>
+                        </td>
+
+                        {/* 9. Gross */}
+                        <td className="py-3.5 px-4 text-right tabular-nums text-[#475569] text-[13px] whitespace-nowrap">
+                          {formatPKR(row.gross)}
+                        </td>
+
+                        {/* 10. Discount */}
+                        <td className="py-3.5 px-4 text-right tabular-nums text-[#475569] text-[13px] whitespace-nowrap">
+                          +{formatPKR(row.discount)}
+                        </td>
+
+                        {/* 11. Net Sales */}
+                        <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-[#0047AB] text-[13px] whitespace-nowrap">
+                          {formatPKR(row.netSales)}
+                        </td>
+
+                        {/* 12. Tax */}
+                        <td className="py-3.5 px-4 text-right tabular-nums text-[#475569] text-[13px] whitespace-nowrap">
+                          +{formatPKR(row.taxCharged ?? row.tax ?? 0)}
+                        </td>
+
+                        {/* 13. Tip */}
+                        <td className="py-3.5 px-4 text-right tabular-nums text-[#475569] text-[13px] whitespace-nowrap">
+                          +{formatPKR(row.tip || 0)}
+                        </td>
+
+                        {/* 14. Total */}
+                        <td className="py-3.5 px-4 text-right tabular-nums font-bold text-slate-800 text-[13px] whitespace-nowrap">
+                          {formatPKR(row.total)}
+                        </td>
+
+                        {/* 15. Paid */}
+                        <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-[#10B981] text-[13px] whitespace-nowrap">
+                          {formatPKR(row.paid)}
+                        </td>
+
+                        {/* 16. Remaining */}
+                        <td
+                          className={`py-3.5 px-4 text-right tabular-nums text-[13px] whitespace-nowrap ${
+                            row.outstanding > 0 ? 'text-[#EF4444] font-semibold' : 'text-[#475569]'
+                          }`}
+                        >
+                          {formatPKR(row.outstanding)}
+                        </td>
+
+                        {/* 17. Action */}
+                        <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenReceipt(row.id)}
+                            disabled={isLoadingReceipt}
+                            className="p-1 rounded text-slate-500 hover:text-[#0047AB] hover:bg-blue-50 transition-colors cursor-pointer"
+                            title="View receipt"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={17} className="py-16 text-center text-slate-400 font-medium">
+                      No sales invoices found for the selected campus, dates, and filters.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+
+              {/* Integrated Table Footer */}
+              <tfoot className="bg-[#F8FAFC] border-t-2 border-slate-200 font-['Inter',sans-serif] text-[13px]">
+                {/* Row 1: TOTALS (PKR) */}
+                <tr className="border-b border-slate-200/70">
+                  <td colSpan={8} className="py-3.5 px-4 text-right font-bold text-slate-800 tracking-wide">
+                    TOTALS (PKR)
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums text-[#475569]">
+                    {formatPKR(totals.gross)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums text-[#475569]">
+                    +{formatPKR(totals.discount)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums font-bold text-[#0047AB]">
+                    {formatPKR(totals.netSales)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums text-[#475569]">
+                    +{formatPKR(totals.taxCharged ?? totals.tax ?? 0)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums text-[#475569]">
+                    +{formatPKR(totals.tip || 0)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums font-bold text-slate-800">
+                    {formatPKR(totals.total)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums font-bold text-[#10B981]">
+                    {formatPKR(totals.paid)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums font-bold text-[#EF4444]">
+                    {formatPKR(totals.outstanding)}
+                  </td>
+                  <td className="py-3.5 px-4"></td>
+                </tr>
+
+                {/* Row 2: Net Collection Amount */}
+                <tr>
+                  <td colSpan={8} className="py-3 px-4 text-right font-medium text-slate-700">
+                    Net Paid Collections
+                  </td>
+                  <td colSpan={8} className="py-3 px-4 text-right tabular-nums font-bold text-[#10B981] text-sm">
+                    +{formatPKR(totals.paid)}
+                  </td>
+                  <td className="py-3.5 px-4"></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Footer Branding */}
+      <div className="text-center py-4 text-xs text-slate-400 font-medium tracking-wide">
+        © iSysware Management System
+      </div>
 
       {/* PRINTABLE RECEIPT MODAL */}
       <ReceiptModal
@@ -707,7 +708,7 @@ export const SalesInvoicesPage: React.FC = () => {
         invoice={receiptInvoice}
         branch={allBranches.find((b) => b.id === receiptInvoice?.branchId) || null}
       />
-    </>
+    </div>
   );
 };
 
