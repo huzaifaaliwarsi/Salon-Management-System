@@ -503,6 +503,11 @@ export interface SalonServiceContract {
   recordPayrollPayment(input: RecordPayrollPaymentInput, actor?: User): Promise<{ payrollRun: PayrollRun; payment: PayrollPayment }>;
   cancelPayrollRun(payrollRunId: string, reason: string, actor?: User): Promise<PayrollRun>;
   reversePayrollPayment(paymentId: string, reason: string, actor?: User): Promise<PayrollPayment>;
+  addManualDeduction(
+    payslipId: string,
+    input: { amount: number; title: string; notes?: string },
+    actor?: User
+  ): Promise<{ payslip: PayslipRecord; payrollRun: PayrollRun; adjustment: PayrollAdjustment }>;
   getPayrollRuns(branchId: string | 'ALL', month?: string, actor?: User): Promise<PayrollRun[]>;
   getStaffPersonalPayslips(actor?: User): Promise<PayslipRecord[]>;
   // Payroll inputs & monthly summary (payroll.md)

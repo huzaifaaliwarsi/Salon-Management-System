@@ -332,8 +332,8 @@ export const BranchOperationalSections: React.FC<BranchOperationalSectionsProps>
                         apt.status === 'COMPLETED'
                           ? 'success'
                           : apt.status === 'IN_PROGRESS'
-                          ? 'primary'
-                          : 'warning'
+                            ? 'primary'
+                            : 'warning'
                       }
                     >
                       {apt.status.replace('_', ' ')}

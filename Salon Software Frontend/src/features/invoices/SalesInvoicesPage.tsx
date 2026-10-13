@@ -1,6 +1,7 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { salonService } from '@/services';
+import { User } from '@/types/auth';
 import {
   Invoice,
   SalesInvoicesReport,
@@ -76,8 +77,12 @@ export const SalesInvoicesPage: React.FC = () => {
     return <AccessDeniedView attemptedPath="/reports/sales-invoices" />;
   }
 
+  const isAccountant = user.role === 'ACCOUNTANT';
+
   // Filter Form State
   const [selectedBranch, setSelectedBranch] = useState<string>(activeBranchId || user.branchId || 'ALL');
+  const [selectedCashier, setSelectedCashier] = useState<string>('ALL');
+  const [cashiersList, setCashiersList] = useState<User[]>([]);
   const [paymentStatus, setPaymentStatus] = useState<string>('ALL');
   const [lifecycle, setLifecycle] = useState<string>('ALL');
   const [paymentMethod, setPaymentMethod] = useState<string>('ALL');
@@ -95,6 +100,27 @@ export const SalesInvoicesPage: React.FC = () => {
   const [receiptInvoice, setReceiptInvoice] = useState<Invoice | null>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState<boolean>(false);
   const [isLoadingReceipt, setIsLoadingReceipt] = useState<boolean>(false);
+
+  // Load cashiers / accountants list for filter dropdown (for Admin / Super Admin)
+  useEffect(() => {
+    let active = true;
+    if (!isAccountant) {
+      const branchForUsers = selectedBranch !== 'ALL' ? selectedBranch : undefined;
+      salonService
+        .getUsers(user, branchForUsers)
+        .then((data) => {
+          if (active && Array.isArray(data)) {
+            setCashiersList(data.filter((u) => u.role === 'ACCOUNTANT' || u.role === 'ADMIN' || u.role === 'SUPER_ADMIN'));
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to load cashiers for filter:', err);
+        });
+    }
+    return () => {
+      active = false;
+    };
+  }, [user, selectedBranch, isAccountant]);
 
   // Fetch report data on demand from backend API
   const fetchReport = useCallback(
@@ -128,6 +154,7 @@ export const SalesInvoicesPage: React.FC = () => {
       paymentStatus: (paymentStatus as any) || 'ALL',
       lifecycle: (lifecycle as any) || 'ALL',
       paymentMethod: paymentMethod === 'ALL' ? undefined : paymentMethod,
+      soldByUserId: isAccountant ? user.id : (selectedCashier !== 'ALL' ? selectedCashier : undefined),
       search: searchQuery.trim() || undefined,
     };
 
@@ -310,15 +337,36 @@ export const SalesInvoicesPage: React.FC = () => {
     <div className="min-h-screen bg-[#F4F6F9] px-4 py-5 md:px-8 md:py-6 text-slate-800">
       {/* Top Header Card with Title & Filters */}
       <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 p-5 md:p-6 mb-6">
-        <div className="mb-5">
+        <div className="mb-4">
           <h1 className="text-xl font-bold text-[#0B2545] tracking-tight">Sales & Invoices Reports</h1>
           <p className="text-xs text-slate-500 mt-1">
             Complete billing register: posted POS invoices, discounts, taxes, tender collections and lifecycle statuses
           </p>
         </div>
 
+        {/* Role Scope Notice */}
+        {isAccountant ? (
+          <div className="mb-4 p-3 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-between text-xs text-blue-900">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
+              <span className="font-semibold">Accountant Salesman Mode:</span>
+              <span>Displaying invoices, sales and collections posted by your account (<strong>{user.name}</strong>).</span>
+            </div>
+            <span className="text-[11px] font-medium bg-white px-2 py-0.5 rounded border border-blue-200 text-blue-700 shadow-2xs">
+              Accountant Scoped
+            </span>
+          </div>
+        ) : (
+          <div className="mb-4 p-3 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between text-xs text-slate-700">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold">Administrator Consolidated View:</span>
+              <span>All cashier and accountant sales are visible. Select a cashier from the dropdown below to audit individual accountant performance.</span>
+            </div>
+          </div>
+        )}
+
         {/* Filters Form Row */}
-        <form onSubmit={handleApplyFilters} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-7 gap-3.5 items-end">
+        <form onSubmit={handleApplyFilters} className={`grid grid-cols-1 sm:grid-cols-2 ${!isAccountant ? 'md:grid-cols-4 lg:grid-cols-8' : 'md:grid-cols-7'} gap-3.5 items-end`}>
           {/* Campus Filter */}
           <div>
             <label className={labelClass}>Campus</label>
@@ -335,6 +383,25 @@ export const SalesInvoicesPage: React.FC = () => {
               ))}
             </select>
           </div>
+
+          {/* Cashier / Sold By Filter (Admin / Super Admin view) */}
+          {!isAccountant && (
+            <div>
+              <label className={labelClass}>Cashier / Sold By</label>
+              <select
+                value={selectedCashier}
+                onChange={(e) => setSelectedCashier(e.target.value)}
+                className={selectClass}
+              >
+                <option value="ALL">All Cashiers / Admins</option>
+                {cashiersList.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.role === 'ACCOUNTANT' ? 'Accountant' : c.role})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Pay Status Filter */}
           <div>
@@ -551,7 +618,14 @@ export const SalesInvoicesPage: React.FC = () => {
 
                         {/* 6. Sold By */}
                         <td className="py-3.5 px-4 whitespace-nowrap text-[#475569] font-normal text-[13px]">
-                          {row.soldByName || 'Staff'}
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[12px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                            <span>{row.soldByName || 'Cashier'}</span>
+                            {row.soldByUserId === user.id && (
+                              <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-1 rounded">
+                                You
+                              </span>
+                            )}
+                          </span>
                         </td>
 
                         {/* 7. Status */}

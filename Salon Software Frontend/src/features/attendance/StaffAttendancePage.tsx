@@ -152,16 +152,16 @@ export const StaffAttendancePage: React.FC = () => {
             designation: staff.designation || staff.roleTitle || 'Stylist',
             roleTitle: staff.roleTitle || '',
             compensationType: staff.compensationType || 'SALARY_ONLY',
-            startTime: defaultStart,
-            endTime: defaultEnd,
+            startTime: '',
+            endTime: '',
             lateGraceMinutes: staff.lateGraceMinutes ?? 15,
             earlyGraceMinutes: staff.earlyGraceMinutes ?? 15,
             isOvernightShift: !!staff.isOvernightShift,
 
             recordId: existing.id,
             status: mappedStatus,
-            checkIn: existing.checkIn && existing.checkIn !== 'ABSENT' && !existing.checkIn.includes('LEAVE') ? formatTo24Hour(existing.checkIn) : defaultStart,
-            checkOut: existing.checkOut && existing.checkOut !== 'ABSENT' && !existing.checkOut.includes('LEAVE') ? formatTo24Hour(existing.checkOut) : defaultEnd,
+            checkIn: existing.checkIn && existing.checkIn !== 'ABSENT' && !existing.checkIn.includes('LEAVE') ? formatTo24Hour(existing.checkIn) : '',
+            checkOut: existing.checkOut && existing.checkOut !== 'ABSENT' && !existing.checkOut.includes('LEAVE') ? formatTo24Hour(existing.checkOut) : '',
             notes: existing.notes || '',
             isModified: false,
           };
@@ -176,16 +176,16 @@ export const StaffAttendancePage: React.FC = () => {
           designation: staff.designation || staff.roleTitle || 'Stylist',
           roleTitle: staff.roleTitle || '',
           compensationType: staff.compensationType || 'SALARY_ONLY',
-          startTime: defaultStart,
-          endTime: defaultEnd,
+          startTime: '',
+          endTime: '',
           lateGraceMinutes: staff.lateGraceMinutes ?? 15,
           earlyGraceMinutes: staff.earlyGraceMinutes ?? 15,
           isOvernightShift: !!staff.isOvernightShift,
 
           recordId: undefined,
           status: 'SELECT_STATUS',
-          checkIn: defaultStart,
-          checkOut: defaultEnd,
+          checkIn: '',
+          checkOut: '',
           notes: '',
           isModified: false,
         };
@@ -247,10 +247,7 @@ export const StaffAttendancePage: React.FC = () => {
         let newCheckIn = r.checkIn;
         let newCheckOut = r.checkOut;
 
-        if (targetStatus === 'PRESENT') {
-          newCheckIn = r.startTime || '09:00';
-          newCheckOut = r.endTime || '18:00';
-        } else if (targetStatus === 'ABSENT' || targetStatus === 'HOLIDAY' || targetStatus === 'WEEKLY_OFF') {
+        if (targetStatus === 'ABSENT' || targetStatus === 'HOLIDAY' || targetStatus === 'WEEKLY_OFF') {
           newCheckIn = '';
           newCheckOut = '';
         }
@@ -274,10 +271,7 @@ export const StaffAttendancePage: React.FC = () => {
         if (r.staffId !== staffId) return r;
         let cIn = r.checkIn;
         let cOut = r.checkOut;
-        if (newStatus === 'PRESENT' && !cIn) {
-          cIn = r.startTime || '09:00';
-          cOut = r.endTime || '18:00';
-        } else if (newStatus === 'ABSENT' || newStatus === 'HOLIDAY' || newStatus === 'WEEKLY_OFF') {
+        if (newStatus === 'ABSENT' || newStatus === 'HOLIDAY' || newStatus === 'WEEKLY_OFF') {
           cIn = '';
           cOut = '';
         }
@@ -325,7 +319,7 @@ export const StaffAttendancePage: React.FC = () => {
   // Helper: evaluate lateness for a row
   const getLateArrivalInfo = (r: EditableAttendanceRow) => {
     if (r.status !== 'PRESENT' && r.status !== 'HALF_DAY') return { text: '-', isLate: false };
-    if (!r.checkIn) return { text: 'Auto', isLate: false };
+    if (!r.checkIn) return { text: 'Pending', isLate: false };
     const { isLate, lateMinutes } = evaluateLateness(r.checkIn, r.startTime, r.lateGraceMinutes);
     if (isLate) {
       return { text: `${lateMinutes}m Late`, isLate: true };
@@ -336,7 +330,7 @@ export const StaffAttendancePage: React.FC = () => {
   // Helper: evaluate early exit for a row
   const getEarlyExitInfo = (r: EditableAttendanceRow) => {
     if (r.status !== 'PRESENT' && r.status !== 'HALF_DAY') return { text: '-', isEarly: false };
-    if (!r.checkOut) return { text: 'Auto', isEarly: false };
+    if (!r.checkOut) return { text: 'Pending', isEarly: false };
     const { isEarlyExit: isEarly, earlyExitMinutes } = evaluateEarlyExit(
       r.checkOut,
       r.endTime,

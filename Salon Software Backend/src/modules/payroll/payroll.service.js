@@ -507,6 +507,109 @@ export const reversePayment = async (actor, paymentId, reason) => {
   });
 };
 
+// ── Manual Deductions on Generated Payslips ─────────────────────────────────
+
+export const applyManualDeduction = async (actor, payslipId, { amount: rawAmount, title, notes }) => {
+  noAccountant(actor);
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT 1 FROM "Payslip" WHERE id = ${payslipId} FOR UPDATE`;
+    const ps = await tx.payslip.findUnique({
+      where: { id: payslipId },
+      include: { run: true, payments: true },
+    });
+    if (!ps) throw notFound('PAYSLIP_NOT_FOUND', `Payslip '${payslipId}' not found.`);
+    assertBranchAccess(actor, ps.run.branchId, 'Access Denied: Cannot deduct from payslip of another branch.');
+    if (ps.run.status === 'CANCELLED') {
+      throw conflict('RUN_CANCELLED', 'Cannot apply deduction to a cancelled payroll run.');
+    }
+
+    const amount = round2(rawAmount);
+    if (amount.lessThanOrEqualTo(0)) {
+      throw badRequest('INVALID_AMOUNT', 'Deduction amount must be greater than zero.');
+    }
+
+    const currentSlip = toPayslipDTO(ps, ps.run);
+    if (amount.greaterThan(currentSlip.outstandingAmount)) {
+      throw badRequest('EXCEEDS_OUTSTANDING', `Deduction amount (Rs. ${amount}) exceeds unpaid outstanding payslip balance (Rs. ${currentSlip.outstandingAmount}).`);
+    }
+
+    // 1. Create a PayrollAdjustment record for tracking
+    const adjustment = await tx.payrollAdjustment.create({
+      data: {
+        branchId: ps.run.branchId,
+        staffId: ps.staffId,
+        month: ps.run.month,
+        type: 'DEDUCTION',
+        title: title.trim(),
+        amount,
+        notes: notes ? notes.trim() : null,
+        payrollRunId: ps.runId,
+        status: 'ACTIVE',
+        createdByUserId: actor.id,
+        createdByName: actor.name,
+      },
+    });
+
+    // 2. Update payslip snapshot and netPayable
+    const prevSnapshot = (typeof ps.snapshot === 'object' && ps.snapshot !== null) ? { ...ps.snapshot } : {};
+    const existingAdjustments = Array.isArray(prevSnapshot.adjustments) ? [...prevSnapshot.adjustments] : [];
+    existingAdjustments.push({
+      id: adjustment.id,
+      type: 'DEDUCTION',
+      title: adjustment.title,
+      amount: amount.toNumber(),
+      notes: adjustment.notes,
+    });
+
+    const newOtherDeductions = round2(toDec(prevSnapshot.otherDeductions ?? 0).plus(amount)).toNumber();
+    const newTotalDeductions = round2(toDec(prevSnapshot.totalDeductions ?? 0).plus(amount)).toNumber();
+    const newNetPayable = round2(toDec(ps.netPayable).minus(amount));
+    const newOutstanding = round2(toDec(currentSlip.outstandingAmount).minus(amount)).toNumber();
+
+    const updatedSnapshot = {
+      ...prevSnapshot,
+      adjustments: existingAdjustments,
+      otherDeductions: newOtherDeductions,
+      totalDeductions: newTotalDeductions,
+      netPayable: newNetPayable.toNumber(),
+      outstandingAmount: Math.max(0, newOutstanding),
+    };
+
+    const updatedPayslip = await tx.payslip.update({
+      where: { id: payslipId },
+      data: {
+        netPayable: newNetPayable,
+        snapshot: updatedSnapshot,
+      },
+      include: { payments: true, run: true },
+    });
+
+    await auditLog(tx, {
+      userId: actor.id,
+      userName: actor.name,
+      action: 'PAYROLL_MANUAL_DEDUCTION_ADDED',
+      entity: 'Payslip',
+      entityId: payslipId,
+      branchId: ps.run.branchId,
+      after: {
+        adjustmentId: adjustment.id,
+        amount: amount.toNumber(),
+        title: adjustment.title,
+        notes: adjustment.notes,
+        newNetPayable: newNetPayable.toNumber(),
+        newOutstanding,
+      },
+    });
+
+    return {
+      payslip: toPayslipDTO(updatedPayslip, updatedPayslip.run),
+      payrollRun: await runDTO(tx, ps.runId),
+      adjustment,
+    };
+  });
+};
+
+
 // ── Staff portal ─────────────────────────────────────────────────────────────
 
 export const personalPayslips = async (actor) => {

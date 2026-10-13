@@ -325,6 +325,7 @@ const liveMethods: SalonServiceContract = {
   cancelPayrollRun: (runId, reason) => api.post<PayrollRun>(`/payroll/runs/${runId}/cancel`, { reason }),
   recordPayrollPayment: (input) => api.post('/payroll/payments', input, newIdempotencyKey()),
   reversePayrollPayment: (paymentId, reason) => api.post<PayrollPayment>(`/payroll/payments/${paymentId}/reverse`, { reason }),
+  addManualDeduction: (payslipId, input) => api.post(`/payroll/payslips/${payslipId}/deductions`, input),
   getStaffPersonalPayslips: () => api.get('/payroll/payslips/me'),
   getPayrollMonthlySummary: (branchId, month) => api.get<MonthlyPaySummary>('/payroll/monthly-summary', { ...branchQuery(branchId), month }),
   getStaffAllowances: (branchId, staffId) => api.get<StaffAllowance[]>('/payroll/allowances', { ...branchQuery(branchId), staffId }),

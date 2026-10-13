@@ -71,6 +71,8 @@ export const listQuery = z.object({
   startDate: ymd.optional(),
   endDate:   ymd.optional(),
   clientId:  z.string().optional(),
+  soldByUserId: z.string().optional(),
+  processedByUserId: z.string().optional(),
 });
 
 export const outstandingQuery = z.object({

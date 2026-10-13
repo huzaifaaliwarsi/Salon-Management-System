@@ -222,6 +222,15 @@ export const StockInPurchasesPage: React.FC = () => {
       return;
     }
 
+    const missingExpiryIndex = stockInLines.findIndex(line =>
+      items.find(item => item.id === line.itemId)?.trackExpiry && !line.expiryDate
+    );
+    if (missingExpiryIndex !== -1) {
+      const item = items.find(item => item.id === stockInLines[missingExpiryIndex].itemId);
+      setErrorMessage('Product #' + (missingExpiryIndex + 1) + ': Please enter the expiry date for ' + item?.name + '.');
+      return;
+    }
+
     if (paymentMethod === 'CASH' && !activeDrawer) {
       setErrorMessage('Payment from Cash Drawer requires an OPEN active cash drawer in your custody.');
       return;
@@ -243,7 +252,7 @@ export const StockInPurchasesPage: React.FC = () => {
           batchNumber: l.batchNumber,
           quantity: Number(l.quantity) || 1,
           unitPurchaseCost: Number(l.unitPurchaseCost) || 0,
-          expiryDate: l.expiryDate,
+          expiryDate: l.expiryDate || undefined,
         })),
       };
 
@@ -730,6 +739,23 @@ export const StockInPurchasesPage: React.FC = () => {
                             </button>
                           )}
                         </div>
+                      </div>
+
+                      <div className="max-w-xs">
+                        <label htmlFor={'stock-in-expiry-' + idx} className="block text-[11px] font-semibold text-slate-600 mb-1">
+                          Expiry Date {item?.trackExpiry ? '*' : '(Optional)'}
+                        </label>
+                        <input
+                          id={'stock-in-expiry-' + idx}
+                          type="date"
+                          value={line.expiryDate || ''}
+                          required={!!item?.trackExpiry}
+                          onChange={(e) => handleUpdateLine(idx, { expiryDate: e.target.value || undefined })}
+                          className="w-full text-xs px-2.5 py-2 border border-slate-300 rounded-lg focus:outline-hidden"
+                        />
+                        {item?.trackExpiry && (
+                          <p className="mt-1 text-[11px] text-slate-500">Enter the expiry date printed on this batch.</p>
+                        )}
                       </div>
 
                       {/* Stock Clarity Banner (Addressing user instruction directly!) */}

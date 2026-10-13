@@ -53,6 +53,7 @@ export function evaluateEmployeePayroll(
     (a) => a.staffId === staff.id && a.date.startsWith(month)
   );
 
+  let halfDayUnpaidDays = 0;
   let presentDays = 0;
   let paidLeaveDays = 0;
   let unpaidLeaveDays = 0;
@@ -92,10 +93,11 @@ export function evaluateEmployeePayroll(
           unpaidLeaveDays++;
         } else {
           // PRESENT / ON_TIME / LATE / EARLY_EXIT
-          presentDays++;
+          presentDays += att.status === 'HALF_DAY' ? 0.5 : 1;
+        if (att.status === 'HALF_DAY') halfDayUnpaidDays += 0.5;
           // Only add penalty deductions on days where employee actually worked
           if (att.calculationSnapshot?.totalDeductionAmount) {
-            attendancePenaltyDeductions += att.calculationSnapshot.totalDeductionAmount;
+            attendancePenaltyDeductions += (att.status === 'HALF_DAY' ? att.calculationSnapshot.lateDeductionAmount : att.calculationSnapshot.totalDeductionAmount) || 0;
           }
         }
       }
@@ -107,15 +109,17 @@ export function evaluateEmployeePayroll(
           paidLeaveDays++;
         } else if (att.status === 'UNPAID_LEAVE') {
           unpaidLeaveDays++;
-        } else if (
+        } else if (!att.isMissingPunch && (
           att.status === 'PRESENT' ||
           att.status === 'ON_TIME' ||
           att.status === 'LATE' ||
+          att.status === 'HALF_DAY' ||
           att.status === 'COMPLETED'
-        ) {
-          presentDays++;
+        )) {
+          presentDays += att.status === 'HALF_DAY' ? 0.5 : 1;
+        if (att.status === 'HALF_DAY') halfDayUnpaidDays += 0.5;
           if (att.calculationSnapshot?.totalDeductionAmount) {
-            attendancePenaltyDeductions += att.calculationSnapshot.totalDeductionAmount;
+            attendancePenaltyDeductions += (att.status === 'HALF_DAY' ? att.calculationSnapshot.lateDeductionAmount : att.calculationSnapshot.totalDeductionAmount) || 0;
           }
         }
       }
@@ -188,7 +192,7 @@ export function evaluateEmployeePayroll(
 
     // Absence / Unpaid leave deduction
     const dailyDeductionRate = roundCurrency(fullMonthlyBase / divisorUsed);
-    const unworkedDeductibleDays = absentDays + unpaidLeaveDays;
+    const unworkedDeductibleDays = absentDays + unpaidLeaveDays + halfDayUnpaidDays;
     absenceDeductions = roundCurrency(fullMonthlyBase / 30 * unworkedDeductibleDays);
 
   } else if (staff.compensationType === 'DAILY_SALARY' || staff.compensationType === 'DAILY_PLUS_COMMISSION') {
@@ -231,7 +235,7 @@ export function evaluateEmployeePayroll(
   // Calculation details formula text
   let formula = '';
   if (staff.compensationType === 'MONTHLY_SALARY' || staff.compensationType === 'MONTHLY_PLUS_COMMISSION') {
-    formula = `Base Salary (PKR ${baseEarnings.toLocaleString()}) - Absences (${absentDays + unpaidLeaveDays}d @ PKR ${roundCurrency((staff.baseSalary || 0) / divisorUsed).toLocaleString()}/d = PKR ${absenceDeductions.toLocaleString()}) - Penalties (PKR ${attendancePenaltyDeductions.toLocaleString()}) + Overtime (${approvedOvertimeMinutes}m @ PKR ${(staff.overtimeHourlyRate ?? 0).toLocaleString()}/hr = PKR ${approvedOvertimeAmount.toLocaleString()}) = Net PKR ${netPayable.toLocaleString()}`;
+    formula = `Base Salary (PKR ${baseEarnings.toLocaleString()}) - Absences (${absentDays + unpaidLeaveDays + halfDayUnpaidDays}d @ PKR ${roundCurrency((staff.baseSalary || 0) / divisorUsed).toLocaleString()}/d = PKR ${absenceDeductions.toLocaleString()}) - Penalties (PKR ${attendancePenaltyDeductions.toLocaleString()}) + Overtime (${approvedOvertimeMinutes}m @ PKR ${(staff.overtimeHourlyRate ?? 0).toLocaleString()}/hr = PKR ${approvedOvertimeAmount.toLocaleString()}) = Net PKR ${netPayable.toLocaleString()}`;
   } else if (staff.compensationType === 'DAILY_SALARY' || staff.compensationType === 'DAILY_PLUS_COMMISSION') {
     formula = `Daily Rate (PKR ${staff.dailySalaryRate} × ${presentDays} present days = PKR ${baseEarnings.toLocaleString()}) + Paid Leave (${paidLeaveDays}d = PKR ${leaveEarnings.toLocaleString()}) - Penalties (PKR ${attendancePenaltyDeductions.toLocaleString()}) + Overtime (PKR ${approvedOvertimeAmount.toLocaleString()}) = Net PKR ${netPayable.toLocaleString()}`;
   } else {
@@ -254,6 +258,9 @@ export function evaluateEmployeePayroll(
       workingDaysInMonth,
       calendarDaysInMonth: totalCalendarDays,
       presentDays,
+      halfDayDays: halfDayUnpaidDays * 2,
+      lateDays: empAttendance.filter(a => consumedAttendanceDates.includes(a.date) && a.isLate).length,
+      earlyExitDays: empAttendance.filter(a => consumedAttendanceDates.includes(a.date) && a.isEarlyExit).length,
       paidLeaveDays,
       unpaidLeaveDays,
       absentDays,

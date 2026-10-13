@@ -64,6 +64,9 @@ const salesInvoicesQuery = z.object({
   paymentMethod: z.string().optional(),
   staffId: z.string().optional(),
   clientId: z.string().optional(),
+  soldByUserId: z.string().optional(),
+  accountantId: z.string().optional(),
+  userId: z.string().optional(),
 });
 reportRoutes.get('/sales-invoices', authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'), validate(salesInvoicesQuery, 'query'), send((req) => r.salesInvoicesReport(req.user, req.query)));
 

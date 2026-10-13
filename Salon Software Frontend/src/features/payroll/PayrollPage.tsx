@@ -15,6 +15,7 @@ import {
 } from '../../types/salon';
 import {
   DollarSign,
+  MinusCircle,
   Calendar,
   Filter,
   CheckCircle2,
@@ -129,6 +130,14 @@ export const PayrollPage: React.FC = () => {
   const [showPolicyModal, setShowPolicyModal] = useState<boolean>(false);
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
   const [showCancelModal, setShowCancelModal] = useState<boolean>(false);
+  const [showDeductionModal, setShowDeductionModal] = useState<boolean>(false);
+  const [deductionTargetRun, setDeductionTargetRun] = useState<PayrollRun | null>(null);
+  const [deductionTargetPayslip, setDeductionTargetPayslip] = useState<PayslipRecord | null>(null);
+  const [deductionForm, setDeductionForm] = useState({
+    amount: 0,
+    title: 'Missed Attendance / Punch',
+    notes: '',
+  });
 
   // Payment Form
   const [paymentTargetRun, setPaymentTargetRun] = useState<PayrollRun | null>(null);
@@ -541,6 +550,73 @@ export const PayrollPage: React.FC = () => {
       await loadData();
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Payment failed.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Open Manual Deduction Modal
+  const openDeductionModal = (run: PayrollRun, ps: PayslipRecord) => {
+    setDeductionTargetRun(run);
+    setDeductionTargetPayslip(ps);
+    setDeductionForm({
+      amount: 0,
+      title: 'Missed Attendance / Punch',
+      notes: '',
+    });
+    setShowDeductionModal(true);
+  };
+
+  // Apply Manual Deduction
+  const handleApplyDeduction = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deductionTargetPayslip || !deductionTargetRun) return;
+
+    if (deductionForm.amount <= 0) {
+      setFeedback({
+        type: 'error',
+        message: 'Deduction amount must be greater than zero.',
+      });
+      return;
+    }
+
+    if (deductionForm.amount > deductionTargetPayslip.outstandingAmount) {
+      setFeedback({
+        type: 'error',
+        message: `Deduction amount cannot exceed unpaid salary balance of Rs. ${deductionTargetPayslip.outstandingAmount.toLocaleString()}`,
+      });
+      return;
+    }
+
+    if (!deductionForm.title.trim()) {
+      setFeedback({
+        type: 'error',
+        message: 'Deduction title or reason is required.',
+      });
+      return;
+    }
+
+    try {
+      setActionLoading(true);
+      setFeedback(null);
+      await salonService.addManualDeduction(
+        deductionTargetPayslip.id,
+        {
+          amount: deductionForm.amount,
+          title: deductionForm.title.trim(),
+          notes: deductionForm.notes.trim() || undefined,
+        },
+        user
+      );
+
+      setFeedback({
+        type: 'success',
+        message: `Successfully applied deduction of Rs. ${deductionForm.amount.toLocaleString()} for ${deductionTargetPayslip.staffName}!`,
+      });
+      setShowDeductionModal(false);
+      await loadData();
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Failed to apply deduction.' });
     } finally {
       setActionLoading(false);
     }
@@ -1050,7 +1126,10 @@ export const PayrollPage: React.FC = () => {
                       <tr className="bg-[#f0f4f8] text-slate-700 text-xs font-semibold border-b border-slate-200">
                         <th className="py-3 px-4">Staff</th>
                         <th className="py-3 px-3 text-center">{runType === 'MONTHLY' ? 'Salary Month' : 'Period'}</th>
-                        <th className="py-3 px-3 text-center">Present</th>
+                        <th className="py-3 px-3 text-center" title="Paid attendance days; each completed half day counts as 0.5">Present</th>
+                        <th className="py-3 px-3 text-center">Half Day</th>
+                        <th className="py-3 px-3 text-center">Paid Leave</th>
+                        <th className="py-3 px-3 text-center">Unpaid Leave</th>
                         <th className="py-3 px-3 text-center">Absent</th>
                         <th className="py-3 px-3 text-center">Late</th>
                         <th className="py-3 px-3 text-center">Early Exit</th>
@@ -1065,7 +1144,7 @@ export const PayrollPage: React.FC = () => {
                     <tbody className="divide-y divide-slate-100 text-sm">
                       {generatedPayslipRows.length === 0 ? (
                         <tr>
-                          <td colSpan={12} className="py-12 text-center text-slate-400 text-sm">
+                          <td colSpan={15} className="py-12 text-center text-slate-400 text-sm">
                             No salaries generated for {effectiveBranchName} ({periodLabel}) yet. Select eligible staff above and click "Generate Salary".
                           </td>
                         </tr>
@@ -1105,6 +1184,10 @@ export const PayrollPage: React.FC = () => {
                                 </span>
                               </td>
 
+                              <td className="py-3.5 px-3 text-center font-semibold text-amber-700">{p.halfDayDays ?? 'N/A'}</td>
+                              <td className="py-3.5 px-3 text-center font-semibold text-emerald-700">{p.paidLeaveDays ?? 0}</td>
+                              <td className="py-3.5 px-3 text-center font-semibold text-rose-600">{p.unpaidLeaveDays ?? 0}</td>
+
                               {/* Absent */}
                               <td className="py-3.5 px-3 text-center">
                                 <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#f44336] text-white font-bold text-xs shadow-xs">
@@ -1115,14 +1198,14 @@ export const PayrollPage: React.FC = () => {
                               {/* Late */}
                               <td className="py-3.5 px-3 text-center">
                                 <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#ff9800] text-white font-bold text-xs shadow-xs">
-                                  0
+                                  {p.lateDays ?? 'N/A'}
                                 </span>
                               </td>
 
                               {/* Early Exit */}
                               <td className="py-3.5 px-3 text-center">
                                 <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#f44336] text-white font-bold text-xs shadow-xs">
-                                  0
+                                  {p.earlyExitDays ?? 'N/A'}
                                 </span>
                               </td>
 
@@ -1187,6 +1270,16 @@ export const PayrollPage: React.FC = () => {
                                   </button>
                                   <button
                                     type="button"
+                                    onClick={() => openDeductionModal(run, p)}
+                                    disabled={p.outstandingAmount <= 0}
+                                    title="Apply Manual Deduction (e.g. missed punch, penalty)"
+                                    className="px-2.5 py-1.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-md shadow-xs transition-colors flex items-center gap-1"
+                                  >
+                                    <MinusCircle className="w-3.5 h-3.5" />
+                                    Deduct
+                                  </button>
+                                  <button
+                                    type="button"
                                     onClick={() => {
                                       setRunToCancel(run);
                                       setShowCancelModal(true);
@@ -1207,7 +1300,7 @@ export const PayrollPage: React.FC = () => {
                     {generatedPayslipRows.length > 0 && (
                       <tfoot>
                         <tr className="bg-slate-50 font-bold border-t border-slate-200">
-                          <td colSpan={6} className="py-3.5 px-4 text-right text-slate-800 text-sm">
+                          <td colSpan={9} className="py-3.5 px-4 text-right text-slate-800 text-sm">
                             Total:
                           </td>
                           <td className="py-3.5 px-4 text-center text-[#1976d2] text-sm">
@@ -1474,9 +1567,10 @@ export const PayrollPage: React.FC = () => {
                   <thead className="bg-slate-100/70 text-slate-600 font-semibold border-b border-slate-100">
                     <tr>
                       <th className="py-3 px-4">Employee</th>
+                      <th className="py-3 px-3">Attendance</th>
                       <th className="py-3 px-3">Comp Type</th>
                       <th className="py-3 px-3 text-right">Base Earned</th>
-                      <th className="py-3 px-3 text-right">Paid Leave</th>
+                      <th className="py-3 px-3 text-right">Paid Leave Pay</th>
                       <th className="py-3 px-3 text-right">Absence Ded.</th>
                       <th className="py-3 px-3 text-right">Late/Early</th>
                       <th className="py-3 px-3 text-right">Overtime</th>
@@ -1503,6 +1597,18 @@ export const PayrollPage: React.FC = () => {
                           <td className="py-3 px-4">
                             <div className="font-semibold text-slate-900">{ps.staffName}</div>
                             <div className="text-[11px] text-slate-400">{ps.employeeCode} • {ps.designation}</div>
+                          </td>
+                          <td className="py-3 px-3">
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 min-w-[220px] whitespace-nowrap">
+                              <span className="text-slate-700">Present: <strong>{ps.presentDays ?? 0}</strong></span>
+                              <span className="text-rose-600">Absent: <strong>{ps.absentDays ?? 0}</strong></span>
+                              <span className="text-emerald-700">Paid Leave: <strong>{ps.paidLeaveDays ?? 0}</strong></span>
+                              <span className="text-rose-600">Unpaid Leave: <strong>{ps.unpaidLeaveDays ?? 0}</strong></span>
+                              <span className="text-amber-700">Half Day: <strong>{ps.halfDayDays ?? 'N/A'}</strong></span>
+                              <span className="text-slate-600">Missing Punch: <strong>{ps.missingPunchDays ?? 0}</strong></span>
+                              <span className="text-slate-600">Paid Holiday: <strong>{ps.paidHolidayDays ?? 0}</strong></span>
+                              <span className="text-slate-600">Paid Weekly Off: <strong>{ps.paidWeeklyOffDays ?? 0}</strong></span>
+                            </div>
                           </td>
                           <td className="py-3 px-3">
                             <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px] font-medium">
@@ -1577,13 +1683,22 @@ export const PayrollPage: React.FC = () => {
                               </button>
 
                               {ps.outstandingAmount > 0 && run.status !== 'CANCELLED' && run.status !== 'DRAFT' && (
-                                <button
-                                  onClick={() => openPaymentModal(run, ps)}
-                                  title="Pay Outstanding"
-                                  className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg"
-                                >
-                                  <CreditCard className="w-4 h-4" />
-                                </button>
+                                <>
+                                  <button
+                                    onClick={() => openDeductionModal(run, ps)}
+                                    title="Apply Manual Deduction"
+                                    className="p-1.5 text-amber-600 hover:bg-amber-50 rounded-lg"
+                                  >
+                                    <MinusCircle className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    onClick={() => openPaymentModal(run, ps)}
+                                    title="Pay Outstanding"
+                                    className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg"
+                                  >
+                                    <CreditCard className="w-4 h-4" />
+                                  </button>
+                                </>
                               )}
 
                               {(ps.payments || []).length > 0 && (
@@ -1879,6 +1994,14 @@ export const PayrollPage: React.FC = () => {
                     <span className="text-slate-400 block text-[11px]">Absent Days</span>
                     <span className="text-sm font-bold text-rose-600">{selectedPayslip.absentDays}</span>
                   </div>
+                  <div className="p-2 bg-slate-50 rounded-lg">
+                    <span className="text-slate-400 block text-[11px]">Half Day</span>
+                    <span className="text-sm font-bold text-amber-700">{selectedPayslip.halfDayDays ?? 'N/A'}</span>
+                  </div>
+                  <div className="p-2 bg-slate-50 rounded-lg">
+                    <span className="text-slate-400 block text-[11px]">Unpaid Leave</span>
+                    <span className="text-sm font-bold text-rose-600">{selectedPayslip.unpaidLeaveDays ?? 0}</span>
+                  </div>
                 </div>
               </div>
 
@@ -2135,6 +2258,154 @@ export const PayrollPage: React.FC = () => {
           </div>
         </div>
       )}
+      {/* ========================================================================= */}
+      {/* MODAL: MANUAL SALARY DEDUCTION MODAL                                       */}
+      {/* ========================================================================= */}
+      {showDeductionModal && deductionTargetPayslip && deductionTargetRun && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl">
+                  <MinusCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Apply Manual Deduction</h3>
+                  <p className="text-xs text-slate-500">
+                    {deductionTargetPayslip.staffName} ({deductionTargetPayslip.employeeCode}) • {deductionTargetPayslip.designation}
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setShowDeductionModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleApplyDeduction} className="p-6 space-y-4 text-xs">
+              {/* Summary card */}
+              <div className="grid grid-cols-3 gap-2 p-3 bg-slate-50 rounded-2xl border border-slate-200 text-center">
+                <div>
+                  <div className="text-[10px] text-slate-400 font-medium">Net Salary</div>
+                  <div className="text-xs font-bold text-slate-800">
+                    Rs. {deductionTargetPayslip.netPayable.toLocaleString()}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-slate-400 font-medium">Already Paid</div>
+                  <div className="text-xs font-bold text-[#00bcd4]">
+                    Rs. {(deductionTargetPayslip.paidAmount || 0).toLocaleString()}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-amber-600 font-medium">Unpaid Balance</div>
+                  <div className="text-xs font-bold text-amber-700">
+                    Rs. {deductionTargetPayslip.outstandingAmount.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+
+              {/* Preset Chips */}
+              <div>
+                <label className="block text-slate-600 font-medium mb-1.5">Quick Reasons (Click to set)</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    'Missed Attendance Punch',
+                    'Late Penalty',
+                    'Unapproved Absence Penalty',
+                    'Salon Equipment / Material Damage',
+                    'Cash Register Discrepancy',
+                    'Disciplinary Fine',
+                  ].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setDeductionForm((prev) => ({ ...prev, title: preset }))}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors ${
+                        deductionForm.title === preset
+                          ? 'bg-amber-100 border-amber-300 text-amber-900 font-semibold'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Title / Reason Input */}
+              <div>
+                <label className="block text-slate-600 font-medium mb-1">Deduction Title / Reason *</label>
+                <input
+                  type="text"
+                  value={deductionForm.title}
+                  onChange={(e) => setDeductionForm({ ...deductionForm, title: e.target.value })}
+                  placeholder="e.g. Missed punch on 2026-08-12"
+                  className="w-full border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-amber-500"
+                  required
+                />
+              </div>
+
+              {/* Amount Input */}
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="block text-slate-600 font-medium">Deduction Amount (Rs.) *</label>
+                  <button
+                    type="button"
+                    onClick={() => setDeductionForm({ ...deductionForm, amount: deductionTargetPayslip.outstandingAmount })}
+                    className="text-[11px] text-amber-700 hover:underline font-semibold"
+                  >
+                    Max: Rs. {deductionTargetPayslip.outstandingAmount.toLocaleString()}
+                  </button>
+                </div>
+                <input
+                  type="number"
+                  min="1"
+                  max={deductionTargetPayslip.outstandingAmount}
+                  value={deductionForm.amount || ''}
+                  onChange={(e) => setDeductionForm({ ...deductionForm, amount: Number(e.target.value) })}
+                  placeholder="e.g. 500"
+                  className="w-full border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold focus:ring-2 focus:ring-amber-500"
+                  required
+                />
+                <span className="text-[11px] text-slate-400">
+                  Deduction will be applied to this payslip, reducing net payable salary and unpaid balance.
+                </span>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className="block text-slate-600 font-medium mb-1">Additional Notes / Remarks (Optional)</label>
+                <textarea
+                  value={deductionForm.notes}
+                  onChange={(e) => setDeductionForm({ ...deductionForm, notes: e.target.value })}
+                  placeholder="Explanation or administrative justification..."
+                  rows={2}
+                  className="w-full border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowDeductionModal(false)}
+                  className="px-4 py-2 border border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={actionLoading || deductionForm.amount <= 0 || deductionForm.amount > deductionTargetPayslip.outstandingAmount}
+                  className="px-5 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl font-semibold shadow-sm flex items-center gap-1.5"
+                >
+                  <MinusCircle className="w-4 h-4" />
+                  Confirm Deduction
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
 
       {/* ========================================================================= */}
       {/* MODAL 4: PAYMENT HISTORY & REVERSAL MODAL                                 */}

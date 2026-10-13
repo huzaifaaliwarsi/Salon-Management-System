@@ -39,6 +39,11 @@ router.post('/payments', idempotency, validate(z.object({
   reference: z.string().optional(), notes: z.string().optional(),
 })), send((req) => s.recordPayment(req.user, { ...req.body, idempotencyKey: req.idempotencyKey }), 201));
 router.post('/payments/:id/reverse', validate(reason), send((req) => s.reversePayment(req.user, req.params.id, req.body.reason)));
+router.post('/payslips/:id/deductions', validate(z.object({
+  amount: z.number().positive('Deduction amount must be greater than zero.'),
+  title: z.string().trim().min(1, 'Title or reason is required.'),
+  notes: z.string().optional(),
+})), send((req) => s.applyManualDeduction(req.user, req.params.id, req.body), 201));
 
 router.get('/monthly-summary', validate(z.object({ branchId: z.string().optional(), month }), 'query'), send((req) => s.monthlySummary(req.user, req.query)));
 

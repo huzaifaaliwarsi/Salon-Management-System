@@ -37,15 +37,23 @@ const loadInvoice = async (tx, id) => {
 
 // ═══ QUERIES ══════════════════════════════════════════════════════════════════
 
-export const listInvoices = async (actor, { branchId, status, date, startDate, endDate, clientId } = {}) => {
+export const listInvoices = async (actor, { branchId, status, date, startDate, endDate, clientId, soldByUserId, processedByUserId } = {}) => {
   if (actor.role === 'STAFF') throw forbidden('FORBIDDEN', 'Access Denied: Staff members cannot access invoices.');
   const b = resolveReadBranch(actor, branchId);
   const dateFilter = {};
   if (date) dateFilter.equals = dateOnly(date);
   if (startDate) dateFilter.gte = dateOnly(startDate);
   if (endDate) dateFilter.lte = dateOnly(endDate);
+
+  const userFilter = actor.role === 'ACCOUNTANT' ? actor.id : (soldByUserId || processedByUserId);
   const rows = await prisma.invoice.findMany({
-    where: { ...(b ? { branchId: b } : {}), ...(status ? { status } : {}), ...(clientId ? { clientId } : {}), ...(Object.keys(dateFilter).length ? { date: dateFilter } : {}) },
+    where: {
+      ...(b ? { branchId: b } : {}),
+      ...(status ? { status } : {}),
+      ...(clientId ? { clientId } : {}),
+      ...(Object.keys(dateFilter).length ? { date: dateFilter } : {}),
+      ...(userFilter && userFilter !== 'ALL' ? { processedByUserId: userFilter } : {}),
+    },
     include: invoiceInclude,
     orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
   });

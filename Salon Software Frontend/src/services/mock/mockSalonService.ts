@@ -7221,6 +7221,7 @@ class MockSalonService implements SalonServiceContract {
   async getPayrollAdjustments(): Promise<PayrollAdjustment[]> { return []; }
   async createPayrollAdjustment(): Promise<PayrollAdjustment> { return this.apiOnly(); }
   async cancelPayrollAdjustment(): Promise<PayrollAdjustment> { return this.apiOnly(); }
+  async addManualDeduction(): Promise<any> { return this.apiOnly(); }
   async getSalaryAdvances(): Promise<SalaryAdvance[]> { return []; }
   async issueSalaryAdvance(): Promise<SalaryAdvance> { return this.apiOnly(); }
   async reverseSalaryAdvance(): Promise<SalaryAdvance> { return this.apiOnly(); }

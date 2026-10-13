@@ -283,6 +283,17 @@ export const salesInvoicesReport = async (actor, q = {}) => {
     ...(ctx.branchId ? { branchId: ctx.branchId } : {}),
   };
 
+  // Scope to actor if ACCOUNTANT, or apply cashier/soldBy filter for administrators
+  if (actor.role === 'ACCOUNTANT') {
+    where.processedByUserId = actor.id;
+  } else if (q.soldByUserId && q.soldByUserId !== 'ALL') {
+    where.processedByUserId = q.soldByUserId;
+  } else if (q.accountantId && q.accountantId !== 'ALL') {
+    where.processedByUserId = q.accountantId;
+  } else if (q.userId && q.userId !== 'ALL') {
+    where.processedByUserId = q.userId;
+  }
+
   if (q.paymentStatus && q.paymentStatus !== 'ALL') {
     where.status = q.paymentStatus;
   }
@@ -574,6 +585,7 @@ export const incomeExpenseReport = async (actor, query = {}) => {
         date: dateRange,
         lifecycle: { not: 'VOIDED' },
         ...branchFilter,
+        ...(actor.role === 'ACCOUNTANT' ? { processedByUserId: actor.id } : {}),
       },
       select: {
         id: true,
@@ -600,7 +612,10 @@ export const incomeExpenseReport = async (actor, query = {}) => {
     prisma.invoiceRefund.findMany({
       where: {
         refundDate: dateRange,
-        invoice: ctx.branchId ? { branchId: ctx.branchId } : undefined,
+        invoice: {
+          ...(ctx.branchId ? { branchId: ctx.branchId } : {}),
+          ...(actor.role === 'ACCOUNTANT' ? { processedByUserId: actor.id } : {}),
+        },
       },
       select: {
         id: true,
@@ -618,6 +633,7 @@ export const incomeExpenseReport = async (actor, query = {}) => {
       where: {
         expenseDate: dateRange,
         ...branchFilter,
+        ...(actor.role === 'ACCOUNTANT' ? { OR: [{ paidByUserId: actor.id }, { createdByUserId: actor.id }] } : {}),
         ...(query.status && query.status !== 'ALL'
           ? { status: query.status }
           : { status: { not: 'DRAFT' } }),
@@ -641,55 +657,61 @@ export const incomeExpenseReport = async (actor, query = {}) => {
         branchId: true,
       },
     }),
-    // 4. Finalized & Paid Payroll Runs (Recognized salary expense when generated/finalized/paid)
-    prisma.payrollRun.findMany({
-      where: {
-        status: { in: ['FINALIZED', 'PARTIALLY_PAID', 'PAID'] },
-        ...branchFilter,
-        OR: [
-          { finalizedAt: utcRange },
-          { generatedAt: utcRange },
-        ],
-      },
-      include: {
-        payslips: {
-          include: {
-            payments: true,
+    // 4. Finalized & Paid Payroll Runs (Excluded for Accountants; Admin only)
+    actor.role === 'ACCOUNTANT'
+      ? Promise.resolve([])
+      : prisma.payrollRun.findMany({
+          where: {
+            status: { in: ['FINALIZED', 'PARTIALLY_PAID', 'PAID'] },
+            ...branchFilter,
+            OR: [
+              { finalizedAt: utcRange },
+              { generatedAt: utcRange },
+            ],
           },
-        },
-      },
-    }),
-    // 5. Commission Events (Earn & Reversal)
-    prisma.commissionEvent.findMany({
-      where: {
-        eventDate: dateRange,
-        ...branchFilter,
-      },
-      select: {
-        id: true,
-        branchId: true,
-        staffId: true,
-        invoiceId: true,
-        invoiceNumber: true,
-        type: true,
-        attributedNet: true,
-        rate: true,
-        amount: true,
-        eventDate: true,
-        consumedByRunId: true,
-      },
-    }),
-    // 6. Inventory Write-offs / Shrinkage Losses
-    prisma.stockMovement.findMany({
-      where: {
-        createdAt: utcRange,
-        movementType: { in: ['EXPIRED_OUT', 'DAMAGED_OUT', 'NEGATIVE_ADJUSTMENT'] },
-        ...branchFilter,
-      },
-      include: {
-        item: { select: { name: true, sku: true } },
-      },
-    }),
+          include: {
+            payslips: {
+              include: {
+                payments: true,
+              },
+            },
+          },
+        }),
+    // 5. Commission Events (Excluded for Accountants; Admin only)
+    actor.role === 'ACCOUNTANT'
+      ? Promise.resolve([])
+      : prisma.commissionEvent.findMany({
+          where: {
+            eventDate: dateRange,
+            ...branchFilter,
+          },
+          select: {
+            id: true,
+            branchId: true,
+            staffId: true,
+            invoiceId: true,
+            invoiceNumber: true,
+            type: true,
+            attributedNet: true,
+            rate: true,
+            amount: true,
+            eventDate: true,
+            consumedByRunId: true,
+          },
+        }),
+    // 6. Inventory Write-offs / Shrinkage Losses (Excluded for Accountants; Admin only)
+    actor.role === 'ACCOUNTANT'
+      ? Promise.resolve([])
+      : prisma.stockMovement.findMany({
+          where: {
+            createdAt: utcRange,
+            movementType: { in: ['EXPIRED_OUT', 'DAMAGED_OUT', 'NEGATIVE_ADJUSTMENT'] },
+            ...branchFilter,
+          },
+          include: {
+            item: { select: { name: true, sku: true } },
+          },
+        }),
   ]);
 
   const branchMap = new Map(branches.map((b) => [b.id, b.name]));
@@ -1755,7 +1777,9 @@ export const cashDrawerReport = async (actor, query = {}) => {
     ...branchFilter,
     date: dateRange,
     ...(query.status && query.status !== 'ALL' ? { status: query.status } : {}),
-    ...(query.custodianUserId && query.custodianUserId !== 'ALL' ? { custodianUserId: query.custodianUserId } : {}),
+    ...(actor.role === 'ACCOUNTANT'
+      ? { custodianUserId: actor.id }
+      : (query.custodianUserId && query.custodianUserId !== 'ALL' ? { custodianUserId: query.custodianUserId } : {})),
   };
 
   const drawers = await prisma.cashDrawer.findMany({
@@ -1789,6 +1813,7 @@ export const cashDrawerReport = async (actor, query = {}) => {
     where: {
       ...branchFilter,
       date: dateRange,
+      ...(actor.role === 'ACCOUNTANT' ? { processedByUserId: actor.id } : {}),
     },
     select: {
       id: true,
@@ -2070,7 +2095,9 @@ export const detailedExpensesReport = async (actor, query = {}) => {
       : { status: { not: 'DRAFT' } }),
     ...(query.paymentSource && query.paymentSource !== 'ALL' ? { paymentSource: query.paymentSource } : {}),
     ...(query.paymentAccountId && query.paymentAccountId !== 'ALL' ? { paymentAccountId: query.paymentAccountId } : {}),
-    ...(query.createdByUserId && query.createdByUserId !== 'ALL' ? { createdByUserId: query.createdByUserId } : {}),
+    ...(actor.role === 'ACCOUNTANT'
+      ? { OR: [{ createdByUserId: actor.id }, { paidByUserId: actor.id }] }
+      : (query.createdByUserId && query.createdByUserId !== 'ALL' ? { createdByUserId: query.createdByUserId } : {})),
   };
 
   const [expenses, branches, categories, paymentAccounts] = await Promise.all([
@@ -3172,6 +3199,7 @@ export const taxReport = async (actor, query = {}) => {
         lifecycle: { not: 'VOIDED' },
         tax: { gt: 0 },
         ...branchFilter,
+        ...(actor.role === 'ACCOUNTANT' ? { processedByUserId: actor.id } : {}),
       },
       select: {
         id: true,
@@ -3210,7 +3238,10 @@ export const taxReport = async (actor, query = {}) => {
       where: {
         refundDate: dateRange,
         taxReversed: { gt: 0 },
-        invoice: ctx.branchId ? { branchId: ctx.branchId } : undefined,
+        invoice: {
+          ...(ctx.branchId ? { branchId: ctx.branchId } : {}),
+          ...(actor.role === 'ACCOUNTANT' ? { processedByUserId: actor.id } : {}),
+        },
       },
       select: {
         id: true,

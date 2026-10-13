@@ -84,6 +84,7 @@ export const IncomeExpenseReportPage: React.FC = () => {
   }
 
   const isSuperAdmin = user.role === 'SUPER_ADMIN';
+  const isAccountant = user.role === 'ACCOUNTANT';
   const defaultBranch = isSuperAdmin ? (activeBranchId || 'ALL') : (user.branchId || '');
 
   // Filter Form State
@@ -156,8 +157,8 @@ export const IncomeExpenseReportPage: React.FC = () => {
       from: fromDate || undefined,
       to: toDate || undefined,
       preset: !fromDate && !toDate ? 'THIS_MONTH' : 'CUSTOM',
-      userType: selectedUserType !== 'ALL' ? selectedUserType : undefined,
-      user: selectedUser !== 'ALL' ? selectedUser : undefined,
+      userType: isAccountant ? 'ACCOUNTANT' : (selectedUserType !== 'ALL' ? selectedUserType : undefined),
+      user: isAccountant ? user.name : (selectedUser !== 'ALL' ? selectedUser : undefined),
     };
 
     fetchReport(query);
@@ -393,15 +394,36 @@ export const IncomeExpenseReportPage: React.FC = () => {
     <div className="min-h-screen bg-[#F4F6F9] px-4 py-5 md:px-8 md:py-6 text-slate-800">
       {/* Top Header Card with Title & Filters */}
       <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 p-5 md:p-6 mb-6">
-        <div className="mb-5">
+        <div className="mb-4">
           <h1 className="text-xl font-bold text-[#0B2545] tracking-tight">Income & Expense Reports</h1>
           <p className="text-xs text-slate-500 mt-1">
             Income: POS sales and collections · Expense: Salon operational vouchers, paid staff salaries & commissions
           </p>
         </div>
 
+        {/* Role Scope Notice */}
+        {isAccountant ? (
+          <div className="mb-4 p-3 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-between text-xs text-blue-900">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
+              <span className="font-semibold">Personal Accountant Register Active:</span>
+              <span>Showing POS sales revenue and operational expense vouchers processed by your account (<strong>{user.name}</strong>). Staff salaries & commissions are hidden.</span>
+            </div>
+            <span className="text-[11px] font-medium bg-white px-2 py-0.5 rounded border border-blue-200 text-blue-700 shadow-2xs">
+              Accountant Scoped
+            </span>
+          </div>
+        ) : (
+          <div className="mb-4 p-3 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between text-xs text-slate-700">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold">Administrator Consolidated Statement:</span>
+              <span>Complete salon income and expenses including all cashiers, operational disbursements, and staff payrolls. Filter by accountant below to review specific accounts.</span>
+            </div>
+          </div>
+        )}
+
         {/* Filters Form Row */}
-        <form onSubmit={handleApplyFilters} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3.5 items-end">
+        <form onSubmit={handleApplyFilters} className={`grid grid-cols-1 sm:grid-cols-2 ${!isAccountant ? 'md:grid-cols-6' : 'md:grid-cols-5'} gap-3.5 items-end`}>
           {/* Branch Filter */}
           <div>
             <label className={labelClass}>Branch</label>
@@ -422,41 +444,55 @@ export const IncomeExpenseReportPage: React.FC = () => {
             </select>
           </div>
 
-          {/* User Type Filter */}
-          <div>
-            <label className={labelClass}>User Type</label>
-            <select
-              value={selectedUserType}
-              onChange={(e) => {
-                setSelectedUserType(e.target.value);
-                setSelectedUser('ALL');
-              }}
-              className={selectClass}
-            >
-              <option value="ALL">All Types</option>
-              <option value="SUPER_ADMIN">Super Admin</option>
-              <option value="ADMIN">Admin</option>
-              <option value="ACCOUNTANT">Accountant</option>
-              <option value="STAFF">Staff</option>
-            </select>
-          </div>
+          {!isAccountant ? (
+            <>
+              {/* User Type Filter */}
+              <div>
+                <label className={labelClass}>User Type</label>
+                <select
+                  value={selectedUserType}
+                  onChange={(e) => {
+                    setSelectedUserType(e.target.value);
+                    setSelectedUser('ALL');
+                  }}
+                  className={selectClass}
+                >
+                  <option value="ALL">All Types</option>
+                  <option value="SUPER_ADMIN">Super Admin</option>
+                  <option value="ADMIN">Admin</option>
+                  <option value="ACCOUNTANT">Accountant</option>
+                  <option value="STAFF">Staff</option>
+                </select>
+              </div>
 
-          {/* User Filter */}
-          <div>
-            <label className={labelClass}>User</label>
-            <select
-              value={selectedUser}
-              onChange={(e) => setSelectedUser(e.target.value)}
-              className={selectClass}
-            >
-              <option value="ALL">All Users</option>
-              {filteredUsers.map((u) => (
-                <option key={u.id} value={u.name}>
-                  {u.name} ({u.role})
-                </option>
-              ))}
-            </select>
-          </div>
+              {/* User Filter */}
+              <div>
+                <label className={labelClass}>User</label>
+                <select
+                  value={selectedUser}
+                  onChange={(e) => setSelectedUser(e.target.value)}
+                  className={selectClass}
+                >
+                  <option value="ALL">All Users</option>
+                  {filteredUsers.map((u) => (
+                    <option key={u.id} value={u.name}>
+                      {u.name} ({u.role})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </>
+          ) : (
+            <div>
+              <label className={labelClass}>Account Scope</label>
+              <input
+                type="text"
+                disabled
+                value={`${user.name} (My Sales & Expenses)`}
+                className={`${inputClass} bg-slate-100 text-slate-600 font-medium cursor-not-allowed`}
+              />
+            </div>
+          )}
 
           {/* From Date */}
           <div>

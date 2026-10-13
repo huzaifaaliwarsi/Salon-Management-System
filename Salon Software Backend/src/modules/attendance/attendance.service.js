@@ -90,7 +90,7 @@ const evaluateDay = (staffDTO, checkIn, checkOut, isOvernight) => {
     workedHours: checkOut ? calculateWorkedHours(checkIn, checkOut, isOvernight) : 0,
     scheduledHours: calculateScheduledHours(staffDTO.startTime, staffDTO.endTime, isOvernight),
     calculationSnapshot: calculateDeductionSnapshot(staffDTO, isLate, lateMinutes, early.isEarlyExit, early.earlyExitMinutes),
-    isMissingPunch: !checkOut,
+    isMissingPunch: !checkIn || !checkOut,
   };
 };
 
@@ -254,8 +254,9 @@ export const markAllAttendance = async ({ branchId: requested, date, status = 'P
         continue;
       }
 
-      const cIn = checkIn || s.startTime || '09:00 AM';
-      const cOut = checkOut || s.endTime || '06:00 PM';
+      const cIn = checkIn || '';
+      const cOut = checkOut || null;
+      if (cOut && !cIn) throw badRequest('INVALID_PUNCH', 'Enter check-in before check-out.');
       const isOvernight = s.isOvernightShift;
 
       if (status === 'PRESENT') {
@@ -274,8 +275,8 @@ export const markAllAttendance = async ({ branchId: requested, date, status = 'P
             notes: notes || 'Bulk marked present by manager.',
             punches: {
               create: [
-                { type: 'CHECK_IN', timestamp: cIn, source: 'MANUAL' },
-                { type: 'CHECK_OUT', timestamp: cOut, source: 'MANUAL' },
+                ...(cIn ? [{ type: 'CHECK_IN', timestamp: cIn, source: 'MANUAL' }] : []),
+                ...(cOut ? [{ type: 'CHECK_OUT', timestamp: cOut, source: 'MANUAL' }] : []),
               ],
             },
           },
@@ -344,24 +345,17 @@ export const bulkSaveAttendance = async ({ branchId: requested, date, records },
       let isMissingPunch = false;
 
       if (status === 'PRESENT' || status === 'HALF_DAY') {
-        if (!checkIn) checkIn = staff.startTime || '09:00';
-        if (!checkOut) checkOut = staff.endTime || '18:00';
+        if (checkOut && !checkIn) throw badRequest('INVALID_PUNCH', 'Enter check-in before check-out.');
         const dto = toStaffDTO(staff);
-        try {
-          const day = evaluateDay(dto, checkIn, checkOut, staff.isOvernightShift);
-          isLate = day.isLate;
-          lateMinutes = day.lateMinutes;
-          isEarlyExit = day.isEarlyExit;
-          earlyExitMinutes = day.earlyExitMinutes;
-          workedHours = day.workedHours;
-          scheduledHours = day.scheduledHours;
-          calculationSnapshot = day.calculationSnapshot;
-          isMissingPunch = day.isMissingPunch;
-        } catch {
-          // If checkOut earlier than checkIn or invalid, set gracefully
-          workedHours = 0;
-          isMissingPunch = true;
-        }
+        const day = evaluateDay(dto, checkIn, checkOut, staff.isOvernightShift);
+        isLate = day.isLate;
+        lateMinutes = day.lateMinutes;
+        isEarlyExit = day.isEarlyExit;
+        earlyExitMinutes = day.earlyExitMinutes;
+        workedHours = day.workedHours;
+        scheduledHours = day.scheduledHours;
+        calculationSnapshot = day.calculationSnapshot;
+        isMissingPunch = day.isMissingPunch;
       } else if (status === 'ABSENT') {
         checkIn = 'ABSENT';
         checkOut = 'ABSENT';

@@ -182,7 +182,7 @@ export const ServicesPackagesPage: React.FC = () => {
     code: '',
     name: '',
     description: '',
-    price: 15000,
+    price: 0,
     taxTreatment: 'BRANCH_DEFAULT',
     specificTaxRuleId: '',
     isActive: true,
@@ -408,19 +408,9 @@ export const ServicesPackagesPage: React.FC = () => {
       },
     ];
 
-    const prevSum = packageFormData.components.reduce(
-      (sum, c) => sum + (c.unitPrice || 0) * (c.quantity || 1),
-      0
-    );
-    const newSum = prevSum + srv.price;
-    const shouldUpdatePrice =
-      packageFormData.price === 0 ||
-      packageFormData.price === prevSum ||
-      packageFormData.components.length === 0;
-
+    // Retain custom package selling price entered by user - do not overwrite with services sum
     setPackageFormData({
       ...packageFormData,
-      price: shouldUpdatePrice ? newSum : packageFormData.price,
       components: newComponents,
     });
   };
@@ -763,7 +753,7 @@ export const ServicesPackagesPage: React.FC = () => {
                     code: generateNextPackageCode(allPackages.length > 0 ? allPackages : packages),
                     name: '',
                     description: '',
-                    price: 15000,
+                    price: 0,
                     taxTreatment: 'BRANCH_DEFAULT',
                     specificTaxRuleId: '',
                     isActive: true,
@@ -1340,7 +1330,7 @@ export const ServicesPackagesPage: React.FC = () => {
                   className="text-xs font-semibold tabular-nums text-slate-900"
                 />
                 <span className="text-[10px] text-slate-400 mt-0.5 block">
-                  Independently priced; not overwritten when component services change.
+                  Independently priced custom package rate; preserved as entered.
                 </span>
               </div>
             </div>
@@ -1377,11 +1367,23 @@ export const ServicesPackagesPage: React.FC = () => {
                 </div>
 
                 {packageFormData.components.length > 0 && (
-                  <div className="text-right">
-                    <span className="text-[11px] text-slate-500 block">Total Services Value:</span>
-                    <span className="font-mono font-semibold text-xs text-slate-800">
-                      {formatCurrency(servicesTotalValue)}
-                    </span>
+                  <div className="text-right flex items-center gap-2">
+                    <div>
+                      <span className="text-[11px] text-slate-500 block">Total Services Value:</span>
+                      <span className="font-mono font-semibold text-xs text-slate-800">
+                        {formatCurrency(servicesTotalValue)}
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-6 text-[10px] px-2 py-0 border-blue-200 text-blue-700 hover:bg-blue-50 cursor-pointer"
+                      onClick={() => setPackageFormData((prev) => ({ ...prev, price: servicesTotalValue }))}
+                      title="Set package selling price equal to total individual services value"
+                    >
+                      Use as Price
+                    </Button>
                   </div>
                 )}
               </div>

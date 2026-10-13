@@ -1283,6 +1283,7 @@ export interface ApproveSettlementInput {
 }
 
 export type AttendanceStatus =
+  | 'HALF_DAY'
   | 'PRESENT'
   | 'ABSENT'
   | 'PAID_LEAVE'
@@ -1590,6 +1591,9 @@ export interface PayslipRecord {
   workingDaysInMonth: number;
   calendarDaysInMonth: number;
   presentDays: number;
+  halfDayDays?: number;
+  lateDays?: number;
+  earlyExitDays?: number;
   paidLeaveDays: number;
   unpaidLeaveDays: number;
   absentDays: number;
@@ -1931,6 +1935,7 @@ export interface SalesInvoicesReportQuery {
   paymentMethod?: string;
   staffId?: string;
   clientId?: string;
+  soldByUserId?: string;
 }
 
 export interface SalesInvoicesReport {
