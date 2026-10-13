@@ -1,8 +1,8 @@
 # Vercel & Neon DB Deployment Guide
 
 This project consists of two components:
-1. **Frontend**: Vite + React 19 (`Salon Software Frontend`)
-2. **Backend**: Express + Prisma + PostgreSQL (`Salon Software Backend`)
+1. **Frontend**: Vite + React 19 (`frontend`)
+2. **Backend**: Express + Prisma + PostgreSQL (`backend`)
 3. **Database**: Neon DB (Serverless PostgreSQL)
 
 ---
@@ -19,7 +19,7 @@ This project consists of two components:
 ### B. Run Migrations & Seed
 You can provide the connection string in chat and I will run it directly, or run:
 ```bash
-cd "Salon Software Backend"
+cd backend
 
 # Run Prisma migrations
 npx prisma migrate deploy
@@ -38,7 +38,7 @@ npm run db:seed
 1. On [Vercel Dashboard](https://vercel.com), click **Add New...** -> **Project**.
 2. Select your repository.
 3. In **Project Settings**:
-   - **Root Directory**: `Salon Software Backend`
+   - **Root Directory**: `backend`
    - **Framework Preset**: `Other`
    - **Build Command**: `npm run build` (runs `prisma generate`)
    - **Output Directory**: Leave empty
@@ -57,7 +57,7 @@ npm run db:seed
 1. On Vercel Dashboard, click **Add New...** -> **Project**.
 2. Select the same repository.
 3. In **Project Settings**:
-   - **Root Directory**: `Salon Software Frontend`
+   - **Root Directory**: `frontend`
    - **Framework Preset**: `Vite`
    - **Build Command**: `npm run build`
    - **Output Directory**: `dist`
