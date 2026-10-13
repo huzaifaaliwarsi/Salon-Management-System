@@ -35,7 +35,7 @@ export const staffSalaryReport = async (actor, q) => {
 
   let rows = slips.map((ps) => {
     const s = ps.snapshot;
-    const done = ps.payments.filter((p) => p.status === 'COMPLETED' && (!q.paymentMethod || p.method === q.paymentMethod));
+    const done = ps.payments.filter((p) => p.status === 'COMPLETED' && (!q.paymentMethod || q.paymentMethod === 'ALL' || p.method === q.paymentMethod));
     const paid = sumBy(done, (p) => p.amount);
     const net = toDec(ps.netPayable);
     const outstanding = round2(net.minus(sumBy(ps.payments.filter((p) => p.status === 'COMPLETED'), (p) => p.amount)));
@@ -54,9 +54,9 @@ export const staffSalaryReport = async (actor, q) => {
       finalizedAt: ps.run.finalizedAt, paidDate: lastPaid ? ymd(lastPaid.paidAt) : null, processedBy: ps.run.finalizedByName,
     };
   });
-  if (q.designation) rows = rows.filter((r) => r.designation === q.designation);
-  if (q.paymentStatus) rows = rows.filter((r) => r.status === q.paymentStatus);
-  if (q.paymentMethod) rows = rows.filter((r) => r.paid > 0);
+  if (q.designation && q.designation !== 'ALL') rows = rows.filter((r) => r.designation === q.designation);
+  if (q.paymentStatus && q.paymentStatus !== 'ALL') rows = rows.filter((r) => r.status === q.paymentStatus);
+  if (q.paymentMethod && q.paymentMethod !== 'ALL') rows = rows.filter((r) => r.paid > 0);
   rows.sort((a, b2) => b2.period.localeCompare(a.period) || a.employeeCode.localeCompare(b2.employeeCode));
 
   const totals = Object.fromEntries(['basic', 'attendance', 'overtime', 'allowances', 'deductions', 'advanceRecovery', 'gross', 'net', 'paid', 'outstanding']

@@ -77,6 +77,27 @@ export const getService = async (actor, id) => {
   return toServiceDTO(s);
 };
 
+const generateNextServiceCode = async (tx) => {
+  const services = await tx.service.findMany({ select: { code: true } });
+  let maxNum = 0;
+  const existing = new Set(services.map((s) => (s.code || '').trim().toUpperCase()));
+  for (const s of services) {
+    if (!s.code) continue;
+    const m = s.code.match(/(\d+)$/);
+    if (m) {
+      const val = parseInt(m[1], 10);
+      if (!isNaN(val) && val > maxNum) maxNum = val;
+    }
+  }
+  let nextNum = maxNum + 1;
+  let candidate = `SRV-${String(nextNum).padStart(2, '0')}`;
+  while (existing.has(candidate)) {
+    nextNum++;
+    candidate = `SRV-${String(nextNum).padStart(2, '0')}`;
+  }
+  return candidate;
+};
+
 const assertServiceCodeFree = async (tx, branchId, code, exceptId) => {
   const clash = await tx.service.findFirst({
     where: { branchId, code: { equals: code, mode: 'insensitive' }, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
@@ -88,14 +109,15 @@ export const createService = async (input, actor) => {
   const branchId = resolveWriteBranch(actor, input.branchId, 'Access Denied: Cannot create services for another branch.');
   return prisma.$transaction(async (tx) => {
     await assertActiveBranch(tx, branchId);
-    await assertServiceCodeFree(tx, branchId, input.code);
+    const code = input.code ? input.code.trim().toUpperCase() : await generateNextServiceCode(tx);
+    await assertServiceCodeFree(tx, branchId, code);
     const specificTaxRuleId = await assertTaxRule(tx, branchId, input.taxTreatment, input.specificTaxRuleId);
 
     const s = await tx.service.create({
       data: {
         branchId,
         categoryId:      await categoryIdFor(tx, branchId, input.category),
-        code:            input.code,
+        code,
         name:            input.name,
         description:     input.description || null,
         durationMinutes: input.durationMinutes,
@@ -162,6 +184,27 @@ const validateComponents = async (tx, branchId, components) => {
   }
 };
 
+const generateNextPackageCode = async (tx) => {
+  const packages = await tx.package.findMany({ select: { code: true } });
+  let maxNum = 0;
+  const existing = new Set(packages.map((p) => (p.code || '').trim().toUpperCase()));
+  for (const p of packages) {
+    if (!p.code) continue;
+    const m = p.code.match(/(\d+)$/);
+    if (m) {
+      const val = parseInt(m[1], 10);
+      if (!isNaN(val) && val > maxNum) maxNum = val;
+    }
+  }
+  let nextNum = maxNum + 1;
+  let candidate = `PKG-${String(nextNum).padStart(2, '0')}`;
+  while (existing.has(candidate)) {
+    nextNum++;
+    candidate = `PKG-${String(nextNum).padStart(2, '0')}`;
+  }
+  return candidate;
+};
+
 const assertPackageCodeFree = async (tx, branchId, code, exceptId) => {
   const clash = await tx.package.findFirst({
     where: { branchId, code: { equals: code, mode: 'insensitive' }, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
@@ -214,14 +257,15 @@ export const createPackage = async (input, actor) => {
   const branchId = resolveWriteBranch(actor, input.branchId, 'Access Denied: Cannot create packages for another branch.');
   return prisma.$transaction(async (tx) => {
     await assertActiveBranch(tx, branchId);
-    await assertPackageCodeFree(tx, branchId, input.code);
+    const code = input.code ? input.code.trim().toUpperCase() : await generateNextPackageCode(tx);
+    await assertPackageCodeFree(tx, branchId, code);
     await validateComponents(tx, branchId, input.components);
     const specificTaxRuleId = await assertTaxRule(tx, branchId, input.taxTreatment, input.specificTaxRuleId);
 
     const p = await tx.package.create({
       data: {
         branchId,
-        code:         input.code,
+        code,
         name:         input.name,
         description:  input.description || null,
         price:        round2(input.price),

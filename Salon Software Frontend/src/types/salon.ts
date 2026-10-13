@@ -934,6 +934,7 @@ export interface InvoiceLineItem {
     staffId: string;
     staffName: string;
     staffCommissionRate?: number;
+    allocatedAmount?: number;
   }>;
   packageComponents?: InvoiceLineItemComponent[];
   packageComponentsSnapshot?: InvoiceLineItemComponent[];
@@ -1006,6 +1007,7 @@ export interface POSCartItem {
     staffId: string;
     staffName: string;
     staffCommissionRate: number;
+    allocatedAmount?: number;
   }>;
   packageComponents?: POSCartComponentAssignment[];
   batchId?: string;
@@ -1281,6 +1283,7 @@ export interface ApproveSettlementInput {
 }
 
 export type AttendanceStatus =
+  | 'HALF_DAY'
   | 'PRESENT'
   | 'ABSENT'
   | 'PAID_LEAVE'
@@ -1588,6 +1591,9 @@ export interface PayslipRecord {
   workingDaysInMonth: number;
   calendarDaysInMonth: number;
   presentDays: number;
+  halfDayDays?: number;
+  lateDays?: number;
+  earlyExitDays?: number;
   paidLeaveDays: number;
   unpaidLeaveDays: number;
   absentDays: number;
@@ -1643,6 +1649,8 @@ export interface PayrollPreviewOptions {
   startDate?: string;
   endDate?: string;
   compensationType?: CompensationType | 'ALL';
+  staffIds?: string[];
+  includeDaily?: boolean;
 }
 
 export interface PayrollRun {
@@ -1882,6 +1890,7 @@ export interface SalesInvoiceReportRow {
   gross: number;
   discount: number;
   netSales: number;
+  tax?: number;
   taxCharged: number;
   taxReversed: number;
   netTaxLiability: number;
@@ -1926,6 +1935,7 @@ export interface SalesInvoicesReportQuery {
   paymentMethod?: string;
   staffId?: string;
   clientId?: string;
+  soldByUserId?: string;
 }
 
 export interface SalesInvoicesReport {
@@ -1956,9 +1966,9 @@ export type IncomeExpenseItemType =
 export interface IncomeExpenseReportRow {
   id: string;
   date: string;
-  type: IncomeExpenseItemType;
+  type: IncomeExpenseItemType | string;
   category: string;
-  source: 'POS_INVOICE' | 'INVOICE_REFUND' | 'EXPENSE_VOUCHER' | 'PAYROLL' | 'COMMISSION' | 'INVENTORY';
+  source: string;
   reference: string;
   branchId: string;
   branchName: string;
@@ -1966,6 +1976,9 @@ export interface IncomeExpenseReportRow {
   description: string;
   income: number;
   expense: number;
+  paid?: number;
+  discount?: number;
+  remaining?: number;
   paymentMethod: string;
   status: string;
 }
@@ -1994,6 +2007,9 @@ export interface IncomeExpenseReportQuery {
   status?: string;
   paymentMethod?: string;
   search?: string;
+  userType?: string;
+  userId?: string;
+  user?: string;
 }
 
 export interface IncomeExpenseReport {
@@ -2013,9 +2029,107 @@ export interface IncomeExpenseReport {
   totals: {
     income: number;
     expense: number;
+    paid?: number;
+    discount?: number;
+    remaining?: number;
     net: number;
   };
   categories: string[];
+}
+
+export interface TaxReportRow {
+  id: string;
+  date: string;
+  time: string;
+  reference: string;
+  branchId: string;
+  branchName: string;
+  clientName: string;
+  taxableBase: number;
+  taxRate: number;
+  taxAmount: number;
+  total: number;
+  paymentMethod: string;
+  status: string;
+}
+
+export interface TaxReportServiceRow {
+  id: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  date: string;
+  time: string;
+  branchId: string;
+  branchName: string;
+  clientName: string;
+  serviceName: string;
+  serviceType: string;
+  staffName: string;
+  quantity: number;
+  unitPrice: number;
+  discount: number;
+  taxableBase: number;
+  taxRate: number;
+  taxAmount: number;
+  total: number;
+  paymentMethod: string;
+  status: string;
+}
+
+export interface TaxReportServiceSummary {
+  serviceName: string;
+  serviceType: string;
+  count: number;
+  taxableBase: number;
+  taxAmount: number;
+  taxRate: number;
+}
+
+export interface TaxReportKPIs {
+  totalInvoicesTaxed: number;
+  totalServicesTaxed?: number;
+  totalTaxableSales: number;
+  totalTaxCollected: number;
+  totalTaxRefunded: number;
+  netTaxLiability: number;
+}
+
+export interface TaxReportTotals {
+  totalServices?: number;
+  taxableBase: number;
+  taxAmount: number;
+  netTax: number;
+  total?: number;
+}
+
+export interface TaxReportQuery {
+  branchId?: string;
+  preset?: string;
+  startDate?: string;
+  endDate?: string;
+  from?: string;
+  to?: string;
+  search?: string;
+}
+
+export interface TaxReport {
+  meta: {
+    branchId: string;
+    branchName: string;
+    from: string;
+    to: string;
+    preset: string;
+    dateBasis: string;
+    timezone: string;
+    generatedAt: string;
+    generatedBy: string;
+  };
+  kpis: TaxReportKPIs;
+  rows: TaxReportServiceRow[] | any[];
+  serviceRows?: TaxReportServiceRow[];
+  serviceSummary?: TaxReportServiceSummary[];
+  invoiceRows?: TaxReportRow[];
+  totals: TaxReportTotals;
 }
 
 export interface OperatingProfitStatementRow {

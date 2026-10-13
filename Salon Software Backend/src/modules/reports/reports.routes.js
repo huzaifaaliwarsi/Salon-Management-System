@@ -42,7 +42,7 @@ reportRoutes.get('/staff-performance', authorize('SUPER_ADMIN', 'ADMIN'), valida
 const ym = z.string().regex(/^\d{4}-\d{2}$/, 'Month must be YYYY-MM');
 const salaryQuery = z.object({
   branchId: z.string().optional(), month: ym.optional(), fromMonth: ym.optional(), toMonth: ym.optional(), staffId: z.string().optional(),
-  designation: z.string().optional(), paymentStatus: z.enum(['FINALIZED', 'PARTIALLY_PAID', 'PAID']).optional(), paymentMethod: z.enum(['CASH', 'ONLINE']).optional(),
+  designation: z.string().optional(), paymentStatus: z.enum(['FINALIZED', 'PARTIALLY_PAID', 'PAID', 'ALL']).optional(), paymentMethod: z.enum(['CASH', 'ONLINE', 'ALL']).optional(),
 }).refine((q) => q.month || q.fromMonth, { message: 'Provide month or fromMonth/toMonth.' });
 const commissionQuery = z.object({
   branchId: z.string().optional(), startDate: ymd, endDate: ymd, staffId: z.string().optional(),
@@ -64,6 +64,9 @@ const salesInvoicesQuery = z.object({
   paymentMethod: z.string().optional(),
   staffId: z.string().optional(),
   clientId: z.string().optional(),
+  soldByUserId: z.string().optional(),
+  accountantId: z.string().optional(),
+  userId: z.string().optional(),
 });
 reportRoutes.get('/sales-invoices', authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'), validate(salesInvoicesQuery, 'query'), send((req) => r.salesInvoicesReport(req.user, req.query)));
 
@@ -79,6 +82,9 @@ const incomeExpenseQuery = z.object({
   status: z.string().optional(),
   paymentMethod: z.string().optional(),
   search: z.string().optional(),
+  userType: z.string().optional(),
+  userId: z.string().optional(),
+  user: z.string().optional(),
 });
 reportRoutes.get(
   '/income-expense',
@@ -206,4 +212,20 @@ reportRoutes.get(
   authorize('SUPER_ADMIN', 'ADMIN'),
   validate(attendanceOvertimeQuery, 'query'),
   send((req) => r.attendanceOvertimeReport(req.user, req.query))
+);
+
+const taxReportQuery = z.object({
+  branchId: z.string().optional(),
+  preset: z.string().optional(),
+  startDate: ymd.optional(),
+  endDate: ymd.optional(),
+  from: ymd.optional(),
+  to: ymd.optional(),
+  search: z.string().optional(),
+});
+reportRoutes.get(
+  '/tax',
+  authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'),
+  validate(taxReportQuery, 'query'),
+  send((req) => r.taxReport(req.user, req.query))
 );

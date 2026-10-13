@@ -197,6 +197,7 @@ export const StaffDirectoryPage: React.FC = () => {
   const isSuperAdmin = user.role === 'SUPER_ADMIN';
 
   const [staffList, setStaffList] = useState<StaffMember[]>([]);
+  const [allStaffList, setAllStaffList] = useState<StaffMember[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -277,11 +278,13 @@ export const StaffDirectoryPage: React.FC = () => {
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const [fetchedStaff, fetchedBranches] = await Promise.all([
+      const [fetchedStaff, allStaff, fetchedBranches] = await Promise.all([
         salonService.getStaffMembers(user, branchFilter),
+        salonService.getStaffMembers(user, 'ALL'),
         salonService.getBranches(),
       ]);
       setStaffList(fetchedStaff);
+      setAllStaffList(allStaff);
       setBranches(fetchedBranches);
     } catch (err: any) {
       console.error('Failed to load staff list:', err);
@@ -315,7 +318,7 @@ export const StaffDirectoryPage: React.FC = () => {
     return true;
   });
 
-  const generateNextEmployeeCode = (_branchId?: string, currentList: StaffMember[] = staffList) => {
+  const generateNextEmployeeCode = (_branchId?: string, currentList: StaffMember[] = (allStaffList.length > 0 ? allStaffList : staffList)) => {
     let maxNum = 0;
     const existingCodes = new Set(
       currentList
@@ -344,7 +347,7 @@ export const StaffDirectoryPage: React.FC = () => {
 
   const handleOpenAdd = () => {
     const defaultBranch = isSuperAdmin ? (branchFilter !== 'ALL' ? branchFilter : branches[0]?.id || '') : (user.branchId as string);
-    const code = generateNextEmployeeCode(defaultBranch, staffList);
+    const code = generateNextEmployeeCode(defaultBranch, allStaffList.length > 0 ? allStaffList : staffList);
 
     setFormData({
       employeeCode: code,
@@ -394,7 +397,7 @@ export const StaffDirectoryPage: React.FC = () => {
   };
 
   const handleBranchChangeInAdd = (newBranchId: string) => {
-    const code = generateNextEmployeeCode(newBranchId, staffList);
+    const code = generateNextEmployeeCode(newBranchId, allStaffList.length > 0 ? allStaffList : staffList);
     setFormData((prev) => ({
       ...prev,
       branchId: newBranchId,
@@ -501,9 +504,10 @@ export const StaffDirectoryPage: React.FC = () => {
     }
 
     const upperCode = formData.employeeCode.trim().toUpperCase();
-    const isCodeTaken = staffList.some((s) => s.employeeCode?.toUpperCase() === upperCode);
+    const sourceList = allStaffList.length > 0 ? allStaffList : staffList;
+    const isCodeTaken = sourceList.some((s) => s.employeeCode?.toUpperCase() === upperCode);
     if (isCodeTaken) {
-      const msg = `Employee code '${upperCode}' is already assigned to an existing staff member. Please enter a unique code.`;
+      const msg = `Employee code '${upperCode}' is already assigned to an existing staff member in the salon. Please enter a unique code.`;
       setFormError(msg);
       toast.error(msg);
       return;
@@ -1066,7 +1070,7 @@ export const StaffDirectoryPage: React.FC = () => {
 
                   <div>
                     <Input
-                      label="Employee Code *"
+                      label="Employee Code * (Auto-generated)"
                       type="text"
                       required
                       disabled={isEditModalOpen}
@@ -1074,13 +1078,13 @@ export const StaffDirectoryPage: React.FC = () => {
                       value={formData.employeeCode}
                       onChange={(e) => setFormData({ ...formData, employeeCode: e.target.value.toUpperCase() })}
                     />
-                    {isAddModalOpen && formData.employeeCode && staffList.some((s) => s.employeeCode?.toUpperCase() === formData.employeeCode.trim().toUpperCase()) && (
+                    {isAddModalOpen && formData.employeeCode && (allStaffList.length > 0 ? allStaffList : staffList).some((s) => s.employeeCode?.toUpperCase() === formData.employeeCode.trim().toUpperCase()) && (
                       <p className="text-[11px] text-rose-600 font-medium mt-1">⚠️ This employee code is already taken in the system.</p>
                     )}
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
                   <Input
                     label="Phone Number *"
                     type="text"
@@ -1088,14 +1092,6 @@ export const StaffDirectoryPage: React.FC = () => {
                     placeholder="+92 (300) 123-4567"
                     value={formData.phone}
                     onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  />
-
-                  <Input
-                    label="Email (Optional)"
-                    type="email"
-                    placeholder="mahira@isysware.com"
-                    value={formData.email}
-                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                   />
                 </div>
 
@@ -1431,34 +1427,21 @@ export const StaffDirectoryPage: React.FC = () => {
                   )}
                 </div>
 
-                {/* Divisor & Combination Policy */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Input
-                    label="Payroll Divisor (Days/Month) *"
-                    type="number"
-                    min="1"
-                    max="31"
-                    required
-                    disabled={formData.compensationType === 'COMMISSION_ONLY'}
-                    value={formData.payrollDivisor}
-                    onChange={(e) => setFormData({ ...formData, payrollDivisor: Number(e.target.value) })}
-                  />
-
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1.5">Combination Policy (Same Day) *</label>
-                    <Select
-                      value={formData.combinationPolicy}
-                      onValueChange={(val: PenaltyCombinationPolicy) => setFormData({ ...formData, combinationPolicy: val })}
-                    >
-                      <SelectTrigger className="h-10 text-xs">
-                        <SelectValue placeholder="Policy" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="BOTH">Apply Both Late & Early Penalties</SelectItem>
-                        <SelectItem value="HIGHEST_ONLY">Apply Highest Penalty Only</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+                {/* Combination Policy */}
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1.5">Combination Policy (Same Day) *</label>
+                  <Select
+                    value={formData.combinationPolicy}
+                    onValueChange={(val: PenaltyCombinationPolicy) => setFormData({ ...formData, combinationPolicy: val })}
+                  >
+                    <SelectTrigger className="h-10 text-xs">
+                      <SelectValue placeholder="Policy" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="BOTH">Apply Both Late & Early Penalties</SelectItem>
+                      <SelectItem value="HIGHEST_ONLY">Apply Highest Penalty Only</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 {/* Live Sample Deduction Preview Card */}

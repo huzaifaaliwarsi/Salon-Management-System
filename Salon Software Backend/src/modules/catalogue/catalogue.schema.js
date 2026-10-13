@@ -10,7 +10,7 @@ const price = (label) => z.number({ message: `${label} must be a finite non-nega
 export const branchQuery = z.object({ branchId: z.string().optional() }).passthrough();
 
 const serviceFields = {
-  code:              z.string().trim().min(1, 'Unique service code is required.').transform((s) => s.toUpperCase()),
+  code:              z.string().trim().optional().transform((s) => (s ? s.toUpperCase() : undefined)),
   name:              z.string().trim().min(1, 'Service name is required.'),
   category:          z.string().trim().min(1).default('General'),
   durationMinutes:   z.number({ message: 'Duration must be a positive number of minutes.' }).positive('Duration must be a positive number of minutes.').transform(Math.round).optional().default(30),
@@ -42,7 +42,7 @@ const component = z.object({
 }).passthrough(); // serviceCode/serviceName/unitPrice from the UI are ignored — always read from the catalogue
 
 const packageFields = {
-  code:              z.string().trim().min(1, 'Unique package code is required.').transform((s) => s.toUpperCase()),
+  code:              z.string().trim().optional().transform((s) => (s ? s.toUpperCase() : undefined)),
   name:              z.string().trim().min(1, 'Package name is required.'),
   description:       z.string().trim().optional(),
   price:             price('Package selling price'),

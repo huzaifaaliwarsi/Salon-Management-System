@@ -91,7 +91,7 @@ export const resolveReportContext = async (user, query = {}, dateBasis = 'RECOGN
       where: { id: branchId },
       select: { name: true, city: true },
     });
-    branchName = branch ? `${branch.name} (${branch.city})` : 'Selected Branch';
+    branchName = branch ? (branch.city ? `${branch.name} (${branch.city})` : branch.name) : 'Selected Branch';
   }
 
   const generatedBy = user?.name ? `${user.name} (${user.role})` : user?.email || 'System';

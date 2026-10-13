@@ -18,5 +18,6 @@ router.put('/:id',                       authorize('SUPER_ADMIN'), validate(upda
 router.post('/:id/assign-admin',         authorize('SUPER_ADMIN'), validate(assignAdminSchema),  c.assignAdmin);
 router.get('/:id/deactivation-blockers', authorize('SUPER_ADMIN'), c.blockers);
 router.post('/:id/deactivate',           authorize('SUPER_ADMIN'), c.deactivate);
+router.delete('/:id',                     authorize('SUPER_ADMIN'), c.remove);
 
 export default router;

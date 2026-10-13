@@ -15,8 +15,26 @@ const app = express();
 
 // ── Security ──────────────────────────────────────────────────────────────────
 app.use(helmet());
+
+const configuredOrigins = (env.corsOrigin || 'http://localhost:3000')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 app.use(cors({
-  origin:      env.corsOrigin,
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (
+      configuredOrigins.includes(origin) ||
+      configuredOrigins.includes('*') ||
+      origin.endsWith('.vercel.app') ||
+      origin.includes('localhost') ||
+      origin.includes('127.0.0.1')
+    ) {
+      return callback(null, true);
+    }
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
   credentials: true, // Required for the httpOnly refresh cookie
   methods:     ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],

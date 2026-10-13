@@ -55,6 +55,8 @@ import {
   SalesInvoicesReportQuery,
   IncomeExpenseReport,
   IncomeExpenseReportQuery,
+  TaxReport,
+  TaxReportQuery,
   OperatingProfitReport,
   OperatingProfitReportQuery,
   PaymentAccountsReport,
@@ -226,6 +228,7 @@ export interface SalonServiceContract {
   updateBranch(id: string, branch: Partial<Branch>, actor: User): Promise<Branch>;
   assignBranchAdmin(branchId: string, adminUserId: string, actor: User): Promise<Branch>;
   deactivateBranch(id: string, actor: User): Promise<{ success: boolean; message: string }>;
+  deleteBranch(id: string, actor: User): Promise<{ success: boolean; message: string }>;
   checkBranchDeactivationBlockers(id: string): Promise<{ canDeactivate: boolean; blockers: string[] }>;
 
   getUsers(actor: User, branchId?: string): Promise<User[]>;
@@ -462,6 +465,17 @@ export interface SalonServiceContract {
     notes?: string;
   }, actor?: User): Promise<{ markedCount: number; skippedCount: number; markedNames: string[]; skippedNames: string[] }>;
   correctAttendance(id: string, input: CorrectAttendanceInput, actor?: User): Promise<AttendanceRecord>;
+  saveDailyAttendance(input: {
+    branchId: string;
+    date: string;
+    records: Array<{
+      staffId: string;
+      status: string;
+      checkIn?: string;
+      checkOut?: string;
+      notes?: string;
+    }>;
+  }, actor?: User): Promise<{ savedCount: number }>;
   finalizeDayAttendance(branchId: string, date: string, actor?: User): Promise<{ finalizedCount: number; markedAbsentStaffNames: string[] }>;
   importAttendanceCSV(branchId: string, rows: CSVAttendanceImportRow[], actor?: User): Promise<CSVAttendanceImportResult>;
 
@@ -489,6 +503,11 @@ export interface SalonServiceContract {
   recordPayrollPayment(input: RecordPayrollPaymentInput, actor?: User): Promise<{ payrollRun: PayrollRun; payment: PayrollPayment }>;
   cancelPayrollRun(payrollRunId: string, reason: string, actor?: User): Promise<PayrollRun>;
   reversePayrollPayment(paymentId: string, reason: string, actor?: User): Promise<PayrollPayment>;
+  addManualDeduction(
+    payslipId: string,
+    input: { amount: number; title: string; notes?: string },
+    actor?: User
+  ): Promise<{ payslip: PayslipRecord; payrollRun: PayrollRun; adjustment: PayrollAdjustment }>;
   getPayrollRuns(branchId: string | 'ALL', month?: string, actor?: User): Promise<PayrollRun[]>;
   getStaffPersonalPayslips(actor?: User): Promise<PayslipRecord[]>;
   // Payroll inputs & monthly summary (payroll.md)
@@ -507,6 +526,7 @@ export interface SalonServiceContract {
   getStaffCommissionReport(query: StaffCommissionReportQuery): Promise<StaffCommissionReport>;
   getSalesInvoicesReport(query: SalesInvoicesReportQuery): Promise<SalesInvoicesReport>;
   getIncomeExpenseReport(query: IncomeExpenseReportQuery): Promise<IncomeExpenseReport>;
+  getTaxReport(query: TaxReportQuery): Promise<TaxReport>;
   getOperatingProfitReport(query: OperatingProfitReportQuery): Promise<OperatingProfitReport>;
   getPaymentAccountsReport(query: PaymentAccountsReportQuery): Promise<PaymentAccountsReport>;
   getCashDrawerReport(query: CashDrawerReportQuery): Promise<CashDrawerReport>;

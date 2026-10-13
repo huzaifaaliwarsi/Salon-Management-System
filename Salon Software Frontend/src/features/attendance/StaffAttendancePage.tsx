@@ -7,1633 +7,930 @@ import {
   Branch,
   CSVAttendanceImportRow,
   CSVAttendanceImportResult,
-  AttendanceStatus,
-  AttendanceSource,
 } from '../../types/salon';
 import {
   Clock,
   Calendar,
-  Search,
   Filter,
-  Plus,
-  FileSpreadsheet,
-  Printer,
-  Upload,
+  Check,
+  X,
+  Save,
   AlertCircle,
   CheckCircle2,
-  AlertTriangle,
-  History,
-  Edit,
-  X,
-  UserCheck,
-  UserX,
-  FileText,
-  Radio,
-  Download,
-  Info,
-  ChevronRight,
-  Sparkles,
+  Upload,
+  FileSpreadsheet,
+  RotateCcw,
+  Building2,
+  Users,
+  ShieldCheck,
+  HelpCircle,
+  Loader2,
+  ChevronDown,
 } from 'lucide-react';
-import { formatMinutesToTime, parseTimeToMinutes } from '../../lib/attendanceCalculations';
+import {
+  formatMinutesToTime,
+  parseTimeToMinutes,
+  evaluateLateness,
+  evaluateEarlyExit,
+} from '../../lib/attendanceCalculations';
 import { AccessDeniedView } from '../scaffold/AccessDeniedView';
 import { toast } from '../../context/ToastContext';
+
+function formatTo24Hour(timeStr?: string): string {
+  if (!timeStr || !timeStr.trim()) return '';
+  const clean = timeStr.trim().toUpperCase();
+  if (/^([01]\d|2[0-3]):[0-5]\d$/.test(clean)) {
+    return clean;
+  }
+  const mins = parseTimeToMinutes(clean);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+interface EditableAttendanceRow {
+  staffId: string;
+  employeeCode: string;
+  name: string;
+  phone: string;
+  designation: string;
+  roleTitle: string;
+  compensationType: string;
+  startTime: string; // e.g. "09:00"
+  endTime: string;   // e.g. "18:00"
+  lateGraceMinutes: number;
+  earlyGraceMinutes: number;
+  isOvernightShift: boolean;
+
+  // Editable fields
+  recordId?: string;
+  status: 'SELECT_STATUS' | 'PRESENT' | 'ABSENT' | 'HALF_DAY' | 'PAID_LEAVE' | 'UNPAID_LEAVE' | 'HOLIDAY' | 'WEEKLY_OFF';
+  checkIn: string;   // "09:00"
+  checkOut: string;  // "18:00"
+  notes: string;
+  isModified: boolean;
+}
 
 export const StaffAttendancePage: React.FC = () => {
   const { user, activeBranchId, allBranches, demoDate } = useAuth();
 
-  // Role guard: Super Admin and Admin only (Accountant and Staff denied)
+  // Role guard: Super Admin and Admin only
   if (!user || (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN')) {
     return <AccessDeniedView attemptedPath="/operations/attendance" />;
   }
 
+  const isSuperAdmin = user.role === 'SUPER_ADMIN';
   const initialDate = demoDate || new Date().toISOString().slice(0, 10);
 
-  // State
-  const [loading, setLoading] = useState<boolean>(true);
-  const [attendanceList, setAttendanceList] = useState<AttendanceRecord[]>([]);
-  const [staffList, setStaffList] = useState<StaffMember[]>([]);
-
-  // Filter controls
-  const [viewMode, setViewMode] = useState<'DAY' | 'MONTH'>('DAY');
+  // Filter Bar state
+  const [selectedBranchId, setSelectedBranchId] = useState<string>(
+    isSuperAdmin ? (activeBranchId !== 'ALL' ? activeBranchId : allBranches[0]?.id || '') : (user.branchId || '')
+  );
+  const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
+  const [attendanceType, setAttendanceType] = useState<string>('NORMAL');
   const [selectedDate, setSelectedDate] = useState<string>(initialDate);
-  const [selectedMonth, setSelectedMonth] = useState<string>(initialDate.slice(0, 7));
-  const [selectedBranchId, setSelectedBranchId] = useState<string>(activeBranchId);
-  const [staffFilter, setStaffFilter] = useState<string>('ALL');
-  const [designationFilter, setDesignationFilter] = useState<string>('ALL');
-  const [statusFilter, setStatusFilter] = useState<string>('ALL');
-  const [sourceFilter, setSourceFilter] = useState<string>('ALL');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  // Modals state
-  const [showAddModal, setShowAddModal] = useState<boolean>(false);
-  const [showMarkAllModal, setShowMarkAllModal] = useState<boolean>(false);
-  const [showCorrectModal, setShowCorrectModal] = useState<boolean>(false);
-  const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
-  const [showImportModal, setShowImportModal] = useState<boolean>(false);
+
+  // Data state
+  const [hasFiltered, setHasFiltered] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [saving, setSaving] = useState<boolean>(false);
+  const [rawStaffList, setRawStaffList] = useState<StaffMember[]>([]);
+  const [rawAttendanceList, setRawAttendanceList] = useState<AttendanceRecord[]>([]);
+  const [rows, setRows] = useState<EditableAttendanceRow[]>([]);
+
+  // Modals state (EOD finalize & CSV import)
   const [showFinalizeModal, setShowFinalizeModal] = useState<boolean>(false);
-  const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
-
-  // Selected item for modals
-  const [activeRecord, setActiveRecord] = useState<AttendanceRecord | null>(null);
-
-  // Form states
-  const [markAllForm, setMarkAllForm] = useState({
-    date: selectedDate,
-    status: 'PRESENT' as 'PRESENT' | 'ABSENT',
-    checkIn: '09:00 AM',
-    checkOut: '06:00 PM',
-    notes: 'Bulk marked by manager',
-  });
-
-  const [addForm, setAddForm] = useState({
-    staffId: '',
-    date: selectedDate,
-    checkIn: '09:00 AM',
-    checkOut: '06:00 PM',
-    isOvernightShift: false,
-    notes: '',
-  });
-
-  const [correctForm, setCorrectForm] = useState({
-    checkIn: '',
-    checkOut: '',
-    status: 'PRESENT' as AttendanceStatus,
-    reason: '',
-    notes: '',
-  });
-
-  // CSV Import State
+  const [showImportModal, setShowImportModal] = useState<boolean>(false);
   const [importCsvText, setImportCsvText] = useState<string>('');
-  const [importPreview, setImportPreview] = useState<CSVAttendanceImportRow[]>([]);
-  const [importResult, setImportResult] = useState<CSVAttendanceImportResult | null>(null);
-
-  // Action status messages
-  const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [importLoading, setImportLoading] = useState<boolean>(false);
 
   // Effective branch
-  const effectiveBranchId = user?.role === 'SUPER_ADMIN' ? selectedBranchId : (user?.branchId || activeBranchId);
+  const effectiveBranchId = isSuperAdmin ? selectedBranchId : (user.branchId || activeBranchId);
+  const currentBranch = allBranches.find((b) => b.id === effectiveBranchId) || allBranches[0];
 
-  // Load data
-  const loadData = async () => {
+  // Fetch staff and existing attendance from backend database
+  const loadAttendanceData = async (branchIdToLoad: string, dateToLoad: string) => {
+    if (!branchIdToLoad) return;
     try {
       setLoading(true);
-      const [sysDate, allStaff, atts] = await Promise.all([
-        salonService.getSystemDate(),
-        salonService.getStaff(effectiveBranchId),
-        salonService.getAttendance(effectiveBranchId, viewMode === 'DAY' ? selectedDate : undefined, undefined, user || undefined),
+      const [allStaff, attRecords] = await Promise.all([
+        salonService.getStaff(branchIdToLoad),
+        salonService.getAttendance(branchIdToLoad, dateToLoad, undefined, user || undefined),
       ]);
 
-      if (!selectedDate) {
-        setSelectedDate(sysDate);
-        setSelectedMonth(sysDate.slice(0, 7));
-      }
+      const activeStaff = allStaff.filter((s) => s.isActive);
+      setRawStaffList(activeStaff);
+      setRawAttendanceList(attRecords);
 
-      setStaffList(allStaff);
+      // Build initial editable rows map
+      const attMap = new Map<string, AttendanceRecord>();
+      attRecords.forEach((a) => {
+        attMap.set(a.staffId, a);
+      });
 
-      if (viewMode === 'MONTH') {
-        const monthAtts = atts.filter((a) => a.date.startsWith(selectedMonth));
-        setAttendanceList(monthAtts);
-      } else {
-        setAttendanceList(atts);
-      }
+      const initialRows: EditableAttendanceRow[] = activeStaff.map((staff) => {
+        const existing = attMap.get(staff.id);
+        const defaultStart = staff.startTime ? formatTo24Hour(staff.startTime) : '09:00';
+        const defaultEnd = staff.endTime ? formatTo24Hour(staff.endTime) : '18:00';
+
+        if (existing) {
+          let mappedStatus: EditableAttendanceRow['status'] = 'PRESENT';
+          const exStatus = existing.status as string;
+          if (exStatus === 'ABSENT') mappedStatus = 'ABSENT';
+          else if (exStatus === 'HALF_DAY') mappedStatus = 'HALF_DAY';
+          else if (exStatus === 'PAID_LEAVE') mappedStatus = 'PAID_LEAVE';
+          else if (exStatus === 'UNPAID_LEAVE') mappedStatus = 'UNPAID_LEAVE';
+          else if (exStatus === 'HOLIDAY') mappedStatus = 'HOLIDAY';
+          else if (exStatus === 'WEEKLY_OFF') mappedStatus = 'WEEKLY_OFF';
+          else mappedStatus = 'PRESENT';
+
+          return {
+            staffId: staff.id,
+            employeeCode: staff.employeeCode || `EMP-${staff.id.slice(0, 4)}`,
+            name: staff.name,
+            phone: staff.phone || '-',
+            designation: staff.designation || staff.roleTitle || 'Stylist',
+            roleTitle: staff.roleTitle || '',
+            compensationType: staff.compensationType || 'SALARY_ONLY',
+            startTime: '',
+            endTime: '',
+            lateGraceMinutes: staff.lateGraceMinutes ?? 15,
+            earlyGraceMinutes: staff.earlyGraceMinutes ?? 15,
+            isOvernightShift: !!staff.isOvernightShift,
+
+            recordId: existing.id,
+            status: mappedStatus,
+            checkIn: existing.checkIn && existing.checkIn !== 'ABSENT' && !existing.checkIn.includes('LEAVE') ? formatTo24Hour(existing.checkIn) : '',
+            checkOut: existing.checkOut && existing.checkOut !== 'ABSENT' && !existing.checkOut.includes('LEAVE') ? formatTo24Hour(existing.checkOut) : '',
+            notes: existing.notes || '',
+            isModified: false,
+          };
+        }
+
+        // New unrecorded row for this day
+        return {
+          staffId: staff.id,
+          employeeCode: staff.employeeCode || `EMP-${staff.id.slice(0, 4)}`,
+          name: staff.name,
+          phone: staff.phone || '-',
+          designation: staff.designation || staff.roleTitle || 'Stylist',
+          roleTitle: staff.roleTitle || '',
+          compensationType: staff.compensationType || 'SALARY_ONLY',
+          startTime: '',
+          endTime: '',
+          lateGraceMinutes: staff.lateGraceMinutes ?? 15,
+          earlyGraceMinutes: staff.earlyGraceMinutes ?? 15,
+          isOvernightShift: !!staff.isOvernightShift,
+
+          recordId: undefined,
+          status: 'SELECT_STATUS',
+          checkIn: '',
+          checkOut: '',
+          notes: '',
+          isModified: false,
+        };
+      });
+
+      setRows(initialRows);
     } catch (err: any) {
-      setFeedbackMsg({ type: 'error', text: err.message || 'Failed to load attendance records.' });
+      console.error('Error loading attendance:', err);
+      toast.error(err.message || 'Failed to load staff attendance.');
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadData();
-  }, [effectiveBranchId, selectedDate, selectedMonth, viewMode]);
+    if (!effectiveBranchId) return;
+    salonService.getStaff(effectiveBranchId).then((allStaff) => {
+      setRawStaffList(allStaff.filter((s) => s.isActive));
+    }).catch((err) => console.error(err));
+    setHasFiltered(false);
+    setRows([]);
+  }, [effectiveBranchId]);
 
-  // Unique designations for filter dropdown
-  const uniqueDesignations = useMemo(() => {
+  // Unique staff categories derived dynamically from active staff
+  const staffCategories = useMemo(() => {
     const set = new Set<string>();
-    staffList.forEach((s) => {
+    rawStaffList.forEach((s) => {
       if (s.designation) set.add(s.designation);
       else if (s.roleTitle) set.add(s.roleTitle);
     });
     return Array.from(set);
-  }, [staffList]);
+  }, [rawStaffList]);
 
-  // Filtered records
-  const filteredRecords = useMemo(() => {
-    return attendanceList.filter((rec) => {
-      if (staffFilter !== 'ALL' && rec.staffId !== staffFilter) return false;
-      if (designationFilter !== 'ALL' && rec.designation !== designationFilter) return false;
-      if (statusFilter !== 'ALL' && rec.status !== statusFilter) return false;
-      if (sourceFilter !== 'ALL' && rec.source !== sourceFilter) return false;
-
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const matchesName = rec.staffName.toLowerCase().includes(q);
-        const matchesCode = (rec.employeeCode || '').toLowerCase().includes(q);
-        if (!matchesName && !matchesCode) return false;
+  // Filtered rows for display based on Category filter
+  const visibleRows = useMemo(() => {
+    return rows.filter((r) => {
+      if (categoryFilter !== 'ALL' && r.designation !== categoryFilter) {
+        return false;
       }
       return true;
     });
-  }, [attendanceList, staffFilter, designationFilter, statusFilter, sourceFilter, searchQuery]);
+  }, [rows, categoryFilter]);
 
-  // KPI Calculations
-  const summaryKpis = useMemo(() => {
+  // Handler: Manual Filter Button Click
+  const handleApplyFilter = () => {
+    setHasFiltered(true);
+    loadAttendanceData(effectiveBranchId, selectedDate);
+  };
+
+  // Handler: Bulk Quick Actions
+  const handleMarkAll = (targetStatus: EditableAttendanceRow['status']) => {
+    setRows((prev) =>
+      prev.map((r) => {
+        // If category filter is active, only update visible rows
+        if (categoryFilter !== 'ALL' && r.designation !== categoryFilter) {
+          return r;
+        }
+
+        let newCheckIn = r.checkIn;
+        let newCheckOut = r.checkOut;
+
+        if (targetStatus === 'ABSENT' || targetStatus === 'HOLIDAY' || targetStatus === 'WEEKLY_OFF') {
+          newCheckIn = '';
+          newCheckOut = '';
+        }
+
+        return {
+          ...r,
+          status: targetStatus,
+          checkIn: newCheckIn,
+          checkOut: newCheckOut,
+          isModified: true,
+        };
+      })
+    );
+    toast.success(`Marked all ${categoryFilter === 'ALL' ? '' : categoryFilter} staff as ${targetStatus}!`);
+  };
+
+  // Handler: Update row status
+  const handleRowStatusChange = (staffId: string, newStatus: EditableAttendanceRow['status']) => {
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.staffId !== staffId) return r;
+        let cIn = r.checkIn;
+        let cOut = r.checkOut;
+        if (newStatus === 'ABSENT' || newStatus === 'HOLIDAY' || newStatus === 'WEEKLY_OFF') {
+          cIn = '';
+          cOut = '';
+        }
+        return {
+          ...r,
+          status: newStatus,
+          checkIn: cIn,
+          checkOut: cOut,
+          isModified: true,
+        };
+      })
+    );
+  };
+
+  // Handler: Update row check-in time
+  const handleRowCheckInChange = (staffId: string, val: string) => {
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.staffId !== staffId) return r;
+        return {
+          ...r,
+          checkIn: val,
+          status: r.status === 'SELECT_STATUS' ? 'PRESENT' : r.status,
+          isModified: true,
+        };
+      })
+    );
+  };
+
+  // Handler: Update row check-out time
+  const handleRowCheckOutChange = (staffId: string, val: string) => {
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.staffId !== staffId) return r;
+        return {
+          ...r,
+          checkOut: val,
+          status: r.status === 'SELECT_STATUS' ? 'PRESENT' : r.status,
+          isModified: true,
+        };
+      })
+    );
+  };
+
+  // Helper: evaluate lateness for a row
+  const getLateArrivalInfo = (r: EditableAttendanceRow) => {
+    if (r.status !== 'PRESENT' && r.status !== 'HALF_DAY') return { text: '-', isLate: false };
+    if (!r.checkIn) return { text: 'Pending', isLate: false };
+    const { isLate, lateMinutes } = evaluateLateness(r.checkIn, r.startTime, r.lateGraceMinutes);
+    if (isLate) {
+      return { text: `${lateMinutes}m Late`, isLate: true };
+    }
+    return { text: 'On Time', isLate: false };
+  };
+
+  // Helper: evaluate early exit for a row
+  const getEarlyExitInfo = (r: EditableAttendanceRow) => {
+    if (r.status !== 'PRESENT' && r.status !== 'HALF_DAY') return { text: '-', isEarly: false };
+    if (!r.checkOut) return { text: 'Pending', isEarly: false };
+    const { isEarlyExit: isEarly, earlyExitMinutes } = evaluateEarlyExit(
+      r.checkOut,
+      r.endTime,
+      r.earlyGraceMinutes,
+      r.isOvernightShift
+    );
+    if (isEarly) {
+      return { text: `${earlyExitMinutes}m Early`, isEarly: true };
+    }
+    return { text: 'On Time', isEarly: false };
+  };
+
+  // Summary counts
+  const summaryCounts = useMemo(() => {
     let present = 0;
     let absent = 0;
-    let paidLeave = 0;
-    let unpaidLeave = 0;
-    let lateCount = 0;
-    let earlyCount = 0;
-    let missingPunches = 0;
+    let leaves = 0;
+    let holidays = 0;
+    let unselected = 0;
 
-    for (const r of filteredRecords) {
-      if (r.status === 'PRESENT' || r.status === 'COMPLETED' || r.status === 'ON_TIME' || r.status === 'LATE') {
-        present++;
-      } else if (r.status === 'ABSENT') {
-        absent++;
-      } else if (r.status === 'PAID_LEAVE') {
-        paidLeave++;
-      } else if (r.status === 'UNPAID_LEAVE') {
-        unpaidLeave++;
-      } else if (r.status === 'MISSING_PUNCH') {
-        missingPunches++;
-      }
-
-      if (r.isLate) lateCount++;
-      if (r.isEarlyExit) earlyCount++;
-    }
-
-    return { present, absent, paidLeave, unpaidLeave, lateCount, earlyCount, missingPunches };
-  }, [filteredRecords]);
-
-  // Handle Mark All Attendance
-  const handleMarkAllSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const res = await salonService.markAllAttendance(
-        {
-          branchId: effectiveBranchId === 'ALL' ? undefined : effectiveBranchId,
-          date: markAllForm.date,
-          status: markAllForm.status,
-          checkIn: markAllForm.checkIn,
-          checkOut: markAllForm.checkOut || undefined,
-          notes: markAllForm.notes,
-        },
-        user || undefined
-      );
-
-      if (res.markedCount > 0) {
-        toast.success(`Marked ${res.markedCount} active employee(s) as ${markAllForm.status.toLowerCase()}!`);
-      } else {
-        toast.info(`All employees already marked or on leave for ${markAllForm.date}.`);
-      }
-      setShowMarkAllModal(false);
-      await loadData();
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to mark all attendance.');
-    }
-  };
-
-  // Handle Add Attendance
-  const handleAddSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const selectedStaff = staffList.find((staff) => staff.id === addForm.staffId);
-    if (!selectedStaff) {
-      toast.error('Please select an employee.');
-      return;
-    }
-    try {
-      await salonService.createAttendance(
-        {
-          branchId: effectiveBranchId === 'ALL' ? selectedStaff.branchId : effectiveBranchId,
-          staffId: addForm.staffId,
-          date: addForm.date,
-          checkIn: addForm.checkIn,
-          checkOut: addForm.checkOut || undefined,
-          isOvernightShift: addForm.isOvernightShift,
-          notes: addForm.notes,
-          source: 'MANUAL',
-        },
-        user || undefined
-      );
-
-      const staff = staffList.find((s) => s.id === addForm.staffId);
-      toast.success(`Attendance recorded for ${staff?.name || 'staff member'}.`);
-      setShowAddModal(false);
-      await loadData();
-    } catch (err: any) {
-      toast.error(err.message || 'Error creating attendance.');
-    }
-  };
-
-  // Handle Correct Attendance
-  const openCorrectModal = (rec: AttendanceRecord) => {
-    setActiveRecord(rec);
-    setCorrectForm({
-      checkIn: rec.checkIn || '',
-      checkOut: rec.checkOut || '',
-      status: rec.status,
-      reason: '',
-      notes: rec.notes || '',
+    rows.forEach((r) => {
+      if (r.status === 'PRESENT' || r.status === 'HALF_DAY') present++;
+      else if (r.status === 'ABSENT') absent++;
+      else if (r.status === 'PAID_LEAVE' || r.status === 'UNPAID_LEAVE') leaves++;
+      else if (r.status === 'HOLIDAY' || r.status === 'WEEKLY_OFF') holidays++;
+      else unselected++;
     });
-    setShowCorrectModal(true);
-  };
 
-  const handleCorrectSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!activeRecord) return;
-    if (!correctForm.reason.trim()) {
-      toast.error('A correction reason is required.');
+    return { total: rows.length, present, absent, leaves, holidays, unselected };
+  }, [rows]);
+
+  // Handler: Save Attendance (Sends daily sheet to real backend DB)
+  const handleSaveAttendance = async () => {
+    // Only send rows that have been given a valid status
+    const validRows = rows.filter((r) => r.status !== 'SELECT_STATUS');
+    if (validRows.length === 0) {
+      toast.error('Please mark status for at least one staff member before saving.');
       return;
     }
-    try {
-      await salonService.correctAttendance(
-        activeRecord.id,
-        {
-          checkIn: correctForm.checkIn,
-          checkOut: correctForm.checkOut || undefined,
-          status: correctForm.status,
-          reason: correctForm.reason,
-          notes: correctForm.notes,
-        },
-        user || undefined
-      );
 
-      toast.success(`Attendance corrected for ${activeRecord.staffName}.`);
-      setShowCorrectModal(false);
-      await loadData();
+    try {
+      setSaving(true);
+      const payload = {
+        branchId: effectiveBranchId,
+        date: selectedDate,
+        records: validRows.map((r) => ({
+          staffId: r.staffId,
+          status: r.status,
+          checkIn: r.checkIn ? formatMinutesToTime(parseTimeToMinutes(r.checkIn)) : undefined,
+          checkOut: r.checkOut ? formatMinutesToTime(parseTimeToMinutes(r.checkOut)) : undefined,
+          notes: r.notes || undefined,
+        })),
+      };
+
+      const result = await salonService.saveDailyAttendance(payload, user);
+      toast.success(`Attendance successfully saved for ${result.savedCount} staff members!`);
+      // Reload fresh data from database
+      await loadAttendanceData(effectiveBranchId, selectedDate);
     } catch (err: any) {
-      toast.error(err.message || 'Failed to correct attendance.');
+      console.error('Failed to save attendance:', err);
+      toast.error(err.message || 'Failed to save attendance records.');
+    } finally {
+      setSaving(false);
     }
   };
 
-  // Handle Finalize Day
+  // Handler: End of Day Finalize
   const handleFinalizeDay = async () => {
     try {
-      const res = await salonService.finalizeDayAttendance(effectiveBranchId, selectedDate, user || undefined);
-      toast.success(`Workday finalized: ${res.finalizedCount} records processed.`);
+      setLoading(true);
+      const res = await salonService.finalizeDayAttendance(effectiveBranchId, selectedDate, user);
+      toast.success(`Day finalized! ${res.finalizedCount} records locked. Marked absent: ${res.markedAbsentStaffNames.length}`);
       setShowFinalizeModal(false);
-      await loadData();
+      await loadAttendanceData(effectiveBranchId, selectedDate);
     } catch (err: any) {
       toast.error(err.message || 'Failed to finalize attendance.');
+    } finally {
+      setLoading(false);
     }
   };
 
-  // Handle CSV Import
-  const handleParseCsv = () => {
+  // Handler: Biometric CSV Import
+  const handleImportCSV = async () => {
     if (!importCsvText.trim()) return;
-    const lines = importCsvText.trim().split('\n');
-    const parsedRows: CSVAttendanceImportRow[] = [];
-
-    // Skip header if contains 'employee_code' or 'employee'
-    const startIdx = lines[0].toLowerCase().includes('employee') ? 1 : 0;
-
-    for (let i = startIdx; i < lines.length; i++) {
-      const parts = lines[i].split(',').map((p) => p.trim());
-      if (parts.length < 3) continue;
-
-      const [code, date, checkIn, checkOut, deviceId] = parts;
-      parsedRows.push({
-        rowNumber: i + 1,
-        employeeCode: code || '',
-        date: date || selectedDate,
-        checkIn: checkIn || '',
-        checkOut: checkOut || undefined,
-        deviceId: deviceId || 'BIO-IMPORT',
-        status: 'VALID',
-      });
-    }
-
-    setImportPreview(parsedRows);
-  };
-
-  const handleExecuteImport = async () => {
     try {
-      const res = await salonService.importAttendanceCSV(effectiveBranchId, importPreview, user || undefined);
-      setImportResult(res);
-      toast.success(`Import complete: ${res.acceptedRows} accepted, ${res.duplicateRows} duplicates skipped, ${res.rejectedRows} rejected.`);
-      await loadData();
+      setImportLoading(true);
+      const lines = importCsvText.trim().split('\n');
+      const rowsToImport: CSVAttendanceImportRow[] = [];
+      lines.forEach((line, idx) => {
+        const parts = line.split(',').map((p) => p.trim());
+        if (parts.length >= 3 && idx > 0) {
+          rowsToImport.push({
+            rowNumber: idx + 1,
+            employeeCode: parts[0],
+            date: parts[1] || selectedDate,
+            checkIn: parts[2] || '09:00',
+            checkOut: parts[3] || undefined,
+            status: 'VALID',
+          });
+        }
+      });
+
+      if (rowsToImport.length === 0) {
+        toast.error('Invalid CSV format. Header: employeeCode,date,checkIn,checkOut');
+        return;
+      }
+
+      const res = await salonService.importAttendanceCSV(effectiveBranchId, rowsToImport, user);
+      toast.success(`Import complete! Accepted: ${res.acceptedRows}, Rejected: ${res.rejectedRows}`);
+      setShowImportModal(false);
+      setImportCsvText('');
+      await loadAttendanceData(effectiveBranchId, selectedDate);
     } catch (err: any) {
-      toast.error(err.message || 'Import failed.');
+      toast.error(err.message || 'CSV import failed.');
+    } finally {
+      setImportLoading(false);
     }
-  };
-
-  // Export filtered attendance to CSV
-  const handleExportCsv = () => {
-    const headers = [
-      'Work Date',
-      'Employee Code',
-      'Employee Name',
-      'Designation',
-      'Scheduled Shift',
-      'Check-In',
-      'Check-Out',
-      'Worked Hours',
-      'Status',
-      'Late (Mins)',
-      'Early (Mins)',
-      'Source',
-      'Notes',
-    ];
-
-    const rows = filteredRecords.map((r) => [
-      `"${r.date}"`,
-      `"${r.employeeCode || ''}"`,
-      `"${r.staffName}"`,
-      `"${r.designation || ''}"`,
-      `"${r.scheduledShift || ''}"`,
-      `"${r.checkIn}"`,
-      `"${r.checkOut || ''}"`,
-      r.workedHours,
-      `"${r.status}"`,
-      r.lateMinutes || 0,
-      r.earlyExitMinutes || 0,
-      `"${r.source || 'MANUAL'}"`,
-      `"${(r.notes || '').replace(/"/g, '""')}"`,
-    ]);
-
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Attendance_Statement_${selectedDate}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
   };
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6 font-['Poppins']">
-      {/* HEADER */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-slate-200 pb-5">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Staff Attendance & Punches</h1>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              Live Operations
-            </span>
+    <div className="min-h-screen bg-[#F8FAFC] pb-16">
+      {/* ── HEADER ────────────────────────────────────────────────────────── */}
+      <div className="bg-white border-b border-slate-200 px-6 py-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold text-slate-900 tracking-tight">Staff Attendance</h1>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Daily attendance marking, arrival timings & real-time shift verification
+            </p>
           </div>
-          <p className="text-sm text-slate-500 mt-1">
-            Biometric and manual shift verification, punches and attendance auditing
-          </p>
-        </div>
 
-        {/* Action Controls */}
-        <div className="flex flex-wrap items-center gap-2.5">
-          <button
-            onClick={() => {
-              setMarkAllForm((prev) => ({ ...prev, date: selectedDate }));
-              setShowMarkAllModal(true);
-            }}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700 transition-colors shadow-xs cursor-pointer"
-          >
-            <UserCheck className="w-4 h-4" />
-            Mark All Attendance
-          </button>
-
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#2254E1] text-white text-xs font-semibold hover:bg-blue-700 transition-colors shadow-xs cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            Add Individual
-          </button>
-
-          <button
-            onClick={() => setShowFinalizeModal(true)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-50 border border-amber-300 text-xs font-semibold text-amber-800 hover:bg-amber-100 transition-colors shadow-xs"
-            title="Preview missing punches and mark completed day absences"
-          >
-            <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-            Finalize Day
-          </button>
-
-          <button
-            onClick={() => setShowImportModal(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-xs"
-          >
-            <Upload className="w-3.5 h-3.5 text-slate-500" />
-            CSV Import
-          </button>
-
-          <button
-            onClick={() => setShowPrintModal(true)}
-            className="p-2 rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
-            title="Print Attendance Statement"
-          >
-            <Printer className="w-4 h-4" />
-          </button>
-
-          <button
-            onClick={handleExportCsv}
-            className="p-2 rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
-            title="Export CSV"
-          >
-            <FileSpreadsheet className="w-4 h-4" />
-          </button>
+          {/* Secondary tools */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowImportModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium shadow-xs transition-colors cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5 text-slate-500" />
+              <span>Import Biometric/CSV</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowFinalizeModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium shadow-xs transition-colors cursor-pointer"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Finalize Day (EOD)</span>
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* FEEDBACK ALERT */}
-      {feedbackMsg && (
-        <div
-          className={`p-3.5 rounded-lg flex items-center justify-between text-sm ${
-            feedbackMsg.type === 'success'
-              ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-              : 'bg-rose-50 text-rose-800 border border-rose-200'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            {feedbackMsg.type === 'success' ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-            ) : (
-              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-            )}
-            <span>{feedbackMsg.text}</span>
-          </div>
-          <button onClick={() => setFeedbackMsg(null)} className="text-slate-400 hover:text-slate-600">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      {/* SUMMARY KPI CARDS */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Present</span>
-            <UserCheck className="w-4 h-4 text-emerald-600" />
-          </div>
-          <p className="text-2xl font-bold text-slate-900 mt-1">{summaryKpis.present}</p>
-          <p className="text-[10px] text-emerald-600 mt-0.5 font-medium">On-duty verified</p>
-        </div>
-
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Absent</span>
-            <UserX className="w-4 h-4 text-rose-600" />
-          </div>
-          <p className="text-2xl font-bold text-rose-700 mt-1">{summaryKpis.absent}</p>
-          <p className="text-[10px] text-rose-500 mt-0.5 font-medium">Unexcused off</p>
-        </div>
-
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Paid Leave</span>
-            <Calendar className="w-4 h-4 text-blue-600" />
-          </div>
-          <p className="text-2xl font-bold text-blue-700 mt-1">{summaryKpis.paidLeave}</p>
-          <p className="text-[10px] text-blue-500 mt-0.5 font-medium">Approved voucher</p>
-        </div>
-
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Unpaid Leave</span>
-            <Calendar className="w-4 h-4 text-slate-500" />
-          </div>
-          <p className="text-2xl font-bold text-slate-700 mt-1">{summaryKpis.unpaidLeave}</p>
-          <p className="text-[10px] text-slate-400 mt-0.5 font-medium">No pay credit</p>
-        </div>
-
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Late Arrivals</span>
-            <Clock className="w-4 h-4 text-amber-600" />
-          </div>
-          <p className="text-2xl font-bold text-amber-700 mt-1">{summaryKpis.lateCount}</p>
-          <p className="text-[10px] text-amber-600 mt-0.5 font-medium">Past grace period</p>
-        </div>
-
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Early Exits</span>
-            <Clock className="w-4 h-4 text-orange-600" />
-          </div>
-          <p className="text-2xl font-bold text-orange-700 mt-1">{summaryKpis.earlyCount}</p>
-          <p className="text-[10px] text-orange-600 mt-0.5 font-medium">Prior to shift end</p>
-        </div>
-
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Missing Punches</span>
-            <AlertTriangle className="w-4 h-4 text-purple-600" />
-          </div>
-          <p className="text-2xl font-bold text-purple-700 mt-1">{summaryKpis.missingPunches}</p>
-          <p className="text-[10px] text-purple-500 mt-0.5 font-medium">No check-out logged</p>
-        </div>
-      </div>
-
-      {/* FILTER CONTROLS BAR */}
-      <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-xs space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          {/* Day vs Month Toggle */}
-          <div className="inline-flex p-1 bg-slate-100 rounded-lg">
-            <button
-              onClick={() => setViewMode('DAY')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${
-                viewMode === 'DAY' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Day View
-            </button>
-            <button
-              onClick={() => setViewMode('MONTH')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${
-                viewMode === 'MONTH' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Monthly View
-            </button>
-          </div>
-
-          {/* Date Picker / Month Selector */}
-          <div className="flex items-center gap-2">
-            {viewMode === 'DAY' ? (
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-medium text-slate-500">Work Date:</span>
-                <input
-                  type="date"
-                  value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
-                  className="px-2.5 py-1.5 text-xs font-medium border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-medium text-slate-500">Month:</span>
-                <input
-                  type="month"
-                  value={selectedMonth}
-                  onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="px-2.5 py-1.5 text-xs font-medium border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-            )}
-
-            {/* Super Admin Branch Switcher */}
-            {user?.role === 'SUPER_ADMIN' && (
-              <div className="flex items-center gap-1.5 ml-2">
-                <span className="text-xs font-medium text-slate-500">Branch:</span>
+      <div className="px-6 py-5 max-w-[1600px] mx-auto space-y-4">
+        {/* ── FILTER CARD (Matching User Reference) ────────────────────────── */}
+        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 items-end">
+            {/* Branch Selector */}
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Branch</label>
+              <div className="relative">
                 <select
                   value={selectedBranchId}
+                  disabled={!isSuperAdmin}
                   onChange={(e) => setSelectedBranchId(e.target.value)}
-                  className="px-2.5 py-1.5 text-xs font-medium border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
+                  className="w-full h-9 text-xs border border-slate-300 rounded-lg px-3 bg-white text-slate-800 font-medium focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors appearance-none cursor-pointer disabled:bg-slate-50 disabled:text-slate-500"
                 >
-                  <option value="ALL">All Branches</option>
                   {allBranches.map((b) => (
                     <option key={b.id} value={b.id}>
                       {b.name}
                     </option>
                   ))}
                 </select>
+                <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-2.5 pointer-events-none" />
               </div>
-            )}
-          </div>
-        </div>
-
-        {/* Secondary filters row */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5 pt-2 border-t border-slate-100">
-          {/* Search query */}
-          <div className="relative">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
-            <input
-              type="text"
-              placeholder="Search name or employee code..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-2.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-          </div>
-
-          {/* Staff Filter */}
-          <select
-            value={staffFilter}
-            onChange={(e) => setStaffFilter(e.target.value)}
-            className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white text-slate-700"
-          >
-            <option value="ALL">All Employees</option>
-            {staffList.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name} ({s.employeeCode})
-              </option>
-            ))}
-          </select>
-
-          {/* Designation Filter */}
-          <select
-            value={designationFilter}
-            onChange={(e) => setDesignationFilter(e.target.value)}
-            className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white text-slate-700"
-          >
-            <option value="ALL">All Designations</option>
-            {uniqueDesignations.map((d) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
-
-          {/* Status Filter */}
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white text-slate-700"
-          >
-            <option value="ALL">All Statuses</option>
-            <option value="PRESENT">Present</option>
-            <option value="ABSENT">Absent</option>
-            <option value="PAID_LEAVE">Paid Leave</option>
-            <option value="UNPAID_LEAVE">Unpaid Leave</option>
-            <option value="MISSING_PUNCH">Missing Punch</option>
-          </select>
-
-          {/* Source Filter */}
-          <select
-            value={sourceFilter}
-            onChange={(e) => setSourceFilter(e.target.value)}
-            className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white text-slate-700"
-          >
-            <option value="ALL">All Sources</option>
-            <option value="MANUAL">Manual Entry</option>
-            <option value="IMPORT">CSV Import</option>
-            <option value="BIOMETRIC">Biometric Machine</option>
-          </select>
-        </div>
-      </div>
-
-      {/* ATTENDANCE TABLE */}
-      <div className="bg-white rounded-xl border border-slate-200/80 shadow-xs overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-900">Attendance records</h2>
-          <span className="text-xs text-slate-500">{filteredRecords.length} records · status and source filters apply here</span>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
-                <th className="py-3 px-4">Employee</th>
-                <th className="py-3 px-3">Work Date</th>
-                <th className="py-3 px-3">Scheduled Shift</th>
-                <th className="py-3 px-3">Check-In</th>
-                <th className="py-3 px-3">Check-Out</th>
-                <th className="py-3 px-3">Duration</th>
-                <th className="py-3 px-3">Status</th>
-                <th className="py-3 px-3">Deduction Preview</th>
-                <th className="py-3 px-3">Source</th>
-                <th className="py-3 px-4 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
-              {loading ? (
-                <tr>
-                  <td colSpan={10} className="py-12 text-center text-slate-400">
-                    <div className="inline-flex items-center gap-2">
-                      <span className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-                      <span>Loading attendance records...</span>
-                    </div>
-                  </td>
-                </tr>
-              ) : filteredRecords.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="py-12 text-center text-slate-400">
-                    <Clock className="w-8 h-8 mx-auto text-slate-300 mb-2" />
-                    <p className="text-sm font-semibold text-slate-600">No attendance records found for {selectedDate}</p>
-                    <p className="text-xs text-slate-400 mt-1 mb-4">
-                      No punches logged for this date. You can mark everyone with 1 click or record individual attendance.
-                    </p>
-                    <div className="inline-flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setMarkAllForm((prev) => ({ ...prev, date: selectedDate }));
-                          setShowMarkAllModal(true);
-                        }}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700 transition-colors shadow-xs cursor-pointer"
-                      >
-                        <UserCheck className="w-3.5 h-3.5" />
-                        Mark All Attendance
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowAddModal(true)}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-700 text-xs font-semibold hover:bg-slate-50 transition-colors cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        Add Individual
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                filteredRecords.map((rec) => {
-                  return (
-                    <tr key={rec.id} className="hover:bg-slate-50/60 transition-colors">
-                      {/* Employee */}
-                      <td className="py-3 px-4">
-                        <div className="font-semibold text-slate-900">{rec.staffName}</div>
-                        <div className="text-[11px] text-slate-400 font-mono">
-                          {rec.employeeCode || 'N/A'} • {rec.designation || 'Staff'}
-                        </div>
-                      </td>
-
-                      {/* Work Date */}
-                      <td className="py-3 px-3 font-medium whitespace-nowrap text-slate-800">
-                        {rec.date}
-                      </td>
-
-                      {/* Scheduled Shift */}
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        <div className="font-medium text-slate-700">
-                          {rec.scheduledShift || '09:00 AM - 06:00 PM'}
-                        </div>
-                        {rec.isOvernightShift && (
-                          <span className="inline-block mt-0.5 text-[10px] font-semibold text-indigo-700 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
-                            Overnight
-                          </span>
-                        )}
-                      </td>
-
-                      {/* Check-In */}
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        <div className="font-medium text-slate-900">{rec.checkIn}</div>
-                        {rec.isLate && (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200 mt-0.5">
-                            Late: +{rec.lateMinutes}m
-                          </span>
-                        )}
-                      </td>
-
-                      {/* Check-Out */}
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        {rec.checkOut ? (
-                          <>
-                            <div className="font-medium text-slate-900">{rec.checkOut}</div>
-                            {rec.isEarlyExit && (
-                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-orange-700 bg-orange-50 px-1.5 py-0.2 rounded border border-orange-200 mt-0.5">
-                                Early: -{rec.earlyExitMinutes}m
-                              </span>
-                            )}
-                          </>
-                        ) : rec.status === 'ABSENT' || rec.status === 'PAID_LEAVE' || rec.status === 'UNPAID_LEAVE' ? (
-                          <span className="text-slate-400">—</span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200">
-                            Missing Check-Out
-                          </span>
-                        )}
-                      </td>
-
-                      {/* Worked Duration */}
-                      <td className="py-3 px-3 font-medium whitespace-nowrap text-slate-800">
-                        {rec.workedHours > 0 ? `${rec.workedHours.toFixed(2)} hrs` : '0.00 hrs'}
-                      </td>
-
-                      {/* Status */}
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        {rec.status === 'PRESENT' || rec.status === 'COMPLETED' || rec.status === 'ON_TIME' ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            Present
-                          </span>
-                        ) : rec.status === 'ABSENT' ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-                            Absent
-                          </span>
-                        ) : rec.status === 'PAID_LEAVE' ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
-                            Paid Leave
-                          </span>
-                        ) : rec.status === 'UNPAID_LEAVE' ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-                            Unpaid Leave
-                          </span>
-                        ) : rec.status === 'MISSING_PUNCH' ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-purple-50 text-purple-700 border border-purple-200">
-                            Missing Punch
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">
-                            {rec.status}
-                          </span>
-                        )}
-                      </td>
-
-                      {/* Deduction Preview */}
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        {rec.calculationSnapshot ? (
-                          rec.calculationSnapshot.totalDeductionAmount > 0 ? (
-                            <div className="group relative cursor-pointer">
-                              <span className="font-semibold text-rose-600">
-                                Rs. {rec.calculationSnapshot.totalDeductionAmount.toLocaleString()}
-                              </span>
-                              <div className="text-[10px] text-slate-400">
-                                {rec.calculationSnapshot.combinationPolicy}
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="text-[11px] text-slate-400">Rs. 0</span>
-                          )
-                        ) : (
-                          <span className="text-[11px] text-slate-400">Rs. 0</span>
-                        )}
-                      </td>
-
-                      {/* Source */}
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
-                          {rec.source || 'MANUAL'}
-                        </span>
-                      </td>
-
-                      {/* Actions */}
-                      <td className="py-3 px-4 text-right whitespace-nowrap space-x-1">
-                        <button
-                          onClick={() => openCorrectModal(rec)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 transition-colors"
-                        >
-                          <Edit className="w-3 h-3" />
-                          Correct
-                        </button>
-
-                        {rec.correctionHistory && rec.correctionHistory.length > 0 && (
-                          <button
-                            onClick={() => {
-                              setActiveRecord(rec);
-                              setShowHistoryModal(true);
-                            }}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
-                            title="View correction audit history"
-                          >
-                            <History className="w-3 h-3" />
-                            {rec.correctionHistory.length}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* MODAL 0: MARK ALL ATTENDANCE */}
-      {showMarkAllModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h3 className="font-bold text-slate-900 text-lg flex items-center gap-2">
-                  <UserCheck className="w-5 h-5 text-emerald-600" />
-                  Mark All Attendance
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Record attendance for all active staff in {allBranches.find((b) => b.id === effectiveBranchId)?.name || 'current branch'}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowMarkAllModal(false)}
-                className="text-slate-400 hover:text-slate-600 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
             </div>
 
-            <form onSubmit={handleMarkAllSubmit} className="p-5 space-y-4">
-              <div className="p-3 bg-emerald-50/70 rounded-xl border border-emerald-200/80 text-emerald-900 text-xs flex items-start gap-2.5">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                <div className="space-y-0.5">
-                  <p className="font-semibold text-emerald-950">
-                    Bulk Attendance Action ({staffList.length} Active Employees)
-                  </p>
-                  <p className="text-[11px] text-emerald-800 leading-relaxed">
-                    This will mark all scheduled active staff members who do not already have punches or approved leave for this date.
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Work Date *</label>
-                  <input
-                    type="date"
-                    required
-                    value={markAllForm.date}
-                    onChange={(e) => setMarkAllForm({ ...markAllForm, date: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Attendance Status *</label>
-                  <select
-                    value={markAllForm.status}
-                    onChange={(e) => setMarkAllForm({ ...markAllForm, status: e.target.value as 'PRESENT' | 'ABSENT' })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white font-medium"
-                  >
-                    <option value="PRESENT">Mark Present (Full Day)</option>
-                    <option value="ABSENT">Mark Absent</option>
-                  </select>
-                </div>
-              </div>
-
-              {markAllForm.status === 'PRESENT' && (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Default Check-In *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="09:00 AM"
-                      value={markAllForm.checkIn}
-                      onChange={(e) => setMarkAllForm({ ...markAllForm, checkIn: e.target.value })}
-                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Default Check-Out *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="06:00 PM"
-                      value={markAllForm.checkOut}
-                      onChange={(e) => setMarkAllForm({ ...markAllForm, checkOut: e.target.value })}
-                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono"
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Remarks / Audit Note</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Full salon team on duty"
-                  value={markAllForm.notes}
-                  onChange={(e) => setMarkAllForm({ ...markAllForm, notes: e.target.value })}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                />
-              </div>
-
-              {/* Staff Roster Preview */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Employees to be updated ({staffList.length}):
-                </label>
-                <div className="max-h-32 overflow-y-auto p-2 bg-slate-50 rounded-xl border border-slate-200 divide-y divide-slate-100 text-xs">
-                  {staffList.length === 0 ? (
-                    <p className="text-slate-400 text-center py-2">No active staff registered in this branch.</p>
-                  ) : (
-                    staffList.map((st) => (
-                      <div key={st.id} className="py-1 px-1.5 flex items-center justify-between text-slate-700">
-                        <span className="font-medium text-slate-900">{st.name}</span>
-                        <span className="text-[11px] text-slate-500 font-mono">
-                          {st.employeeCode} • {st.designation || 'Stylist'}
-                        </span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setShowMarkAllModal(false)}
-                  className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={staffList.length === 0}
-                  className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 shadow-xs cursor-pointer disabled:opacity-50"
-                >
-                  Confirm & Mark All
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 1: ADD ATTENDANCE */}
-      {showAddModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h3 className="font-bold text-slate-900 text-lg">Add Staff Attendance</h3>
-                <p className="text-xs text-slate-500 mt-0.5">Record check-in and check-out punches for a shift</p>
-              </div>
-              <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleAddSubmit} className="p-5 space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Select Employee *</label>
+            {/* Staff Category */}
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Staff Category</label>
+              <div className="relative">
                 <select
-                  required
-                  value={addForm.staffId}
-                  onChange={(e) => {
-                    const st = staffList.find((s) => s.id === e.target.value);
-                    setAddForm({
-                      ...addForm,
-                      staffId: e.target.value,
-                      isOvernightShift: st?.isOvernightShift || false,
-                      checkIn: st ? formatMinutesToTime(parseTimeToMinutes(st.startTime)) : '09:00 AM',
-                      checkOut: st ? formatMinutesToTime(parseTimeToMinutes(st.endTime)) : '06:00 PM',
-                    });
-                  }}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
+                  value={categoryFilter}
+                  onChange={(e) => setCategoryFilter(e.target.value)}
+                  className="w-full h-9 text-xs border border-slate-300 rounded-lg px-3 bg-white text-slate-800 font-medium focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors appearance-none cursor-pointer"
                 >
-                  <option value="">-- Choose Staff Member --</option>
-                  {staffList.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name} ({s.employeeCode}) • {s.designation || s.roleTitle}
+                  <option value="ALL">All Categories</option>
+                  {staffCategories.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
                     </option>
                   ))}
                 </select>
+                <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-2.5 pointer-events-none" />
               </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Work Date *</label>
-                  <input
-                    type="date"
-                    required
-                    value={addForm.date}
-                    onChange={(e) => setAddForm({ ...addForm, date: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div className="flex items-center pt-6">
-                  <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={addForm.isOvernightShift}
-                      onChange={(e) => setAddForm({ ...addForm, isOvernightShift: e.target.checked })}
-                      className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="font-medium">Overnight shift (spans midnight)</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Check-In Time *</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. 09:00 AM"
-                    value={addForm.checkIn}
-                    onChange={(e) => setAddForm({ ...addForm, checkIn: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Check-Out Time (Optional)</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 06:00 PM"
-                    value={addForm.checkOut}
-                    onChange={(e) => setAddForm({ ...addForm, checkOut: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Shift Notes</label>
-                <textarea
-                  rows={2}
-                  placeholder="Optional operational or punctuality remarks..."
-                  value={addForm.notes}
-                  onChange={(e) => setAddForm({ ...addForm, notes: e.target.value })}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="p-3 bg-blue-50/60 rounded-xl border border-blue-100 flex items-start gap-2">
-                <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-                <p className="text-[11px] text-blue-800 leading-relaxed">
-                  Lateness and early exits will be calculated automatically against this employee's shift grace threshold.
-                  Check-ins exactly at the grace threshold are considered on-time.
-                </p>
-              </div>
-
-              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-[#2254E1] hover:bg-blue-700 shadow-xs"
-                >
-                  Save Attendance
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 2: CORRECT ATTENDANCE */}
-      {showCorrectModal && activeRecord && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h3 className="font-bold text-slate-900 text-lg">Correct Attendance Punches</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Audit correction for {activeRecord.staffName} ({activeRecord.date})
-                </p>
-              </div>
-              <button onClick={() => setShowCorrectModal(false)} className="text-slate-400 hover:text-slate-600">
-                <X className="w-5 h-5" />
-              </button>
             </div>
 
-            <form onSubmit={handleCorrectSubmit} className="p-5 space-y-4">
-              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
-                <div className="flex justify-between text-xs">
-                  <span className="text-slate-500">Scheduled Shift:</span>
-                  <span className="font-medium text-slate-800">{activeRecord.scheduledShift || '09:00 AM - 06:00 PM'}</span>
-                </div>
-                <div className="flex justify-between text-xs">
-                  <span className="text-slate-500">Current Check-In / Out:</span>
-                  <span className="font-medium text-slate-800">
-                    {activeRecord.checkIn} / {activeRecord.checkOut || 'Missing punch'}
-                  </span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">New Check-In *</label>
-                  <input
-                    type="text"
-                    required
-                    value={correctForm.checkIn}
-                    onChange={(e) => setCorrectForm({ ...correctForm, checkIn: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">New Check-Out</label>
-                  <input
-                    type="text"
-                    placeholder="Leave empty if missing"
-                    value={correctForm.checkOut}
-                    onChange={(e) => setCorrectForm({ ...correctForm, checkOut: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Attendance Status *</label>
+            {/* Type */}
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Type</label>
+              <div className="relative">
                 <select
-                  value={correctForm.status}
-                  onChange={(e) => setCorrectForm({ ...correctForm, status: e.target.value as AttendanceStatus })}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
+                  value={attendanceType}
+                  onChange={(e) => setAttendanceType(e.target.value)}
+                  className="w-full h-9 text-xs border border-slate-300 rounded-lg px-3 bg-white text-slate-800 font-medium focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors appearance-none cursor-pointer"
                 >
-                  <option value="PRESENT">Present</option>
-                  <option value="MISSING_PUNCH">Missing Punch</option>
-                  <option value="ABSENT">Absent</option>
-                  <option value="PAID_LEAVE">Paid Leave</option>
-                  <option value="UNPAID_LEAVE">Unpaid Leave</option>
+                  <option value="NORMAL">Normal Attendance</option>
+                  <option value="ALL">All Attendance</option>
                 </select>
+                <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-2.5 pointer-events-none" />
               </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Reason for Correction *</label>
-                <textarea
-                  required
-                  rows={2}
-                  placeholder="Mandatory audit explanation (e.g. employee biometric punch failed, manager approved adjustment)..."
-                  value={correctForm.reason}
-                  onChange={(e) => setCorrectForm({ ...correctForm, reason: e.target.value })}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setShowCorrectModal(false)}
-                  className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-xs"
-                >
-                  Save Correction
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 4: CORRECTION HISTORY AUDIT */}
-      {showHistoryModal && activeRecord && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h3 className="font-bold text-slate-900 text-lg">Correction Audit Trail</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Historical adjustments for {activeRecord.staffName} ({activeRecord.date})
-                </p>
-              </div>
-              <button onClick={() => setShowHistoryModal(false)} className="text-slate-400 hover:text-slate-600">
-                <X className="w-5 h-5" />
-              </button>
             </div>
 
-            <div className="p-5 max-h-96 overflow-y-auto space-y-3">
-              {activeRecord.correctionHistory && activeRecord.correctionHistory.length > 0 ? (
-                activeRecord.correctionHistory.map((corr, idx) => (
-                  <div key={corr.id || idx} className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-slate-800">
-                        Adjusted by {corr.editedByName}
-                      </span>
-                      <span className="text-slate-400 text-[11px]">{new Date(corr.editedAt).toLocaleString()}</span>
-                    </div>
-
-                    <div className="text-xs text-slate-600 bg-white p-2 rounded border border-slate-200">
-                      <strong>Reason:</strong> {corr.reason}
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 text-[11px]">
-                      <div className="p-2 rounded bg-rose-50/50 border border-rose-100 text-rose-900">
-                        <span className="font-semibold block text-[10px] text-rose-700 uppercase">Before:</span>
-                        <div>Check-In: {corr.beforeSnapshot.checkIn || 'N/A'}</div>
-                        <div>Check-Out: {corr.beforeSnapshot.checkOut || 'N/A'}</div>
-                        <div>Worked: {corr.beforeSnapshot.workedHours || 0} hrs</div>
-                      </div>
-                      <div className="p-2 rounded bg-emerald-50/50 border border-emerald-100 text-emerald-900">
-                        <span className="font-semibold block text-[10px] text-emerald-700 uppercase">After:</span>
-                        <div>Check-In: {corr.afterSnapshot.checkIn || 'N/A'}</div>
-                        <div>Check-Out: {corr.afterSnapshot.checkOut || 'N/A'}</div>
-                        <div>Worked: {corr.afterSnapshot.workedHours || 0} hrs</div>
-                      </div>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <p className="text-xs text-slate-400 text-center py-6">No correction history recorded.</p>
-              )}
+            {/* Date */}
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Date</label>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => {
+                  setSelectedDate(e.target.value);
+                  setHasFiltered(false);
+                  setRows([]);
+                }}
+                className="w-full h-9 text-xs border border-slate-300 rounded-lg px-3 bg-white text-slate-800 font-medium focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors cursor-pointer"
+              />
             </div>
 
-            <div className="p-4 border-t border-slate-100 flex justify-end">
-              <button
-                onClick={() => setShowHistoryModal(false)}
-                className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 5: CSV IMPORT */}
-      {showImportModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h3 className="font-bold text-slate-900 text-lg">Biometric CSV Attendance Import</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Import punch files exported from standalone biometric punch clocks
-                </p>
-              </div>
-              <button onClick={() => setShowImportModal(false)} className="text-slate-400 hover:text-slate-600">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
-              <div className="flex items-center justify-between p-3 bg-blue-50/60 rounded-xl border border-blue-100 text-xs">
-                <div>
-                  <div className="font-semibold text-blue-900">Expected CSV Format:</div>
-                  <div className="text-blue-700 font-mono text-[11px] mt-0.5">
-                    employee_code,work_date,check_in_time,check_out_time,device_id
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const sample = `employee_code,work_date,check_in_time,check_out_time,device_id\nEMP-LHE-001,${selectedDate},08:55 AM,06:05 PM,BIO-01\nEMP-LHE-002,${selectedDate},09:12 AM,06:00 PM,BIO-01`;
-                    setImportCsvText(sample);
-                  }}
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 bg-white px-2.5 py-1 rounded-md border border-blue-200 hover:bg-blue-50"
-                >
-                  <Download className="w-3 h-3" />
-                  Load Sample
-                </button>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Paste CSV Raw Content:
-                </label>
-                <textarea
-                  rows={5}
-                  value={importCsvText}
-                  onChange={(e) => setImportCsvText(e.target.value)}
-                  placeholder="Paste CSV rows here..."
-                  className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="flex justify-between items-center">
-                <button
-                  type="button"
-                  onClick={handleParseCsv}
-                  className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300"
-                >
-                  Preview & Validate
-                </button>
-                {importPreview.length > 0 && (
-                  <span className="text-xs text-slate-500">
-                    {importPreview.length} rows parsed
-                  </span>
-                )}
-              </div>
-
-              {/* Preview Table */}
-              {importPreview.length > 0 && (
-                <div className="border border-slate-200 rounded-xl overflow-hidden text-xs">
-                  <div className="bg-slate-50 px-3 py-2 font-semibold text-slate-700 border-b border-slate-200">
-                    Parsed Rows Preview:
-                  </div>
-                  <div className="max-h-48 overflow-y-auto">
-                    <table className="w-full text-left">
-                      <thead className="bg-slate-100 text-[10px] text-slate-500 font-semibold uppercase">
-                        <tr>
-                          <th className="p-2">Row</th>
-                          <th className="p-2">Code</th>
-                          <th className="p-2">Date</th>
-                          <th className="p-2">Check-In</th>
-                          <th className="p-2">Check-Out</th>
-                          <th className="p-2">Device</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {importPreview.map((r, i) => (
-                          <tr key={i}>
-                            <td className="p-2 text-slate-400 font-mono">{r.rowNumber}</td>
-                            <td className="p-2 font-semibold text-slate-800">{r.employeeCode}</td>
-                            <td className="p-2">{r.date}</td>
-                            <td className="p-2">{r.checkIn}</td>
-                            <td className="p-2">{r.checkOut || '—'}</td>
-                            <td className="p-2 text-slate-500">{r.deviceId}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {/* Import Results Banner */}
-              {importResult && (
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5 text-xs">
-                  <div className="font-semibold text-slate-900">Import Ingestion Report:</div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <div className="p-2 rounded bg-emerald-50 text-emerald-800 font-medium">
-                      Accepted: {importResult.acceptedRows}
-                    </div>
-                    <div className="p-2 rounded bg-amber-50 text-amber-800 font-medium">
-                      Duplicates: {importResult.duplicateRows}
-                    </div>
-                    <div className="p-2 rounded bg-rose-50 text-rose-800 font-medium">
-                      Rejected: {importResult.rejectedRows}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="p-4 border-t border-slate-100 flex items-center justify-end gap-2">
+            {/* Filter Button */}
+            <div>
               <button
                 type="button"
-                onClick={() => {
-                  setShowImportModal(false);
-                  setImportPreview([]);
-                  setImportResult(null);
-                }}
-                className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                onClick={handleApplyFilter}
+                disabled={loading}
+                className="w-full h-9 bg-[#0047AB] hover:bg-[#003785] active:bg-[#002a66] text-white text-xs font-semibold rounded-lg shadow-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
               >
-                Close
+                {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Filter className="w-3.5 h-3.5" />}
+                <span>= Filter</span>
               </button>
-              {importPreview.length > 0 && !importResult && (
-                <button
-                  type="button"
-                  onClick={handleExecuteImport}
-                  className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-xs"
-                >
-                  Confirm & Ingest Punches
-                </button>
-              )}
             </div>
           </div>
         </div>
-      )}
 
-      {/* MODAL 6: FINALIZE DAY */}
+        {/* ── SELECTED PILL & QUICK ACTION BUTTONS ROW ─────────────────────── */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pt-1">
+          {/* Branch Pill Badge */}
+          <div>
+            <span className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-[#0047AB] text-white text-xs font-semibold shadow-xs">
+              Branch: {currentBranch?.name || 'Main Branch'}
+            </span>
+          </div>
+
+          {/* Quick Bulk Action Buttons */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={!hasFiltered || loading || visibleRows.length === 0}
+              onClick={() => handleMarkAll('PRESENT')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#10b981] hover:bg-[#059669] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+              <span>Mark All Present</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={!hasFiltered || loading || visibleRows.length === 0}
+              onClick={() => handleMarkAll('ABSENT')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#ef4444] hover:bg-[#dc2626] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <X className="w-3.5 h-3.5 stroke-[2.5]" />
+              <span>Mark All Absent</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={!hasFiltered || loading || visibleRows.length === 0}
+              onClick={() => handleMarkAll('HOLIDAY')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#f59e0b] hover:bg-[#d97706] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Calendar className="w-3.5 h-3.5" />
+              <span>Mark All Holiday</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={!hasFiltered || loading || visibleRows.length === 0}
+              onClick={() => handleMarkAll('WEEKLY_OFF')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Calendar className="w-3.5 h-3.5" />
+              <span>Mark All Sunday / Off</span>
+            </button>
+          </div>
+        </div>
+
+        {/* ── MAIN ATTENDANCE TABLE ────────────────────────────────────────── */}
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-700 font-semibold uppercase text-[11px] tracking-wider">
+                  <th className="py-3 px-4 w-[110px]">Emp. ID</th>
+                  <th className="py-3 px-4 min-w-[180px]">Name</th>
+                  <th className="py-3 px-4 min-w-[140px]">Phone / Info</th>
+                  <th className="py-3 px-4 min-w-[140px]">Designation</th>
+                  <th className="py-3 px-4 min-w-[160px]">Attendance Status</th>
+                  <th className="py-3 px-4 min-w-[140px]">Arrival Timing</th>
+                  <th className="py-3 px-4 min-w-[140px]">Exit Timing</th>
+                  <th className="py-3 px-4 min-w-[120px]">Late Arrival</th>
+                  <th className="py-3 px-4 min-w-[120px]">Early Exit</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {!hasFiltered ? (
+                  <tr>
+                    <td colSpan={9} className="py-20 text-center text-slate-500">
+                      <div className="max-w-md mx-auto space-y-2">
+                        <Filter className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                        <p className="font-semibold text-slate-700 text-sm">No Records Displayed</p>
+                        <p className="text-xs text-slate-400">
+                          Please select criteria above and click <span className="font-semibold text-[#0047AB]">= Filter</span> to load staff attendance records.
+                        </p>
+                      </div>
+                    </td>
+                  </tr>
+                ) : loading ? (
+                  <tr>
+                    <td colSpan={9} className="py-12 text-center text-slate-400">
+                      <Loader2 className="w-6 h-6 animate-spin mx-auto text-[#0047AB] mb-2" />
+                      Loading staff attendance data...
+                    </td>
+                  </tr>
+                ) : visibleRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="py-12 text-center text-slate-400">
+                      No active staff found for this branch or category on {selectedDate}.
+                    </td>
+                  </tr>
+                ) : (
+                  visibleRows.map((row) => {
+                    const isPresentLike = row.status === 'PRESENT' || row.status === 'HALF_DAY';
+                    const lateInfo = getLateArrivalInfo(row);
+                    const earlyInfo = getEarlyExitInfo(row);
+
+                    return (
+                      <tr
+                        key={row.staffId}
+                        className={`hover:bg-slate-50/60 transition-colors ${
+                          row.isModified ? 'bg-amber-50/20' : ''
+                        }`}
+                      >
+                        {/* Emp ID */}
+                        <td className="py-3.5 px-4 font-mono font-semibold text-slate-700">
+                          {row.employeeCode}
+                        </td>
+
+                        {/* Name */}
+                        <td className="py-3.5 px-4">
+                          <div className="font-semibold text-slate-900">{row.name}</div>
+                          <div className="text-[10px] text-slate-400 capitalize">
+                            {row.compensationType.replace(/_/g, ' ').toLowerCase()}
+                          </div>
+                        </td>
+
+                        {/* Phone / Contact */}
+                        <td className="py-3.5 px-4 text-slate-600 font-mono text-[11px]">
+                          {row.phone}
+                        </td>
+
+                        {/* Designation */}
+                        <td className="py-3.5 px-4 text-slate-700 font-medium">
+                          {row.designation}
+                        </td>
+
+                        {/* Attendance Status Dropdown */}
+                        <td className="py-3.5 px-4">
+                          <div className="relative">
+                            <select
+                              value={row.status}
+                              onChange={(e) =>
+                                handleRowStatusChange(
+                                  row.staffId,
+                                  e.target.value as EditableAttendanceRow['status']
+                                )
+                              }
+                              className={`w-full h-8 text-xs font-semibold rounded-lg px-2.5 border transition-colors cursor-pointer appearance-none ${
+                                row.status === 'PRESENT'
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                                  : row.status === 'ABSENT'
+                                  ? 'bg-red-50 text-red-700 border-red-300'
+                                  : row.status === 'HALF_DAY'
+                                  ? 'bg-amber-50 text-amber-800 border-amber-300'
+                                  : row.status === 'HOLIDAY'
+                                  ? 'bg-amber-50 text-amber-700 border-amber-300'
+                                  : row.status === 'WEEKLY_OFF'
+                                  ? 'bg-blue-50 text-blue-700 border-blue-300'
+                                  : row.status.includes('LEAVE')
+                                  ? 'bg-purple-50 text-purple-700 border-purple-300'
+                                  : 'bg-white text-slate-500 border-slate-300'
+                              }`}
+                            >
+                              <option value="SELECT_STATUS">Select Status</option>
+                              <option value="PRESENT">Present</option>
+                              <option value="ABSENT">Absent</option>
+                              <option value="HALF_DAY">Half Day</option>
+                              <option value="PAID_LEAVE">Leave (Paid)</option>
+                              <option value="UNPAID_LEAVE">Leave (Unpaid)</option>
+                              <option value="HOLIDAY">Holiday</option>
+                              <option value="WEEKLY_OFF">Weekly Off</option>
+                            </select>
+                            <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-2.5 pointer-events-none" />
+                          </div>
+                        </td>
+
+                        {/* Arrival Timing */}
+                        <td className="py-3.5 px-4">
+                          <div className="relative flex items-center">
+                            <Clock className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 pointer-events-none" />
+                            <input
+                              type="time"
+                              value={row.checkIn}
+                              disabled={!isPresentLike}
+                              onChange={(e) => handleRowCheckInChange(row.staffId, e.target.value)}
+                              className="w-full h-8 pl-8 pr-2 text-xs border border-slate-300 rounded-lg bg-white text-slate-800 font-medium focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] disabled:bg-slate-50 disabled:text-slate-400 disabled:cursor-not-allowed transition-colors"
+                            />
+                          </div>
+                        </td>
+
+                        {/* Exit Timing */}
+                        <td className="py-3.5 px-4">
+                          <div className="relative flex items-center">
+                            <Clock className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 pointer-events-none" />
+                            <input
+                              type="time"
+                              value={row.checkOut}
+                              disabled={!isPresentLike}
+                              onChange={(e) => handleRowCheckOutChange(row.staffId, e.target.value)}
+                              className="w-full h-8 pl-8 pr-2 text-xs border border-slate-300 rounded-lg bg-white text-slate-800 font-medium focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] disabled:bg-slate-50 disabled:text-slate-400 disabled:cursor-not-allowed transition-colors"
+                            />
+                          </div>
+                        </td>
+
+                        {/* Late Arrival Badge */}
+                        <td className="py-3.5 px-4">
+                          {lateInfo.isLate ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-50 text-rose-600 border border-rose-200">
+                              {lateInfo.text}
+                            </span>
+                          ) : lateInfo.text === 'On Time' ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700">
+                              On Time
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 text-xs font-mono">-</span>
+                          )}
+                        </td>
+
+                        {/* Early Exit Badge */}
+                        <td className="py-3.5 px-4">
+                          {earlyInfo.isEarly ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                              {earlyInfo.text}
+                            </span>
+                          ) : earlyInfo.text === 'On Time' ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700">
+                              On Time
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 text-xs font-mono">-</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* ── FOOTER: SUMMARY COUNTS & SAVE BUTTON ─────────────────────────── */}
+        <div className="bg-white rounded-xl border border-slate-200 px-5 py-4 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4">
+          {/* Summary status pills */}
+          <div className="flex flex-wrap items-center gap-2 text-xs font-medium">
+            <span className="px-2.5 py-1 rounded-md bg-slate-100 text-slate-700">
+              Total Staff: <strong className="font-bold">{summaryCounts.total}</strong>
+            </span>
+            <span className="px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-700">
+              Present: <strong className="font-bold">{summaryCounts.present}</strong>
+            </span>
+            <span className="px-2.5 py-1 rounded-md bg-rose-50 text-rose-700">
+              Absent: <strong className="font-bold">{summaryCounts.absent}</strong>
+            </span>
+            <span className="px-2.5 py-1 rounded-md bg-blue-50 text-blue-700">
+              Off/Holiday: <strong className="font-bold">{summaryCounts.holidays}</strong>
+            </span>
+            {summaryCounts.unselected > 0 && (
+              <span className="px-2.5 py-1 rounded-md bg-amber-50 text-amber-700 font-semibold">
+                Unmarked: {summaryCounts.unselected}
+              </span>
+            )}
+          </div>
+
+          {/* Save Attendance Button */}
+          <div>
+            <button
+              type="button"
+              onClick={handleSaveAttendance}
+              disabled={!hasFiltered || saving || loading || visibleRows.length === 0}
+              className="w-full sm:w-auto px-7 py-2.5 rounded-lg bg-[#10b981] hover:bg-[#059669] active:bg-[#047857] text-white text-xs font-bold shadow-sm flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {saving ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Save className="w-4 h-4" />
+              )}
+              <span>Save Attendance</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── MODAL: FINALIZE DAY (EOD) ───────────────────────────────────────── */}
       {showFinalizeModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h3 className="font-bold text-slate-900 text-lg">Finalize Workday Attendance</h3>
-                <p className="text-xs text-slate-500 mt-0.5">Work Date: {selectedDate}</p>
-              </div>
-              <button onClick={() => setShowFinalizeModal(false)} className="text-slate-400 hover:text-slate-600">
-                <X className="w-5 h-5" />
-              </button>
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-5 border border-slate-200">
+            <div className="flex items-center gap-3 text-emerald-600 mb-2">
+              <ShieldCheck className="w-6 h-6" />
+              <h3 className="font-bold text-slate-900 text-sm">Finalize Day Attendance</h3>
             </div>
-
-            <div className="p-5 space-y-3">
-              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 text-xs space-y-1.5">
-                <div className="font-semibold flex items-center gap-1.5 text-amber-800">
-                  <AlertTriangle className="w-4 h-4 text-amber-600" />
-                  Finalization Rule Notice:
-                </div>
-                <p className="leading-relaxed">
-                  Finalizing will scan all active scheduled staff in this branch for <strong>{selectedDate}</strong>.
-                  Staff members without punches or approved leave will be marked <strong>ABSENT</strong>.
-                  Any check-in missing a check-out punch will be locked as <strong>MISSING_PUNCH</strong>.
-                </p>
-              </div>
-
-              <div className="text-xs text-slate-600 space-y-1">
-                <div>• Weekly off days (e.g. Sunday) and branch holidays will be automatically excluded.</div>
-                <div>• Future workdays cannot be finalized in advance.</div>
-              </div>
-            </div>
-
-            <div className="p-4 border-t border-slate-100 flex items-center justify-end gap-2">
+            <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+              Finalizing will lock all recorded attendance for <strong>{selectedDate}</strong> at{' '}
+              <strong>{currentBranch?.name}</strong>. Any staff member who has not been marked present
+              will be permanently recorded as <strong>ABSENT</strong>.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setShowFinalizeModal(false)}
-                className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 text-xs font-semibold hover:bg-slate-50"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleFinalizeDay}
-                className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 shadow-xs"
+                disabled={loading}
+                className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs"
               >
-                Confirm Finalize
+                {loading ? 'Finalizing...' : 'Confirm & Lock Day'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* MODAL 7: PRINT STATEMENT */}
-      {showPrintModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-3xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between print:hidden">
-              <span className="font-bold text-slate-900 text-sm">Print Attendance Statement</span>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => window.print()}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2254E1] text-white text-xs font-semibold hover:bg-blue-700"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  Print Now
-                </button>
-                <button onClick={() => setShowPrintModal(false)} className="text-slate-400 hover:text-slate-600">
-                  <X className="w-5 h-5" />
-                </button>
+      {/* ── MODAL: BIOMETRIC CSV IMPORT ─────────────────────────────────────── */}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-5 border border-slate-200">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
+                <Upload className="w-4 h-4 text-[#0047AB]" />
+                <span>Import Biometric / CSV Attendance</span>
               </div>
+              <button
+                type="button"
+                onClick={() => setShowImportModal(false)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-
-            <div className="p-8 space-y-6 print:p-0">
-              <div className="border-b border-slate-200 pb-4 text-center">
-                <h2 className="text-xl font-bold text-slate-900 uppercase tracking-tight">iSysware SalonOS</h2>
-                <p className="text-sm font-semibold text-slate-700 mt-1">Official Attendance & Shift Verification Statement</p>
-                <p className="text-xs text-slate-500">
-                  Date: {selectedDate} • Branch: {allBranches.find((b) => b.id === effectiveBranchId)?.name || 'Consolidated'}
-                </p>
-              </div>
-
-              <div className="grid grid-cols-4 gap-3 text-xs border border-slate-200 rounded-lg p-3">
-                <div>
-                  <span className="text-slate-400 block text-[10px]">Present Verified:</span>
-                  <span className="font-bold text-slate-900">{summaryKpis.present}</span>
-                </div>
-                <div>
-                  <span className="text-slate-400 block text-[10px]">Absent:</span>
-                  <span className="font-bold text-rose-700">{summaryKpis.absent}</span>
-                </div>
-                <div>
-                  <span className="text-slate-400 block text-[10px]">On Leave:</span>
-                  <span className="font-bold text-blue-700">{summaryKpis.paidLeave + summaryKpis.unpaidLeave}</span>
-                </div>
-                <div>
-                  <span className="text-slate-400 block text-[10px]">Late / Early Flags:</span>
-                  <span className="font-bold text-amber-700">{summaryKpis.lateCount} / {summaryKpis.earlyCount}</span>
-                </div>
-              </div>
-
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="border-b-2 border-slate-300 font-semibold text-slate-800 text-[11px]">
-                    <th className="py-2">Code</th>
-                    <th className="py-2">Staff Name</th>
-                    <th className="py-2">Shift</th>
-                    <th className="py-2">In</th>
-                    <th className="py-2">Out</th>
-                    <th className="py-2">Worked</th>
-                    <th className="py-2">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {filteredRecords.map((r) => (
-                    <tr key={r.id}>
-                      <td className="py-2 font-mono text-[11px]">{r.employeeCode || '—'}</td>
-                      <td className="py-2 font-medium">{r.staffName}</td>
-                      <td className="py-2 text-[11px]">{r.scheduledShift || '—'}</td>
-                      <td className="py-2">{r.checkIn}</td>
-                      <td className="py-2">{r.checkOut || '—'}</td>
-                      <td className="py-2">{r.workedHours.toFixed(2)}h</td>
-                      <td className="py-2 font-semibold">{r.status}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              <div className="pt-8 grid grid-cols-2 gap-8 text-xs text-center border-t border-slate-200">
-                <div>
-                  <div className="border-b border-slate-300 w-48 mx-auto pb-6" />
-                  <p className="mt-2 text-slate-600 font-medium">Branch Operations Manager</p>
-                </div>
-                <div>
-                  <div className="border-b border-slate-300 w-48 mx-auto pb-6" />
-                  <p className="mt-2 text-slate-600 font-medium">Verified by Administrator</p>
-                </div>
-              </div>
+            <p className="text-xs text-slate-500 mb-3">
+              Paste CSV rows below. Format: <code>employeeCode,date,checkIn,checkOut</code>
+            </p>
+            <textarea
+              rows={6}
+              value={importCsvText}
+              onChange={(e) => setImportCsvText(e.target.value)}
+              placeholder="EMP-01,2026-10-11,09:05,18:00&#10;EMP-02,2026-10-11,09:30,18:15"
+              className="w-full text-xs font-mono border border-slate-300 rounded-lg p-2.5 focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] mb-4"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowImportModal(false)}
+                className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 text-xs font-semibold hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleImportCSV}
+                disabled={importLoading || !importCsvText.trim()}
+                className="px-4 py-1.5 rounded-lg bg-[#0047AB] hover:bg-[#003785] text-white text-xs font-semibold shadow-xs disabled:opacity-60"
+              >
+                {importLoading ? 'Importing...' : 'Upload & Process'}
+              </button>
             </div>
           </div>
         </div>

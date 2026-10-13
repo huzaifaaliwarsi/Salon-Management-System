@@ -14,7 +14,6 @@ import {
 } from '../../types/salon';
 import {
   Coins,
-  DollarSign,
   Wallet,
   CheckCircle2,
   Clock,

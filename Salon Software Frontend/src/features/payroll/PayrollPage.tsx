@@ -11,9 +11,11 @@ import {
   PayrollPolicyConfig,
   OnlineAccount,
   CashDrawer,
+  SalaryAdvance,
 } from '../../types/salon';
 import {
   DollarSign,
+  MinusCircle,
   Calendar,
   Filter,
   CheckCircle2,
@@ -33,6 +35,9 @@ import {
   History,
   X,
   Lock,
+  Trash2,
+  MapPin,
+  Briefcase,
 } from 'lucide-react';
 import { roundCurrency } from '../../lib/taxCalculations';
 import { AccessDeniedView } from '../scaffold/AccessDeniedView';
@@ -53,11 +58,29 @@ const BaseExplanation = ({ payslip: p }: { payslip: PayslipRecord }) => (
   </div>
 );
 
-const VIEW_TABS: { id: 'RUNS' | PayrollExtrasView; label: string }[] = [
-  { id: 'RUNS', label: 'Payroll Runs' },
+const VIEW_TABS: { id: 'GENERATE' | 'RUNS' | PayrollExtrasView; label: string }[] = [
+  { id: 'GENERATE', label: 'Generate Salary' },
+  { id: 'RUNS', label: 'Manage Salaries' },
   { id: 'SUMMARY', label: 'Monthly Summary (Salary + Commission)' },
   { id: 'INPUTS', label: 'Allowances & Adjustments' },
 ];
+
+const MONTHS = [
+  { value: '01', label: 'January' },
+  { value: '02', label: 'February' },
+  { value: '03', label: 'March' },
+  { value: '04', label: 'April' },
+  { value: '05', label: 'May' },
+  { value: '06', label: 'June' },
+  { value: '07', label: 'July' },
+  { value: '08', label: 'August' },
+  { value: '09', label: 'September' },
+  { value: '10', label: 'October' },
+  { value: '11', label: 'November' },
+  { value: '12', label: 'December' },
+];
+
+const YEARS = ['2024', '2025', '2026', '2027', '2028'];
 
 export const PayrollPage: React.FC = () => {
   const { user, activeBranchId, allBranches, demoDate } = useAuth();
@@ -82,13 +105,18 @@ export const PayrollPage: React.FC = () => {
     user.role === 'SUPER_ADMIN' ? (activeBranchId === 'ALL' ? (allBranches[0]?.id || '') : activeBranchId) : (user.branchId || '')
   );
   const [selectedMonth, setSelectedMonth] = useState<string>(initialMonth);
+  const [selectedMonthNum, setSelectedMonthNum] = useState<string>(initialMonth.slice(5, 7) || '10');
+  const [selectedYear, setSelectedYear] = useState<string>(initialMonth.slice(0, 4) || '2026');
+  const [salaryAdvances, setSalaryAdvances] = useState<SalaryAdvance[]>([]);
+  const [hasFiltered, setHasFiltered] = useState<boolean>(false);
+  const [selectedStaffIds, setSelectedStaffIds] = useState<string[]>([]);
   const [runType, setRunType] = useState<PayrollRunType>('MONTHLY');
   const [startDate, setStartDate] = useState(demoDate || new Date().toISOString().slice(0, 10));
   const [endDate, setEndDate] = useState(demoDate || new Date().toISOString().slice(0, 10));
   const [staffFilter, setStaffFilter] = useState<string>('ALL');
   const [compTypeFilter, setCompTypeFilter] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
-  const [view, setView] = useState<'RUNS' | PayrollExtrasView>('RUNS');
+  const [view, setView] = useState<'GENERATE' | 'RUNS' | PayrollExtrasView>('GENERATE');
 
   // Active Draft Run (preview currently being inspected / generated)
   const [activeDraft, setActiveDraft] = useState<PayrollRun | null>(null);
@@ -102,6 +130,14 @@ export const PayrollPage: React.FC = () => {
   const [showPolicyModal, setShowPolicyModal] = useState<boolean>(false);
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
   const [showCancelModal, setShowCancelModal] = useState<boolean>(false);
+  const [showDeductionModal, setShowDeductionModal] = useState<boolean>(false);
+  const [deductionTargetRun, setDeductionTargetRun] = useState<PayrollRun | null>(null);
+  const [deductionTargetPayslip, setDeductionTargetPayslip] = useState<PayslipRecord | null>(null);
+  const [deductionForm, setDeductionForm] = useState({
+    amount: 0,
+    title: 'Missed Attendance / Punch',
+    notes: '',
+  });
 
   // Payment Form
   const [paymentTargetRun, setPaymentTargetRun] = useState<PayrollRun | null>(null);
@@ -138,12 +174,13 @@ export const PayrollPage: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [runs, staff, accounts, drawers, policy] = await Promise.all([
+      const [runs, staff, accounts, drawers, policy, advances] = await Promise.all([
         salonService.getPayrollRuns(effectiveBranchId, selectedMonth, user),
         salonService.getStaff(effectiveBranchId),
         salonService.getOnlineAccounts(effectiveBranchId),
         salonService.getCashDrawers(effectiveBranchId),
         salonService.getPayrollPolicy(effectiveBranchId),
+        salonService.getSalaryAdvances(effectiveBranchId),
       ]);
 
       setPayrollRuns(runs);
@@ -152,6 +189,15 @@ export const PayrollPage: React.FC = () => {
       setCashDrawers(drawers);
       setPayrollPolicy(policy);
       setPolicyForm(policy);
+      setSalaryAdvances(advances || []);
+
+      // Pre-select ungenerated active staff
+      const genIds = new Set<string>();
+      runs.filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT').forEach((r) => {
+        r.payslips.forEach((p) => genIds.add(p.staffId));
+      });
+      const ungen = staff.filter((s) => s.isActive && !genIds.has(s.id)).map((s) => s.id);
+      setSelectedStaffIds((prev) => (prev.length === 0 ? ungen : prev));
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Failed to load payroll data.' });
     } finally {
@@ -194,6 +240,212 @@ export const PayrollPage: React.FC = () => {
       return true;
     });
   }, [payrollRuns, statusFilter]);
+
+  const effectiveBranchName = useMemo(() => {
+    return allBranches.find((b) => b.id === effectiveBranchId)?.name || 'Main Branch';
+  }, [allBranches, effectiveBranchId]);
+
+  const monthLabel = useMemo(() => {
+    return MONTHS.find((m) => m.value === selectedMonthNum)?.label || 'October';
+  }, [selectedMonthNum]);
+
+  // Active staff in this branch (deduplicated by staff ID)
+  const branchStaff = useMemo(() => {
+    const map = new Map<string, StaffMember>();
+    staffList.forEach((s) => {
+      if (s.isActive && !map.has(s.id)) {
+        map.set(s.id, s);
+      }
+    });
+    return Array.from(map.values());
+  }, [staffList]);
+
+  const periodLabel = useMemo(() => {
+    if (runType === 'DAILY') return startDate;
+    if (runType === 'CUSTOM_RANGE') return `${startDate} to ${endDate}`;
+    return `${monthLabel} ${selectedYear}`;
+  }, [runType, startDate, endDate, monthLabel, selectedYear]);
+
+  // Set of staff IDs that already have a finalized payslip in current month/run
+  const generatedStaffIdSet = useMemo(() => {
+    const set = new Set<string>();
+    const targetMonth = runType === 'MONTHLY' ? `${selectedYear}-${selectedMonthNum}` : startDate.slice(0, 7);
+    payrollRuns
+      .filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT' && r.month === targetMonth)
+      .filter((r) => {
+        if (runType === 'DAILY') return r.runType === 'DAILY' && r.startDate === startDate;
+        if (runType === 'CUSTOM_RANGE') return r.runType === 'CUSTOM_RANGE' && r.startDate === startDate && r.endDate === endDate;
+        return r.runType === 'MONTHLY' || !r.runType;
+      })
+      .forEach((r) => {
+        r.payslips.forEach((p) => set.add(p.staffId));
+      });
+    return set;
+  }, [payrollRuns, runType, selectedYear, selectedMonthNum, startDate, endDate]);
+
+  // Active advance map by staffId
+  const staffLoanMap = useMemo(() => {
+    const map = new Map<string, SalaryAdvance>();
+    (salaryAdvances || [])
+      .filter((a) => a.status === 'ACTIVE' && a.balance > 0)
+      .forEach((a) => map.set(a.staffId, a));
+    return map;
+  }, [salaryAdvances]);
+
+  // Payslips from finalized (non-draft, non-cancelled) runs for the selected month / period, strictly unique per employee
+  const generatedPayslipRows = useMemo(() => {
+    const map = new Map<string, { run: PayrollRun; payslip: PayslipRecord }>();
+    const targetMonth = runType === 'MONTHLY' ? `${selectedYear}-${selectedMonthNum}` : startDate.slice(0, 7);
+    payrollRuns
+      .filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT' && r.month === targetMonth)
+      .filter((r) => {
+        if (runType === 'DAILY') return r.runType === 'DAILY' && r.startDate === startDate;
+        if (runType === 'CUSTOM_RANGE') return r.runType === 'CUSTOM_RANGE' && r.startDate === startDate && r.endDate === endDate;
+        return r.runType === 'MONTHLY' || !r.runType;
+      })
+      .forEach((r) => {
+        r.payslips.forEach((p) => {
+          if (!map.has(p.staffId)) {
+            map.set(p.staffId, { run: r, payslip: p });
+          } else {
+            const existing = map.get(p.staffId)!;
+            const rTime = new Date(r.finalizedAt || r.generatedAt).getTime();
+            const eTime = new Date(existing.run.finalizedAt || existing.run.generatedAt).getTime();
+            if (rTime > eTime) {
+              map.set(p.staffId, { run: r, payslip: p });
+            }
+          }
+        });
+      });
+    return Array.from(map.values());
+  }, [payrollRuns, runType, selectedYear, selectedMonthNum, startDate, endDate]);
+
+  const generatedTotals = useMemo(() => {
+    let basic = 0;
+    let salaryGenerated = 0;
+    let amountPaid = 0;
+    let loanRepayment = 0;
+
+    generatedPayslipRows.forEach(({ payslip: p }) => {
+      basic += (p.effectiveBaseSalary ?? p.baseEarnings) || 0;
+      salaryGenerated += p.netPayable || 0;
+      amountPaid += p.paidAmount || 0;
+      loanRepayment += p.advanceRecoveryAmount || 0;
+    });
+
+    return {
+      basic: roundCurrency(basic),
+      salaryGenerated: roundCurrency(salaryGenerated),
+      amountPaid: roundCurrency(amountPaid),
+      loanRepayment: roundCurrency(loanRepayment),
+    };
+  }, [generatedPayslipRows]);
+
+  const handleSelectAll = () => {
+    setSelectedStaffIds(branchStaff.map((s) => s.id));
+  };
+
+  const handleSelectNone = () => {
+    setSelectedStaffIds([]);
+  };
+
+  const toggleStaffSelection = (id: string) => {
+    setSelectedStaffIds((prev) =>
+      prev.includes(id) ? prev.filter((sid) => sid !== id) : [...prev, id]
+    );
+  };
+
+  const handleFilter = async () => {
+    try {
+      setActionLoading(true);
+      setFeedback(null);
+      const targetMonth = runType === 'MONTHLY' ? `${selectedYear}-${selectedMonthNum}` : startDate.slice(0, 7);
+      setSelectedMonth(targetMonth);
+      if (runType !== 'MONTHLY') {
+        setSelectedYear(startDate.slice(0, 4));
+        setSelectedMonthNum(startDate.slice(5, 7));
+      }
+      const [runs, staff, advances] = await Promise.all([
+        salonService.getPayrollRuns(effectiveBranchId, targetMonth, user),
+        salonService.getStaff(effectiveBranchId),
+        salonService.getSalaryAdvances(effectiveBranchId),
+      ]);
+      setPayrollRuns(runs);
+      setStaffList(staff);
+      setSalaryAdvances(advances || []);
+      setHasFiltered(true);
+
+      const generatedStaffIds = new Set<string>();
+      runs
+        .filter((r) => r.status !== 'CANCELLED' && r.status !== 'DRAFT')
+        .filter((r) => {
+          if (runType === 'DAILY') return r.runType === 'DAILY' && r.startDate === startDate;
+          if (runType === 'CUSTOM_RANGE') return r.runType === 'CUSTOM_RANGE' && r.startDate === startDate && r.endDate === endDate;
+          return r.runType === 'MONTHLY' || !r.runType;
+        })
+        .forEach((r) => {
+          r.payslips.forEach((p) => generatedStaffIds.add(p.staffId));
+        });
+      const ungenerated = staff.filter((s) => s.isActive && !generatedStaffIds.has(s.id)).map((s) => s.id);
+      setSelectedStaffIds(ungenerated);
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Failed to filter payroll data.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleGenerateSalary = async () => {
+    if (!hasFiltered) {
+      await handleFilter();
+      return;
+    }
+    if (selectedStaffIds.length === 0) {
+      setFeedback({ type: 'error', message: 'Please select at least one eligible staff member to generate salary.' });
+      return;
+    }
+    try {
+      setActionLoading(true);
+      setFeedback(null);
+      const targetMonth = runType === 'MONTHLY' ? `${selectedYear}-${selectedMonthNum}` : startDate.slice(0, 7);
+      const effStartDate = runType === 'MONTHLY' ? undefined : startDate;
+      const effEndDate = runType === 'MONTHLY' ? undefined : (runType === 'DAILY' ? startDate : endDate);
+
+      const preview = await salonService.generatePayrollPreview(
+        effectiveBranchId,
+        targetMonth,
+        undefined,
+        user,
+        {
+          runType,
+          startDate: effStartDate,
+          endDate: effEndDate,
+          compensationType: 'ALL',
+          staffIds: selectedStaffIds,
+          includeDaily: true,
+        }
+      );
+      const finalized = await salonService.finalizePayroll(preview.id, user);
+      setFeedback({
+        type: 'success',
+        message: `Salary successfully generated for ${finalized.employeeCount} staff! Run: ${finalized.payrollNumber}`,
+      });
+      const [runs, staff, advances] = await Promise.all([
+        salonService.getPayrollRuns(effectiveBranchId, targetMonth, user),
+        salonService.getStaff(effectiveBranchId),
+        salonService.getSalaryAdvances(effectiveBranchId),
+      ]);
+      setPayrollRuns(runs);
+      setStaffList(staff);
+      setSalaryAdvances(advances || []);
+      setHasFiltered(true);
+      setSelectedStaffIds([]);
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Failed to generate salary.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   // Open open drawer for active user in current branch
   const activeUserOpenDrawer = useMemo(() => {
@@ -298,6 +550,73 @@ export const PayrollPage: React.FC = () => {
       await loadData();
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Payment failed.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Open Manual Deduction Modal
+  const openDeductionModal = (run: PayrollRun, ps: PayslipRecord) => {
+    setDeductionTargetRun(run);
+    setDeductionTargetPayslip(ps);
+    setDeductionForm({
+      amount: 0,
+      title: 'Missed Attendance / Punch',
+      notes: '',
+    });
+    setShowDeductionModal(true);
+  };
+
+  // Apply Manual Deduction
+  const handleApplyDeduction = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deductionTargetPayslip || !deductionTargetRun) return;
+
+    if (deductionForm.amount <= 0) {
+      setFeedback({
+        type: 'error',
+        message: 'Deduction amount must be greater than zero.',
+      });
+      return;
+    }
+
+    if (deductionForm.amount > deductionTargetPayslip.outstandingAmount) {
+      setFeedback({
+        type: 'error',
+        message: `Deduction amount cannot exceed unpaid salary balance of Rs. ${deductionTargetPayslip.outstandingAmount.toLocaleString()}`,
+      });
+      return;
+    }
+
+    if (!deductionForm.title.trim()) {
+      setFeedback({
+        type: 'error',
+        message: 'Deduction title or reason is required.',
+      });
+      return;
+    }
+
+    try {
+      setActionLoading(true);
+      setFeedback(null);
+      await salonService.addManualDeduction(
+        deductionTargetPayslip.id,
+        {
+          amount: deductionForm.amount,
+          title: deductionForm.title.trim(),
+          notes: deductionForm.notes.trim() || undefined,
+        },
+        user
+      );
+
+      setFeedback({
+        type: 'success',
+        message: `Successfully applied deduction of Rs. ${deductionForm.amount.toLocaleString()} for ${deductionTargetPayslip.staffName}!`,
+      });
+      setShowDeductionModal(false);
+      await loadData();
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Failed to apply deduction.' });
     } finally {
       setActionLoading(false);
     }
@@ -430,39 +749,30 @@ export const PayrollPage: React.FC = () => {
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 font-sans">
-      {/* Top Banner / Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+      {/* Top Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2">
         <div>
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl">
-              <DollarSign className="w-6 h-6" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Staff Payroll Management</h1>
-              <p className="text-sm text-slate-500">
-                Monthly base earnings, attendance penalties, approved overtime, and auditable disbursements.
-              </p>
-            </div>
-          </div>
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Generate Salary</h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Select branch, month and year to filter and generate staff salaries.
+          </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={() => setShowPolicyModal(true)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium rounded-xl text-sm transition-colors"
-          >
-            <Settings className="w-4 h-4 text-slate-500" />
-            Policy Settings
-          </button>
-
-          <button
-            onClick={handleGeneratePreview}
-            disabled={actionLoading}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-xl text-sm shadow-sm transition-all hover:shadow"
-          >
-            <Calendar className="w-4 h-4" />
-            Generate Payroll Preview
-          </button>
+        {/* View Switcher Tabs - Minimal & Clean */}
+        <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+          {VIEW_TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setView(t.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                view === t.id
+                  ? 'bg-[#0a3871] text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -489,200 +799,654 @@ export const PayrollPage: React.FC = () => {
         </div>
       )}
 
-      {/* Summary Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Finalized Payable</span>
-          <div className="mt-2 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-slate-900">
-              Rs. {summaryStats.finalizedPayable.toLocaleString()}
-            </span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium">
-              {summaryStats.employeeCount} Staff
-            </span>
+      {/* GENERATE SALARY VIEW */}
+      {view === 'GENERATE' && (
+        <div className="space-y-6">
+          {/* Top Form & Staff Selection */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            {/* Left Filter Card */}
+            <div className={`${hasFiltered ? 'lg:col-span-4' : 'lg:col-span-5 max-w-md'} bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-4`}>
+              <h2 className="text-lg font-bold text-slate-900 pb-2 border-b border-slate-100">Generate Salary</h2>
+
+              {/* Branch */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Branch <span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                    <MapPin className="w-4 h-4 text-blue-600" />
+                  </div>
+                  <select
+                    value={effectiveBranchId}
+                    onChange={(e) => {
+                      setSelectedBranchId(e.target.value);
+                      setHasFiltered(false);
+                    }}
+                    disabled={user.role !== 'SUPER_ADMIN'}
+                    className="w-full text-sm pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800 disabled:opacity-75 disabled:cursor-not-allowed"
+                  >
+                    {allBranches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Payroll Type */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Payroll Type <span className="text-rose-500">*</span>
+                </label>
+                <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRunType('MONTHLY');
+                      setHasFiltered(false);
+                    }}
+                    className={`py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                      runType === 'MONTHLY'
+                        ? 'bg-white text-blue-700 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Monthly
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRunType('DAILY');
+                      setHasFiltered(false);
+                    }}
+                    className={`py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                      runType === 'DAILY'
+                        ? 'bg-white text-blue-700 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Daily
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRunType('CUSTOM_RANGE');
+                      setHasFiltered(false);
+                    }}
+                    className={`py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                      runType === 'CUSTOM_RANGE'
+                        ? 'bg-white text-blue-700 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Custom
+                  </button>
+                </div>
+              </div>
+
+              {/* Monthly Date Controls */}
+              {runType === 'MONTHLY' && (
+                <>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Month <span className="text-rose-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                        <Calendar className="w-4 h-4 text-blue-600" />
+                      </div>
+                      <select
+                        value={selectedMonthNum}
+                        onChange={(e) => {
+                          setSelectedMonthNum(e.target.value);
+                          setSelectedMonth(`${selectedYear}-${e.target.value}`);
+                          setHasFiltered(false);
+                        }}
+                        className="w-full text-sm pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
+                      >
+                        {MONTHS.map((m) => (
+                          <option key={m.value} value={m.value}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Year <span className="text-rose-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                        <Calendar className="w-4 h-4 text-blue-600" />
+                      </div>
+                      <select
+                        value={selectedYear}
+                        onChange={(e) => {
+                          setSelectedYear(e.target.value);
+                          setSelectedMonth(`${e.target.value}-${selectedMonthNum}`);
+                          setHasFiltered(false);
+                        }}
+                        className="w-full text-sm pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
+                      >
+                        {YEARS.map((y) => (
+                          <option key={y} value={y}>
+                            {y}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Daily Date Controls */}
+              {runType === 'DAILY' && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                    Date <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                      <Calendar className="w-4 h-4 text-blue-600" />
+                    </div>
+                    <input
+                      type="date"
+                      value={startDate}
+                      onChange={(e) => {
+                        setStartDate(e.target.value);
+                        setEndDate(e.target.value);
+                        setHasFiltered(false);
+                      }}
+                      className="w-full text-sm pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Custom Range Date Controls */}
+              {runType === 'CUSTOM_RANGE' && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Start Date <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={startDate}
+                      onChange={(e) => {
+                        setStartDate(e.target.value);
+                        setHasFiltered(false);
+                      }}
+                      className="w-full text-sm px-2.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      End Date <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={endDate}
+                      onChange={(e) => {
+                        setEndDate(e.target.value);
+                        setHasFiltered(false);
+                      }}
+                      className="w-full text-sm px-2.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-800"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="pt-2 space-y-2.5">
+                <button
+                  type="button"
+                  onClick={handleFilter}
+                  disabled={actionLoading}
+                  className="w-full py-2.5 px-4 bg-[#0a3871] hover:bg-[#082d5b] text-white font-semibold rounded-xl text-sm flex items-center justify-center gap-2 shadow-sm transition-all"
+                >
+                  <Filter className="w-4 h-4" /> Filter
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleGenerateSalary}
+                  disabled={actionLoading}
+                  className="w-full py-2.5 px-4 bg-[#0a3871] hover:bg-[#082d5b] disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-xl text-sm flex items-center justify-center gap-2 shadow-sm transition-all"
+                >
+                  <Briefcase className="w-4 h-4" /> Generate Salary
+                </button>
+              </div>
+            </div>
+
+            {/* Right Eligible Staff Card - Only visible when hasFiltered is true */}
+            {hasFiltered && (
+              <div className="lg:col-span-8 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col min-h-[380px]">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3.5 border-b border-slate-100 gap-3">
+                  <div className="text-sm font-bold text-slate-700">
+                    Staff Code | <span className="text-rose-600">Name</span> | Designation
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSelectAll}
+                      className="px-3.5 py-1.5 bg-[#00bcd4] hover:bg-[#00acc1] text-white text-xs font-semibold rounded-md shadow-xs transition-colors"
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSelectNone}
+                      className="px-3.5 py-1.5 bg-[#e53935] hover:bg-[#d32f2f] text-white text-xs font-semibold rounded-md shadow-xs transition-colors"
+                    >
+                      Select None
+                    </button>
+                  </div>
+                </div>
+
+                {/* Staff List */}
+                <div className="mt-4 flex-1 overflow-y-auto max-h-[330px] space-y-2.5 pr-1">
+                  {branchStaff.length === 0 ? (
+                    <div className="p-12 text-center text-slate-400 text-sm">
+                      No active staff found for this branch.
+                    </div>
+                  ) : (
+                    branchStaff.map((s) => {
+                      const isSelected = selectedStaffIds.includes(s.id);
+                      const isGenerated = generatedStaffIdSet.has(s.id);
+                      const loan = staffLoanMap.get(s.id);
+
+                      return (
+                        <div
+                          key={s.id}
+                          onClick={() => toggleStaffSelection(s.id)}
+                          className="p-3 rounded-xl bg-[#fffde7] border border-[#fff59d] hover:border-[#fbc02d] flex items-center justify-between text-xs sm:text-sm cursor-pointer transition-all select-none"
+                        >
+                          <div className="flex items-center gap-2.5 flex-wrap">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {}} // row onClick handles toggle
+                              className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer pointer-events-none"
+                            />
+                            <span className="text-slate-600 font-medium">
+                              {s.employeeCode || `EMP-${s.id.slice(-3).toUpperCase()}`}
+                            </span>
+                            <span className="text-slate-300">|</span>
+                            <span className="text-rose-600 font-semibold">{s.name}</span>
+                            <span className="text-slate-300">|</span>
+                            <span className="text-slate-600 capitalize">
+                              {s.designation || s.roleTitle || 'Staff'}
+                            </span>
+                            {loan && (
+                              <span className="ml-1 px-2.5 py-0.5 bg-[#ff9800] text-white text-[11px] font-bold rounded-full shadow-xs">
+                                Loan: {roundCurrency(loan.recoveryPerMonth || loan.balance)}.00/instalment
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="pl-3">
+                            {isGenerated ? (
+                              <span className="px-3 py-1 bg-[#2e7d32] text-white text-xs font-bold rounded-md shadow-xs">
+                                Generated
+                              </span>
+                            ) : (
+                              <span className="px-3 py-1 bg-slate-200 text-slate-600 text-xs font-medium rounded-md">
+                                Not Generated
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
           </div>
-          <p className="mt-1 text-xs text-slate-500">Gross salary minus penalties + overtime</p>
-        </div>
 
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Paid</span>
-          <div className="mt-2 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-emerald-600">Rs. {summaryStats.paid.toLocaleString()}</span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-medium">
-              Disbursed
-            </span>
+          {/* Generated Salaries Table Section - Only visible when hasFiltered is true */}
+          {hasFiltered && (
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <h3 className="text-lg font-bold text-slate-800">Generated Salaries</h3>
+                <span className="px-4 py-1.5 bg-[#00bcd4] text-white text-xs font-bold rounded-full shadow-xs w-fit">
+                  {effectiveBranchName} - {periodLabel}
+                </span>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse min-w-[1100px]">
+                    <thead>
+                      <tr className="bg-[#f0f4f8] text-slate-700 text-xs font-semibold border-b border-slate-200">
+                        <th className="py-3 px-4">Staff</th>
+                        <th className="py-3 px-3 text-center">{runType === 'MONTHLY' ? 'Salary Month' : 'Period'}</th>
+                        <th className="py-3 px-3 text-center" title="Paid attendance days; each completed half day counts as 0.5">Present</th>
+                        <th className="py-3 px-3 text-center">Half Day</th>
+                        <th className="py-3 px-3 text-center">Paid Leave</th>
+                        <th className="py-3 px-3 text-center">Unpaid Leave</th>
+                        <th className="py-3 px-3 text-center">Absent</th>
+                        <th className="py-3 px-3 text-center">Late</th>
+                        <th className="py-3 px-3 text-center">Early Exit</th>
+                        <th className="py-3 px-4 text-center">Basic</th>
+                        <th className="py-3 px-4 text-center">Salary Generated</th>
+                        <th className="py-3 px-4 text-center">Amount Paid</th>
+                        <th className="py-3 px-4 text-center">Loan Repayment</th>
+                        <th className="py-3 px-3 text-center">Status</th>
+                        <th className="py-3 px-4 text-center">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-sm">
+                      {generatedPayslipRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={15} className="py-12 text-center text-slate-400 text-sm">
+                            No salaries generated for {effectiveBranchName} ({periodLabel}) yet. Select eligible staff above and click "Generate Salary".
+                          </td>
+                        </tr>
+                      ) : (
+                        generatedPayslipRows.map(({ run, payslip: p }) => {
+                          const isPaid = p.outstandingAmount <= 0 && p.paidAmount > 0;
+                          const compLabel =
+                            p.compensationType === 'DAILY_SALARY'
+                              ? 'daily'
+                              : p.compensationType === 'COMMISSION_ONLY'
+                              ? 'commission only'
+                              : p.compensationType === 'DAILY_PLUS_COMMISSION'
+                              ? 'daily + comm'
+                              : p.compensationType === 'MONTHLY_PLUS_COMMISSION'
+                              ? 'monthly + comm'
+                              : 'full time';
+
+                          return (
+                            <tr key={p.id} className="hover:bg-slate-50/80 transition-colors">
+                              {/* Staff */}
+                              <td className="py-3.5 px-4">
+                                <div className="font-bold text-slate-900 text-sm">{p.staffName}</div>
+                                <div className="text-[11px] text-slate-400 capitalize">{p.employeeCode}</div>
+                              </td>
+
+                              {/* Salary Period */}
+                              <td className="py-3.5 px-3 text-center">
+                                <span className="px-2.5 py-1 bg-[#00bcd4] text-white text-xs font-semibold rounded-full shadow-xs">
+                                  {run.runType === 'DAILY' ? (run.startDate || run.month) : run.runType === 'CUSTOM_RANGE' ? `${run.startDate} to ${run.endDate}` : `${monthLabel} ${selectedYear}`}
+                                </span>
+                              </td>
+
+                              {/* Present */}
+                              <td className="py-3.5 px-3 text-center">
+                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#4caf50] text-white font-bold text-xs shadow-xs">
+                                  {p.presentDays ?? 0}
+                                </span>
+                              </td>
+
+                              <td className="py-3.5 px-3 text-center font-semibold text-amber-700">{p.halfDayDays ?? 'N/A'}</td>
+                              <td className="py-3.5 px-3 text-center font-semibold text-emerald-700">{p.paidLeaveDays ?? 0}</td>
+                              <td className="py-3.5 px-3 text-center font-semibold text-rose-600">{p.unpaidLeaveDays ?? 0}</td>
+
+                              {/* Absent */}
+                              <td className="py-3.5 px-3 text-center">
+                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#f44336] text-white font-bold text-xs shadow-xs">
+                                  {p.absentDays ?? 0}
+                                </span>
+                              </td>
+
+                              {/* Late */}
+                              <td className="py-3.5 px-3 text-center">
+                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#ff9800] text-white font-bold text-xs shadow-xs">
+                                  {p.lateDays ?? 'N/A'}
+                                </span>
+                              </td>
+
+                              {/* Early Exit */}
+                              <td className="py-3.5 px-3 text-center">
+                                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#f44336] text-white font-bold text-xs shadow-xs">
+                                  {p.earlyExitDays ?? 'N/A'}
+                                </span>
+                              </td>
+
+                              {/* Basic */}
+                              <td className="py-3.5 px-4 text-center">
+                                <div className="font-bold text-[#1976d2] text-sm">
+                                  {((p.effectiveBaseSalary ?? p.baseEarnings) || 0).toLocaleString('en-US', {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 2,
+                                  })}
+                                </div>
+                                <div className="text-[10px] text-slate-400 font-medium">{compLabel}</div>
+                              </td>
+
+                              {/* Salary Generated */}
+                              <td className="py-3.5 px-4 text-center font-bold text-[#2e7d32] text-sm">
+                                {(p.netPayable || 0).toLocaleString('en-US', {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </td>
+
+                              {/* Amount Paid */}
+                              <td className="py-3.5 px-4 text-center font-bold text-[#00bcd4] text-sm">
+                                {(p.paidAmount || 0).toLocaleString('en-US', {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </td>
+
+                              {/* Loan Repayment */}
+                              <td className="py-3.5 px-4 text-center font-bold text-[#ff9800] text-sm">
+                                {(p.advanceRecoveryAmount || 0).toLocaleString('en-US', {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </td>
+
+                              {/* Status */}
+                              <td className="py-3.5 px-3 text-center">
+                                <span
+                                  className={`px-2.5 py-1 text-xs font-semibold rounded-md ${
+                                    isPaid
+                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                      : 'bg-[#ffe0b2] text-[#e65100] border border-[#ffcc80]'
+                                  }`}
+                                >
+                                  {isPaid ? 'Paid' : 'Pending'}
+                                </span>
+                              </td>
+
+                              {/* Actions */}
+                              <td className="py-3.5 px-4 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => openPaymentModal(run, p)}
+                                    disabled={p.outstandingAmount <= 0}
+                                    className="px-3 py-1.5 bg-[#1976d2] hover:bg-[#1565c0] disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-md shadow-xs transition-colors"
+                                  >
+                                    Make Payment
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => openDeductionModal(run, p)}
+                                    disabled={p.outstandingAmount <= 0}
+                                    title="Apply Manual Deduction (e.g. missed punch, penalty)"
+                                    className="px-2.5 py-1.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-md shadow-xs transition-colors flex items-center gap-1"
+                                  >
+                                    <MinusCircle className="w-3.5 h-3.5" />
+                                    Deduct
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setRunToCancel(run);
+                                      setShowCancelModal(true);
+                                    }}
+                                    title="Cancel Payroll Run"
+                                    className="p-1.5 bg-[#e53935] hover:bg-[#d32f2f] text-white rounded-md shadow-xs transition-colors"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+
+                    {generatedPayslipRows.length > 0 && (
+                      <tfoot>
+                        <tr className="bg-slate-50 font-bold border-t border-slate-200">
+                          <td colSpan={9} className="py-3.5 px-4 text-right text-slate-800 text-sm">
+                            Total:
+                          </td>
+                          <td className="py-3.5 px-4 text-center text-[#1976d2] text-sm">
+                            {generatedTotals.basic.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3.5 px-4 text-center text-[#2e7d32] text-sm">
+                            {generatedTotals.salaryGenerated.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3.5 px-4 text-center text-[#00bcd4] text-sm">
+                            {generatedTotals.amountPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3.5 px-4 text-center text-[#ff9800] text-sm">
+                            {generatedTotals.loanRepayment.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td colSpan={2}></td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Filter Toolbar (For Managing Runs) */}
+      {view === 'RUNS' && (
+        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+          <div className="flex items-center gap-2 text-slate-700 font-semibold text-sm">
+            <Filter className="w-4 h-4 text-indigo-600" />
+            <span>Payroll Filters & Run Selector</span>
           </div>
-          <p className="mt-1 text-xs text-slate-500">Cleared through Open Drawer or Bank</p>
-        </div>
 
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Outstanding Balance</span>
-          <div className="mt-2 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-amber-600">
-              Rs. {summaryStats.outstanding.toLocaleString()}
-            </span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 font-medium">
-              Pending Payout
-            </span>
-          </div>
-          <p className="mt-1 text-xs text-slate-500">Due to employees for {selectedMonth}</p>
-        </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+            {user.role === 'SUPER_ADMIN' && (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Branch</label>
+                <select
+                  value={selectedBranchId}
+                  onChange={(e) => setSelectedBranchId(e.target.value)}
+                  className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+                >
+                  {allBranches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active Cash Drawer</span>
-          <div className="mt-2 flex items-baseline justify-between">
-            <span className="text-xl font-bold text-slate-800">
-              {activeUserOpenDrawer ? `Rs. ${activeUserOpenDrawer.expectedInDrawer.toLocaleString()}` : 'No Open Drawer'}
-            </span>
-            <span
-              className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                activeUserOpenDrawer ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'
-              }`}
-            >
-              {activeUserOpenDrawer ? 'Ready' : 'Locked'}
-            </span>
-          </div>
-          <p className="mt-1 text-xs text-slate-500">
-            {activeUserOpenDrawer
-              ? `Custodian: ${user.name}`
-              : 'Cash payments require an open drawer'}
-          </p>
-        </div>
-      </div>
-
-      {/* Filter Toolbar */}
-      <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-        <div className="flex items-center gap-2 text-slate-700 font-semibold text-sm">
-          <Filter className="w-4 h-4 text-indigo-600" />
-          <span>Payroll Filters & Run Selector</span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
-          {user.role === 'SUPER_ADMIN' && (
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Branch</label>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Payroll Month</label>
+              <input
+                type="month"
+                value={selectedMonth}
+                onChange={(e) => {
+                  setSelectedMonth(e.target.value);
+                  setStartDate(`${e.target.value}-01`);
+                  setEndDate(`${e.target.value}-${String(new Date(Number(e.target.value.slice(0, 4)), Number(e.target.value.slice(5, 7)), 0).getDate()).padStart(2, '0')}`);
+                }}
+                className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Employee</label>
               <select
-                value={selectedBranchId}
-                onChange={(e) => setSelectedBranchId(e.target.value)}
+                value={staffFilter}
+                onChange={(e) => {
+                  setStaffFilter(e.target.value);
+                  const selectedStaff = staffList.find((s) => s.id === e.target.value);
+                  if (selectedStaff) {
+                    setCompTypeFilter('ALL');
+                    if (selectedStaff.compensationType.startsWith('DAILY')) setRunType('DAILY');
+                    else if (runType === 'DAILY') setRunType('MONTHLY');
+                  }
+                }}
                 className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
               >
-                {allBranches.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
+                <option value="ALL">All Employees</option>
+                {staffList.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.employeeCode})
                   </option>
                 ))}
               </select>
             </div>
-          )}
 
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Payroll Month</label>
-            <input
-              type="month"
-              value={selectedMonth}
-              onChange={(e) => {
-                setSelectedMonth(e.target.value);
-                setStartDate(`${e.target.value}-01`);
-                setEndDate(`${e.target.value}-${String(new Date(Number(e.target.value.slice(0, 4)), Number(e.target.value.slice(5, 7)), 0).getDate()).padStart(2, '0')}`);
-              }}
-              className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
-            />
-          </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Compensation Type</label>
+              <select
+                value={compTypeFilter}
+                onChange={(e) => {
+                  setCompTypeFilter(e.target.value);
+                  if (e.target.value.startsWith('DAILY')) setRunType('DAILY');
+                  else if (e.target.value !== 'ALL' && runType === 'DAILY') setRunType('MONTHLY');
+                }}
+                className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="ALL">All Types</option>
+                <option value="MONTHLY_SALARY">Monthly Salary</option>
+                <option value="MONTHLY_PLUS_COMMISSION">Monthly + Commission</option>
+                <option value="DAILY_SALARY">Daily Salary</option>
+                <option value="DAILY_PLUS_COMMISSION">Daily + Commission</option>
+                <option value="COMMISSION_ONLY">Commission Only</option>
+              </select>
+            </div>
 
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Employee</label>
-            <select
-              value={staffFilter}
-              onChange={(e) => {
-                setStaffFilter(e.target.value);
-                const selectedStaff = staffList.find((s) => s.id === e.target.value);
-                if (selectedStaff) {
-                  setCompTypeFilter('ALL');
-                  if (selectedStaff.compensationType.startsWith('DAILY')) setRunType('DAILY');
-                  else if (runType === 'DAILY') setRunType('MONTHLY');
-                }
-              }}
-              className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="ALL">All Employees</option>
-              {staffList.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} ({s.employeeCode})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Compensation Type</label>
-            <select
-              value={compTypeFilter}
-              onChange={(e) => {
-                setCompTypeFilter(e.target.value);
-                if (e.target.value.startsWith('DAILY')) setRunType('DAILY');
-                else if (e.target.value !== 'ALL' && runType === 'DAILY') setRunType('MONTHLY');
-              }}
-              className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="ALL">All Types</option>
-              <option value="MONTHLY_SALARY">Monthly Salary</option>
-              <option value="MONTHLY_PLUS_COMMISSION">Monthly + Commission</option>
-              <option value="DAILY_SALARY">Daily Salary</option>
-              <option value="DAILY_PLUS_COMMISSION">Daily + Commission</option>
-              <option value="COMMISSION_ONLY">Commission Only</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Payroll Period</label>
-            <select value={runType} onChange={(e) => setRunType(e.target.value as PayrollRunType)} className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50">
-              <option value="DAILY">Daily (one day)</option>
-              <option value="MONTHLY">Full month (monthly contracts)</option>
-              <option value="CUSTOM_RANGE">Custom dates within month</option>
-            </select>
-          </div>
-          {runType !== 'MONTHLY' && <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">{runType === 'DAILY' ? 'Payroll Date' : 'From Date'}</label>
-            <input type="date" value={startDate} min={`${selectedMonth}-01`} max={`${selectedMonth}-31`} onChange={(e) => setStartDate(e.target.value)} className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50" />
-          </div>}
-          {runType === 'CUSTOM_RANGE' && <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">To Date</label>
-            <input type="date" value={endDate} min={startDate} max={`${selectedMonth}-31`} onChange={(e) => setEndDate(e.target.value)} className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50" />
-            <p className="text-xs text-slate-500 mt-1">Monthly salary and recurring allowances are prorated using branch policy.</p>
-          </div>}
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Run Status</label>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="ALL">All Statuses</option>
-              <option value="FINALIZED">Finalized</option>
-              <option value="PARTIALLY_PAID">Partially Paid</option>
-              <option value="PAID">Fully Paid</option>
-              <option value="CANCELLED">Cancelled</option>
-            </select>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Payroll Period</label>
+              <select value={runType} onChange={(e) => setRunType(e.target.value as PayrollRunType)} className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50">
+                <option value="DAILY">Daily (one day)</option>
+                <option value="MONTHLY">Full month (monthly contracts)</option>
+                <option value="CUSTOM_RANGE">Custom dates within month</option>
+              </select>
+            </div>
+            {runType !== 'MONTHLY' && <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">{runType === 'DAILY' ? 'Payroll Date' : 'From Date'}</label>
+              <input type="date" value={startDate} min={`${selectedMonth}-01`} max={`${selectedMonth}-31`} onChange={(e) => setStartDate(e.target.value)} className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50" />
+            </div>}
+            {runType === 'CUSTOM_RANGE' && <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">To Date</label>
+              <input type="date" value={endDate} min={startDate} max={`${selectedMonth}-31`} onChange={(e) => setEndDate(e.target.value)} className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50" />
+              <p className="text-xs text-slate-500 mt-1">Monthly salary and recurring allowances are prorated using branch policy.</p>
+            </div>}
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Run Status</label>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="w-full text-sm border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="ALL">All Statuses</option>
+                <option value="FINALIZED">Finalized</option>
+                <option value="PARTIALLY_PAID">Partially Paid</option>
+                <option value="PAID">Fully Paid</option>
+                <option value="CANCELLED">Cancelled</option>
+              </select>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* View tabs */}
-      <div className="flex flex-wrap gap-2">
-        {VIEW_TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setView(t.id)}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors ${
-              view === t.id ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {view !== 'RUNS' && (
+      {view !== 'RUNS' && view !== 'GENERATE' && (
         <PayrollExtrasPanel
           view={view}
           branchId={effectiveBranchId}
@@ -803,9 +1567,10 @@ export const PayrollPage: React.FC = () => {
                   <thead className="bg-slate-100/70 text-slate-600 font-semibold border-b border-slate-100">
                     <tr>
                       <th className="py-3 px-4">Employee</th>
+                      <th className="py-3 px-3">Attendance</th>
                       <th className="py-3 px-3">Comp Type</th>
                       <th className="py-3 px-3 text-right">Base Earned</th>
-                      <th className="py-3 px-3 text-right">Paid Leave</th>
+                      <th className="py-3 px-3 text-right">Paid Leave Pay</th>
                       <th className="py-3 px-3 text-right">Absence Ded.</th>
                       <th className="py-3 px-3 text-right">Late/Early</th>
                       <th className="py-3 px-3 text-right">Overtime</th>
@@ -832,6 +1597,18 @@ export const PayrollPage: React.FC = () => {
                           <td className="py-3 px-4">
                             <div className="font-semibold text-slate-900">{ps.staffName}</div>
                             <div className="text-[11px] text-slate-400">{ps.employeeCode} • {ps.designation}</div>
+                          </td>
+                          <td className="py-3 px-3">
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 min-w-[220px] whitespace-nowrap">
+                              <span className="text-slate-700">Present: <strong>{ps.presentDays ?? 0}</strong></span>
+                              <span className="text-rose-600">Absent: <strong>{ps.absentDays ?? 0}</strong></span>
+                              <span className="text-emerald-700">Paid Leave: <strong>{ps.paidLeaveDays ?? 0}</strong></span>
+                              <span className="text-rose-600">Unpaid Leave: <strong>{ps.unpaidLeaveDays ?? 0}</strong></span>
+                              <span className="text-amber-700">Half Day: <strong>{ps.halfDayDays ?? 'N/A'}</strong></span>
+                              <span className="text-slate-600">Missing Punch: <strong>{ps.missingPunchDays ?? 0}</strong></span>
+                              <span className="text-slate-600">Paid Holiday: <strong>{ps.paidHolidayDays ?? 0}</strong></span>
+                              <span className="text-slate-600">Paid Weekly Off: <strong>{ps.paidWeeklyOffDays ?? 0}</strong></span>
+                            </div>
                           </td>
                           <td className="py-3 px-3">
                             <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px] font-medium">
@@ -906,13 +1683,22 @@ export const PayrollPage: React.FC = () => {
                               </button>
 
                               {ps.outstandingAmount > 0 && run.status !== 'CANCELLED' && run.status !== 'DRAFT' && (
-                                <button
-                                  onClick={() => openPaymentModal(run, ps)}
-                                  title="Pay Outstanding"
-                                  className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg"
-                                >
-                                  <CreditCard className="w-4 h-4" />
-                                </button>
+                                <>
+                                  <button
+                                    onClick={() => openDeductionModal(run, ps)}
+                                    title="Apply Manual Deduction"
+                                    className="p-1.5 text-amber-600 hover:bg-amber-50 rounded-lg"
+                                  >
+                                    <MinusCircle className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    onClick={() => openPaymentModal(run, ps)}
+                                    title="Pay Outstanding"
+                                    className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg"
+                                  >
+                                    <CreditCard className="w-4 h-4" />
+                                  </button>
+                                </>
                               )}
 
                               {(ps.payments || []).length > 0 && (
@@ -1208,6 +1994,14 @@ export const PayrollPage: React.FC = () => {
                     <span className="text-slate-400 block text-[11px]">Absent Days</span>
                     <span className="text-sm font-bold text-rose-600">{selectedPayslip.absentDays}</span>
                   </div>
+                  <div className="p-2 bg-slate-50 rounded-lg">
+                    <span className="text-slate-400 block text-[11px]">Half Day</span>
+                    <span className="text-sm font-bold text-amber-700">{selectedPayslip.halfDayDays ?? 'N/A'}</span>
+                  </div>
+                  <div className="p-2 bg-slate-50 rounded-lg">
+                    <span className="text-slate-400 block text-[11px]">Unpaid Leave</span>
+                    <span className="text-sm font-bold text-rose-600">{selectedPayslip.unpaidLeaveDays ?? 0}</span>
+                  </div>
                 </div>
               </div>
 
@@ -1464,6 +2258,154 @@ export const PayrollPage: React.FC = () => {
           </div>
         </div>
       )}
+      {/* ========================================================================= */}
+      {/* MODAL: MANUAL SALARY DEDUCTION MODAL                                       */}
+      {/* ========================================================================= */}
+      {showDeductionModal && deductionTargetPayslip && deductionTargetRun && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl">
+                  <MinusCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Apply Manual Deduction</h3>
+                  <p className="text-xs text-slate-500">
+                    {deductionTargetPayslip.staffName} ({deductionTargetPayslip.employeeCode}) • {deductionTargetPayslip.designation}
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setShowDeductionModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleApplyDeduction} className="p-6 space-y-4 text-xs">
+              {/* Summary card */}
+              <div className="grid grid-cols-3 gap-2 p-3 bg-slate-50 rounded-2xl border border-slate-200 text-center">
+                <div>
+                  <div className="text-[10px] text-slate-400 font-medium">Net Salary</div>
+                  <div className="text-xs font-bold text-slate-800">
+                    Rs. {deductionTargetPayslip.netPayable.toLocaleString()}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-slate-400 font-medium">Already Paid</div>
+                  <div className="text-xs font-bold text-[#00bcd4]">
+                    Rs. {(deductionTargetPayslip.paidAmount || 0).toLocaleString()}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-amber-600 font-medium">Unpaid Balance</div>
+                  <div className="text-xs font-bold text-amber-700">
+                    Rs. {deductionTargetPayslip.outstandingAmount.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+
+              {/* Preset Chips */}
+              <div>
+                <label className="block text-slate-600 font-medium mb-1.5">Quick Reasons (Click to set)</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    'Missed Attendance Punch',
+                    'Late Penalty',
+                    'Unapproved Absence Penalty',
+                    'Salon Equipment / Material Damage',
+                    'Cash Register Discrepancy',
+                    'Disciplinary Fine',
+                  ].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setDeductionForm((prev) => ({ ...prev, title: preset }))}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors ${
+                        deductionForm.title === preset
+                          ? 'bg-amber-100 border-amber-300 text-amber-900 font-semibold'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Title / Reason Input */}
+              <div>
+                <label className="block text-slate-600 font-medium mb-1">Deduction Title / Reason *</label>
+                <input
+                  type="text"
+                  value={deductionForm.title}
+                  onChange={(e) => setDeductionForm({ ...deductionForm, title: e.target.value })}
+                  placeholder="e.g. Missed punch on 2026-08-12"
+                  className="w-full border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-amber-500"
+                  required
+                />
+              </div>
+
+              {/* Amount Input */}
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="block text-slate-600 font-medium">Deduction Amount (Rs.) *</label>
+                  <button
+                    type="button"
+                    onClick={() => setDeductionForm({ ...deductionForm, amount: deductionTargetPayslip.outstandingAmount })}
+                    className="text-[11px] text-amber-700 hover:underline font-semibold"
+                  >
+                    Max: Rs. {deductionTargetPayslip.outstandingAmount.toLocaleString()}
+                  </button>
+                </div>
+                <input
+                  type="number"
+                  min="1"
+                  max={deductionTargetPayslip.outstandingAmount}
+                  value={deductionForm.amount || ''}
+                  onChange={(e) => setDeductionForm({ ...deductionForm, amount: Number(e.target.value) })}
+                  placeholder="e.g. 500"
+                  className="w-full border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold focus:ring-2 focus:ring-amber-500"
+                  required
+                />
+                <span className="text-[11px] text-slate-400">
+                  Deduction will be applied to this payslip, reducing net payable salary and unpaid balance.
+                </span>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className="block text-slate-600 font-medium mb-1">Additional Notes / Remarks (Optional)</label>
+                <textarea
+                  value={deductionForm.notes}
+                  onChange={(e) => setDeductionForm({ ...deductionForm, notes: e.target.value })}
+                  placeholder="Explanation or administrative justification..."
+                  rows={2}
+                  className="w-full border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowDeductionModal(false)}
+                  className="px-4 py-2 border border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={actionLoading || deductionForm.amount <= 0 || deductionForm.amount > deductionTargetPayslip.outstandingAmount}
+                  className="px-5 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl font-semibold shadow-sm flex items-center gap-1.5"
+                >
+                  <MinusCircle className="w-4 h-4" />
+                  Confirm Deduction
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
 
       {/* ========================================================================= */}
       {/* MODAL 4: PAYMENT HISTORY & REVERSAL MODAL                                 */}

@@ -124,7 +124,7 @@ describe('Payroll · exit-month proration and pay terms in force', () => {
 
     const preview = (await as('admin').post('/payroll/preview', { month: MONTH })).body.data;
     const slip = slipOf(preview, 'staff-3');
-    expect(slip.baseEarnings).toBe(41935.48); // 65,000 × 20/31
+    expect(slip.baseEarnings).toBe(43333.33); // 65,000 × 20/30 (fixed 30-day divisor)
     expect(slip.calculationDetails.prorationApplied).toBe(true);
     // Not employed in the next month at all.
     const aug = (await as('admin').post('/payroll/preview', { month: '2026-11' })).body.data;

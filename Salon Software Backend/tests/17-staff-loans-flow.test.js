@@ -39,26 +39,26 @@ describe('Staff Loans Flow · Pure Engine Calculations', () => {
     { id: 'ot-1', staffId: 'staff-huzaifa', date: '2026-10-07', status: 'APPROVED', approvedMinutes: 30, hourlyRate: 500, amount: 250 },
   ];
 
-  it('proration + overtime produces exactly Gross PKR 24,443.55', () => {
+  it('proration + overtime produces exactly Gross PKR 25,250.00', () => {
     const res = evaluateEmployeePayroll(staffHuzaifa, '2026-10', POLICY, attendanceOct, overtimeOct, [], {});
-    expect(res.payslip.baseEarnings).toBe(24193.55); // 30,000 * 25 / 31
+    expect(res.payslip.baseEarnings).toBe(25000); // 30,000 * 25 / 30
     expect(res.payslip.approvedOvertimeAmount).toBe(250.00);
-    expect(res.payslip.grossPayable).toBe(24443.55);
+    expect(res.payslip.grossPayable).toBe(25250);
     expect(res.payslip.calculationDetails.prorationApplied).toBe(true);
-    expect(res.payslip.calculationDetails.prorationFormula).toContain('25/31 of PKR 30,000');
+    expect(res.payslip.calculationDetails.prorationFormula).toContain('25 eligible days');
   });
 
-  it('Gross 24,443.55 with ONLY 3,000 loan deduction yields exactly Net 21,443.55', () => {
+  it('Gross 25,250.00 with ONLY 3,000 loan deduction yields exactly Net 22,250.00', () => {
     const extras = {
       advances: [
         { id: 'adv-3k', advanceNumber: 'ADV-0001-2026-0003', recoveryPerMonth: 3000, balance: 10000 },
       ],
     };
     const res = evaluateEmployeePayroll(staffHuzaifa, '2026-10', POLICY, attendanceOct, overtimeOct, [], extras);
-    expect(res.payslip.grossPayable).toBe(24443.55);
+    expect(res.payslip.grossPayable).toBe(25250);
     expect(res.payslip.advanceRecoveryAmount).toBe(3000);
     expect(res.payslip.totalDeductions).toBe(3000);
-    expect(res.payslip.netPayable).toBe(21443.55);
+    expect(res.payslip.netPayable).toBe(22250);
     expect(res.payslip.advanceRecoveries).toHaveLength(1);
     expect(res.payslip.advanceRecoveries[0]).toMatchObject({
       advanceNumber: 'ADV-0001-2026-0003',
@@ -68,7 +68,7 @@ describe('Staff Loans Flow · Pure Engine Calculations', () => {
     });
   });
 
-  it('Gross 24,443.55 with 3,000 loan AND additional 4,000 loan deductions yields Net 17,443.55 (itemized)', () => {
+  it('Gross 25,250.00 with 3,000 loan AND additional 4,000 loan deductions yields Net 18,250.00 (itemized)', () => {
     const extras = {
       advances: [
         { id: 'adv-1k', advanceNumber: 'ADV-0001-2026-0001', recoveryPerMonth: 1000, balance: 1000 },
@@ -77,10 +77,10 @@ describe('Staff Loans Flow · Pure Engine Calculations', () => {
       ],
     };
     const res = evaluateEmployeePayroll(staffHuzaifa, '2026-10', POLICY, attendanceOct, overtimeOct, [], extras);
-    expect(res.payslip.grossPayable).toBe(24443.55);
+    expect(res.payslip.grossPayable).toBe(25250);
     expect(res.payslip.advanceRecoveryAmount).toBe(7000); // 1000 + 3000 + 3000 = 7000
     expect(res.payslip.totalDeductions).toBe(7000);
-    expect(res.payslip.netPayable).toBe(17443.55);
+    expect(res.payslip.netPayable).toBe(18250);
     expect(res.payslip.advanceRecoveries).toHaveLength(3);
     expect(res.payslip.advanceRecoveries[0]).toMatchObject({ advanceNumber: 'ADV-0001-2026-0001', amount: 1000, balanceAfter: 0 });
     expect(res.payslip.advanceRecoveries[1]).toMatchObject({ advanceNumber: 'ADV-0001-2026-0002', amount: 3000, balanceAfter: 7000 });

@@ -1,77 +1,61 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from '@/context/RouterContext';
 import { salonService } from '@/services';
 import {
   BalanceSheetSummary,
   CustodyTransaction,
-  CustodyTransactionType,
   CashDrawer,
-  Branch,
 } from '@/types/salon';
 import { User } from '@/types/auth';
 import { AccessDeniedView } from '@/features/scaffold/AccessDeniedView';
-import { formatCurrency, formatDate } from '@/lib/formatters';
 import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableHead,
-  TableRow,
-  TableCell,
-} from '@/components/ui/table';
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
+  downloadReportExcel,
+  downloadReportCsv,
+  printReportWindow,
+} from '@/features/reports/reportUtils';
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog';
-import {
-  Search,
-  Printer,
   FileSpreadsheet,
-  Building2,
-  Banknote,
-  CreditCard,
-  ArrowRightLeft,
-  X,
-  Filter,
-  Eye,
-  ArrowUpRight,
-  ArrowDownLeft,
-  Scale,
-  ShieldCheck,
-  AlertTriangle,
-  Receipt,
   FileText,
-  Clock,
-  User as UserIcon,
-  HelpCircle,
+  Printer,
+  RotateCw,
+  MinusSquare,
+  CheckCircle2,
+  AlertCircle,
+  Building2,
+  Calendar,
 } from 'lucide-react';
+
+const formatPKR = (num: number) => {
+  const val = Number(num) || 0;
+  return `PKR ${Math.abs(val).toLocaleString('en-US', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  })}`;
+};
+
+const ymd = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 export const MyBalanceSheetPage: React.FC = () => {
   const { user, activeBranchId, allBranches } = useAuth();
   const { navigate } = useRouter();
 
-  // Role guard: Super Admin, Admin, and Accountant. Staff strictly denied.
+  // Role guard: Super Admin, Admin, and Accountant.
   if (!user || user.role === 'STAFF') {
     return <AccessDeniedView attemptedPath="/accounts/my-balance-sheet" />;
   }
 
   const isSuperAdmin = user.role === 'SUPER_ADMIN';
   const isAdmin = user.role === 'ADMIN';
-  const isAccountant = user.role === 'ACCOUNTANT';
 
   // Branch scope
   const [selectedBranchId, setSelectedBranchId] = useState<string>(
-    isSuperAdmin ? activeBranchId && activeBranchId !== 'ALL' ? activeBranchId : (user.branchId || allBranches[0]?.id || '') : (user.branchId as string)
+    isSuperAdmin
+      ? activeBranchId && activeBranchId !== 'ALL'
+        ? activeBranchId
+        : user.branchId || allBranches[0]?.id || ''
+      : (user.branchId as string)
   );
 
   useEffect(() => {
@@ -80,35 +64,26 @@ export const MyBalanceSheetPage: React.FC = () => {
     }
   }, [activeBranchId, isSuperAdmin]);
 
-  // Target User: "My" statement defaults strictly to authenticated user
+  // Target User (Admin can select other staff/cashiers, otherwise strictly logged in user)
   const [targetUserId, setTargetUserId] = useState<string>(user.id);
   const [branchUsers, setBranchUsers] = useState<User[]>([]);
-  const [branchDrawers, setBranchDrawers] = useState<CashDrawer[]>([]);
-  const [selectedDrawerId, setSelectedDrawerId] = useState<string>('ALL');
 
-  // Filters
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [transactionTypeFilter, setTransactionTypeFilter] = useState<'ALL' | CustodyTransactionType>('ALL');
-  const [searchQuery, setSearchQuery] = useState('');
+  // Period preset state
+  type PeriodType = 'CURRENT_SHIFT' | 'TODAY' | 'YESTERDAY' | 'THIS_WEEK' | 'THIS_MONTH' | 'CUSTOM';
+  const [selectedPeriod, setSelectedPeriod] = useState<PeriodType>('CURRENT_SHIFT');
+  const [customStartDate, setCustomStartDate] = useState<string>('');
+  const [customEndDate, setCustomEndDate] = useState<string>('');
 
   // Loaded data
   const [summary, setSummary] = useState<BalanceSheetSummary | null>(null);
   const [transactions, setTransactions] = useState<CustodyTransaction[]>([]);
-  const [openingBalanceCarriedForward, setOpeningBalanceCarriedForward] = useState<number>(0);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Document View Modal state
-  const [selectedDocTransaction, setSelectedDocTransaction] = useState<CustodyTransaction | null>(null);
-  const [isDocModalOpen, setIsDocModalOpen] = useState(false);
-  const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
-  const printAreaRef = useRef<HTMLDivElement>(null);
-
-  // Load branch users (if manager wants to inspect another user)
+  // Load branch users for the Admin/SuperAdmin selector dropdown
   useEffect(() => {
     let isMounted = true;
-    async function loadMeta() {
+    async function loadUsers() {
       if (user && (isSuperAdmin || isAdmin)) {
         try {
           const users = await salonService.getUsers(user, selectedBranchId || 'ALL');
@@ -120,14 +95,47 @@ export const MyBalanceSheetPage: React.FC = () => {
         }
       }
     }
-    loadMeta();
+    loadUsers();
     return () => {
       isMounted = false;
     };
   }, [selectedBranchId, isSuperAdmin, isAdmin]);
 
-  // Load Statement
-  const loadStatement = async () => {
+  // Compute date range from period preset
+  const { dateFrom, dateTo } = useMemo(() => {
+    const today = new Date();
+    const todayStr = ymd(today);
+
+    switch (selectedPeriod) {
+      case 'TODAY':
+        return { dateFrom: todayStr, dateTo: todayStr };
+      case 'YESTERDAY': {
+        const y = new Date(today);
+        y.setDate(y.getDate() - 1);
+        const yStr = ymd(y);
+        return { dateFrom: yStr, dateTo: yStr };
+      }
+      case 'THIS_WEEK': {
+        const offset = (today.getDay() + 6) % 7;
+        const monday = new Date(today);
+        monday.setDate(monday.getDate() - offset);
+        return { dateFrom: ymd(monday), dateTo: todayStr };
+      }
+      case 'THIS_MONTH': {
+        const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+        return { dateFrom: ymd(firstDay), dateTo: todayStr };
+      }
+      case 'CUSTOM':
+        return { dateFrom: customStartDate || undefined, dateTo: customEndDate || undefined };
+      case 'CURRENT_SHIFT':
+      default:
+        // Current shift passes undefined dates to query active custody/session
+        return { dateFrom: undefined, dateTo: undefined };
+    }
+  }, [selectedPeriod, customStartDate, customEndDate]);
+
+  // Fetch statement data
+  const loadStatement = useCallback(async () => {
     setIsLoading(true);
     setErrorMessage(null);
     try {
@@ -135,812 +143,572 @@ export const MyBalanceSheetPage: React.FC = () => {
         {
           branchId: selectedBranchId,
           userId: targetUserId,
-          drawerId: selectedDrawerId !== 'ALL' ? selectedDrawerId : undefined,
-          startDate: startDate || undefined,
-          endDate: endDate || undefined,
+          startDate: dateFrom,
+          endDate: dateTo,
         },
         user
       );
       setSummary(res.summary);
-      setTransactions(res.transactions);
-      setOpeningBalanceCarriedForward(res.openingBalanceCarriedForward);
-
-      // Load all available drawers for selector
-      try {
-        const dList = await salonService.getCashDrawers(selectedBranchId, targetUserId);
-        setBranchDrawers(dList);
-      } catch {
-        // fallback
-      }
+      setTransactions(res.transactions || []);
     } catch (err: any) {
-      setErrorMessage(err.message || 'Failed to load cash custody statement.');
+      setErrorMessage(err.message || 'Failed to load cash custody balance sheet.');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [selectedBranchId, targetUserId, dateFrom, dateTo, user]);
 
   useEffect(() => {
     loadStatement();
-  }, [selectedBranchId, targetUserId, selectedDrawerId, startDate, endDate]);
+  }, [loadStatement]);
 
-  // Filtered transactions for search & type filter
-  const filteredTransactions = useMemo(() => {
-    return transactions.filter((t) => {
-      if (transactionTypeFilter !== 'ALL' && t.type !== transactionTypeFilter) {
-        return false;
-      }
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const matchesRef = t.referenceNumber.toLowerCase().includes(q);
-        const matchesDesc = t.description.toLowerCase().includes(q);
-        const matchesActor = t.actorName.toLowerCase().includes(q);
-        if (!matchesRef && !matchesDesc && !matchesActor) {
-          return false;
-        }
-      }
-      return true;
-    });
-  }, [transactions, transactionTypeFilter, searchQuery]);
+  // Separate transactions into Collections (Payments) and Expenses & Refunds
+  const collectionsList = useMemo(() => {
+    return transactions.filter(
+      (t) =>
+        t.cashIn > 0 ||
+        t.type === 'POS_SALE' ||
+        t.type === 'DUES_COLLECTION' ||
+        t.type === 'TIP_RECEIVED' ||
+        t.type === 'FLOAT_RECEIVED'
+    );
+  }, [transactions]);
 
-  // Export Filtered CSV
-  const handleExportCSV = () => {
-    if (!filteredTransactions.length) return;
-    const headers = [
-      'Date',
-      'Time',
-      'Reference #',
-      'Transaction Type',
-      'Description',
-      'Cash In (PKR)',
-      'Cash Out (PKR)',
-      'Running Balance (PKR)',
-      'Actor',
-      'Document Type',
+  const expensesList = useMemo(() => {
+    return transactions.filter(
+      (t) =>
+        t.cashOut > 0 ||
+        t.type === 'EXPENSE_PAID' ||
+        t.type === 'INVOICE_REFUND' ||
+        t.type === 'HANDOVER_SETTLEMENT'
+    );
+  }, [transactions]);
+
+  // Totals
+  const totalCollections = useMemo(() => {
+    return collectionsList.reduce((acc, t) => acc + (t.cashIn || 0), 0);
+  }, [collectionsList]);
+
+  const totalExpenses = useMemo(() => {
+    return expensesList.reduce((acc, t) => acc + (t.cashOut || 0), 0);
+  }, [expensesList]);
+
+  // Summary Metrics
+  const openingCash = summary?.openingCash ?? 0;
+  const cashSales = summary?.cashSalesTotal ?? 0;
+  const duesCollected = summary?.previousDuesCollectedTotal ?? 0;
+  const tipsCollected = summary?.cashTipsTotal ?? 0;
+  const totalCashCollections = cashSales + duesCollected + tipsCollected || totalCollections;
+  const cashExpenses = summary?.cashExpensesPaidTotal ?? totalExpenses;
+  const cashRefunds = summary?.cashReversalsRefundTotal ?? 0;
+  const nonCash = summary?.onlineCollectionsTotal ?? 0;
+  const expectedCash = summary?.expectedCashInCustody ?? Math.max(0, openingCash + totalCashCollections - cashExpenses - cashRefunds);
+  const remainingUnsettled = Math.max(0, expectedCash);
+  const isSettled = remainingUnsettled === 0;
+
+  // Header Title
+  const isViewingSelf = targetUserId === user.id;
+  const isSupervisorMode = (isSuperAdmin || isAdmin) && !isViewingSelf;
+  const pageTitle = isSupervisorMode ? 'Balance Sheets' : 'My Balance Sheet';
+
+  // Export handlers
+  const handleExportExcel = () => {
+    const meta: [string, string][] = [
+      ['Report', pageTitle],
+      ['User', (summary?.user?.name || user.name) + ` (${summary?.user?.role || user.role})`],
+      ['Branch', summary?.branch?.name || selectedBranchId],
+      ['Period', selectedPeriod],
+      ['Expected Cash', formatPKR(expectedCash)],
+      ['Generated At', new Date().toLocaleString()],
     ];
-    const rows = filteredTransactions.map((t) => [
-      `"${t.date}"`,
-      `"${t.time}"`,
-      `"${t.referenceNumber}"`,
-      `"${t.type}"`,
-      `"${t.description.replace(/"/g, '""')}"`,
-      t.cashIn.toFixed(2),
-      t.cashOut.toFixed(2),
-      t.runningBalance.toFixed(2),
-      `"${t.actorName}"`,
-      `"${t.documentType}"`,
+
+    const collHeaders = ['#', 'RECEIPT / REF', 'CATEGORY', 'METHOD', 'AMOUNT'];
+    const collRows = collectionsList.map((t, idx) => [
+      idx + 1,
+      t.referenceNumber || '—',
+      t.type === 'POS_SALE' ? 'Collection' : t.type === 'DUES_COLLECTION' ? 'Dues' : t.type === 'TIP_RECEIVED' ? 'Tip' : 'Collection',
+      (t as any).paymentMethod || 'CASH',
+      `PKR ${(t.cashIn || 0).toLocaleString()}`,
     ]);
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Cash_Custody_Statement_${targetUserId}_${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+
+    const expHeaders = ['#', 'REF / RECEIPT', 'EXPENSE / REASON', 'METHOD', 'AMOUNT'];
+    const expRows = expensesList.map((t, idx) => [
+      idx + 1,
+      t.referenceNumber || '—',
+      t.description || t.type || 'Expense',
+      (t as any).paymentMethod || 'CASH',
+      `PKR ${(t.cashOut || 0).toLocaleString()}`,
+    ]);
+
+    downloadReportExcel(
+      `${pageTitle.replace(/\s+/g, '_')}_${ymd(new Date())}`,
+      meta,
+      [
+        { headers: collHeaders, rows: collRows },
+        { headers: expHeaders, rows: expRows },
+      ]
+    );
+  };
+
+  const handleExportCSV = () => {
+    const meta: [string, string][] = [
+      ['Report', pageTitle],
+      ['User', (summary?.user?.name || user.name)],
+      ['Period', selectedPeriod],
+      ['Expected Cash', formatPKR(expectedCash)],
+      ['Generated At', new Date().toLocaleString()],
+    ];
+
+    const headers = ['#', 'Type', 'Receipt / Ref', 'Category / Reason', 'Method', 'Amount (PKR)', 'Date', 'Time'];
+    const rows = [
+      ...collectionsList.map((t, i) => [
+        i + 1,
+        'Collection',
+        t.referenceNumber || '—',
+        t.type,
+        (t as any).paymentMethod || 'CASH',
+        (t.cashIn || 0).toFixed(2),
+        t.date || '—',
+        t.time || '—',
+      ]),
+      ...expensesList.map((t, i) => [
+        collectionsList.length + i + 1,
+        'Expense',
+        t.referenceNumber || '—',
+        t.description || t.type,
+        (t as any).paymentMethod || 'CASH',
+        `-${(t.cashOut || 0).toFixed(2)}`,
+        t.date || '—',
+        t.time || '—',
+      ]),
+    ];
+
+    downloadReportCsv(`${pageTitle.replace(/\s+/g, '_')}_${ymd(new Date())}`, meta, [{ headers, rows }]);
   };
 
   const handlePrint = () => {
     window.print();
   };
 
-  const getTypeBadge = (type: CustodyTransactionType) => {
-    switch (type) {
-      case 'OPENING_FLOAT':
-        return <Badge className="bg-sky-100 text-sky-800 border-sky-200">Opening Float</Badge>;
-      case 'POS_SALE':
-        return <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200">POS Cash Sale</Badge>;
-      case 'DUES_COLLECTION':
-        return <Badge className="bg-teal-100 text-teal-800 border-teal-200">Dues Collection</Badge>;
-      case 'TIP_RECEIVED':
-        return <Badge className="bg-purple-100 text-purple-800 border-purple-200">Cash Tip</Badge>;
-      case 'FLOAT_RECEIVED':
-        return <Badge className="bg-blue-100 text-blue-800 border-blue-200">Float Received</Badge>;
-      case 'EXPENSE_PAID':
-        return <Badge className="bg-rose-100 text-rose-800 border-rose-200">Cash Expense</Badge>;
-      case 'EXPENSE_REVERSAL_REFUND':
-        return <Badge className="bg-amber-100 text-amber-800 border-amber-200">Expense Refund</Badge>;
-      case 'HANDOVER_SETTLEMENT':
-        return <Badge className="bg-indigo-100 text-indigo-800 border-indigo-200">Vault Handover</Badge>;
-      case 'VARIANCE_ADJUSTMENT':
-        return <Badge className="bg-orange-100 text-orange-800 border-orange-200">Variance Adjustment</Badge>;
-      default:
-        return <Badge variant="outline">{type}</Badge>;
-    }
-  };
-
   return (
-    <div className="space-y-6 max-w-7xl mx-auto pb-12 font-sans">
-      {/* Top Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-5">
+    <div className="min-h-screen bg-[#F4F6F9] px-4 py-5 md:px-8 md:py-6 text-slate-800 font-['Inter',sans-serif]">
+      {/* 1. Header Bar with Actions */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
         <div>
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#2254E1]/10 flex items-center justify-center text-[#2254E1]">
-              <Scale className="w-5 h-5" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900 tracking-tight">My Balance Sheet</h1>
-              <p className="text-xs text-slate-500 font-medium">Cash Custody Statement & Continuous Reconciliation</p>
-            </div>
-          </div>
+          <h1 className="text-2xl font-bold text-[#0B2545] tracking-tight">{pageTitle}</h1>
+          <p className="text-xs text-slate-500 font-medium mt-0.5">
+            {selectedPeriod === 'CURRENT_SHIFT'
+              ? isSettled
+                ? 'Current Shift (settled)'
+                : 'Current Shift (unsettled)'
+              : `Period: ${selectedPeriod}`}
+          </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          {/* Super Admin Branch Selector */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Export Buttons matching user images */}
+          <button
+            type="button"
+            onClick={handleExportExcel}
+            className="bg-[#107C41] hover:bg-[#0E6837] active:bg-[#0A4B27] text-white text-xs font-semibold px-3 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            <span>Excel</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleExportCSV}
+            className="bg-[#0D9488] hover:bg-[#0F766E] active:bg-[#115E59] text-white text-xs font-semibold px-3 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            <span>CSV</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handlePrint}
+            className="bg-[#DC2626] hover:bg-[#B91C1C] active:bg-[#991B1B] text-white text-xs font-semibold px-3 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            <span>PDF</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handlePrint}
+            className="bg-[#475569] hover:bg-[#334155] active:bg-[#1E293B] text-white text-xs font-semibold px-3 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <Printer className="w-3.5 h-3.5" />
+            <span>Print</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={loadStatement}
+            className="border border-slate-300 hover:bg-slate-50 text-slate-700 bg-white text-xs font-semibold px-3 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <RotateCw className="w-3.5 h-3.5" />
+            <span>Refresh</span>
+          </button>
+
+          {/* Status Badge in My Balance Sheet view */}
+          {!isSupervisorMode && (
+            <div
+              className={`text-xs font-bold px-3 py-1.5 rounded-md flex items-center gap-1.5 border shadow-2xs ${
+                isSettled
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                  : 'bg-amber-50 text-amber-700 border-amber-300'
+              }`}
+            >
+              {isSettled ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Settled</span>
+                </>
+              ) : (
+                <>
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Unsettled</span>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 2. Filter Bar (PERIOD Pills + USER Dropdown) */}
+      <div className="bg-white border border-slate-200/90 rounded-xl px-4 py-3 shadow-xs mb-6 flex flex-col md:flex-row md:items-center justify-between gap-3">
+        {/* Left: PERIOD Pills */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-bold tracking-wider text-slate-500 uppercase mr-1">
+            PERIOD:
+          </span>
+
+          {(
+            [
+              { id: 'CURRENT_SHIFT', label: 'Current Shift' },
+              { id: 'TODAY', label: 'Today' },
+              { id: 'YESTERDAY', label: 'Yesterday' },
+              { id: 'THIS_WEEK', label: 'This Week' },
+              { id: 'THIS_MONTH', label: 'This Month' },
+              { id: 'CUSTOM', label: 'Custom' },
+            ] as const
+          ).map((p) => {
+            const isActive = selectedPeriod === p.id;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setSelectedPeriod(p.id)}
+                className={`text-xs font-semibold px-3.5 py-1.5 rounded-md transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-[#0D6251] text-white shadow-xs'
+                    : 'bg-slate-100/90 hover:bg-slate-200/80 text-slate-600'
+                }`}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Right: Branch & User dropdown for Supervisor/Admin */}
+        <div className="flex items-center gap-3">
+          {/* Branch selector for Super Admin */}
           {isSuperAdmin && allBranches && (
-            <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 shadow-sm">
-              <Building2 className="w-4 h-4 text-slate-400" />
-              <Select value={selectedBranchId} onValueChange={(val) => setSelectedBranchId(val)}>
-                <SelectTrigger className="border-0 shadow-none text-xs font-semibold h-7 p-0 focus:ring-0">
-                  <SelectValue placeholder="Select Branch" />
-                </SelectTrigger>
-                <SelectContent>
-                  {allBranches.map((b) => (
-                    <SelectItem key={b.id} value={b.id} className="text-xs">
-                      {b.name} ({b.code})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-bold text-slate-500 uppercase">BRANCH:</span>
+              <select
+                value={selectedBranchId}
+                onChange={(e) => setSelectedBranchId(e.target.value)}
+                className="text-xs font-medium border border-slate-300 rounded-md px-2.5 py-1.5 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0D6251]"
+              >
+                {allBranches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
             </div>
           )}
 
           {/* User Selector for Admins */}
           {(isSuperAdmin || isAdmin) && branchUsers.length > 0 && (
-            <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 shadow-sm">
-              <UserIcon className="w-4 h-4 text-slate-400" />
-              <Select value={targetUserId} onValueChange={(val) => setTargetUserId(val)}>
-                <SelectTrigger className="border-0 shadow-none text-xs font-semibold h-7 p-0 focus:ring-0">
-                  <SelectValue placeholder="Select User" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={user.id} className="text-xs font-medium">
-                    My Statement ({user.name})
-                  </SelectItem>
-                  {branchUsers
-                    .filter((u) => u.id !== user.id)
-                    .map((u) => (
-                      <SelectItem key={u.id} value={u.id} className="text-xs">
-                        {u.name} ({u.role})
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-bold text-slate-500 uppercase">USER:</span>
+              <select
+                value={targetUserId}
+                onChange={(e) => setTargetUserId(e.target.value)}
+                className="text-xs font-semibold border border-slate-300 rounded-md px-3 py-1.5 bg-white text-slate-800 focus:outline-hidden focus:ring-1 focus:ring-[#0D6251]"
+              >
+                <option value={user.id}>
+                  {user.name} ({user.role === 'ADMIN' ? 'Admin' : user.role})
+                </option>
+                {branchUsers
+                  .filter((u) => u.id !== user.id)
+                  .map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name} ({u.role === 'ACCOUNTANT' ? 'Front Desk / Cashier' : u.role})
+                    </option>
+                  ))}
+              </select>
             </div>
           )}
-
-          {/* Quick settlement navigation */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => navigate('/accounts/account-settlement')}
-            className="text-xs h-9 font-medium gap-1.5 text-slate-700 bg-white"
-          >
-            <ArrowRightLeft className="w-3.5 h-3.5 text-[#2254E1]" />
-            Account Settlement
-          </Button>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setIsPrintModalOpen(true)}
-            className="text-xs h-9 font-medium gap-1.5 text-slate-700 bg-white"
-          >
-            <Printer className="w-3.5 h-3.5 text-slate-500" />
-            Print Statement
-          </Button>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExportCSV}
-            disabled={!filteredTransactions.length}
-            className="text-xs h-9 font-medium gap-1.5 text-slate-700 bg-white"
-          >
-            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-            Export CSV
-          </Button>
         </div>
       </div>
 
-      {/* Custody Holder & Drawer Banner */}
-      {summary && (
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-700 text-sm">
-              {summary.user.name.slice(0, 2).toUpperCase()}
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-slate-900 text-base">{summary.user.name}</span>
-                <Badge variant="outline" className="text-[10px] font-bold uppercase tracking-wider bg-slate-50">
-                  {summary.user.role}
-                </Badge>
-                {summary.drawer && (
-                  <Badge
-                    className={
-                      summary.drawer.status === 'OPEN'
-                        ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
-                        : summary.drawer.status === 'SETTLEMENT_PENDING'
-                        ? 'bg-amber-100 text-amber-800 border-amber-200 animate-pulse'
-                        : 'bg-slate-100 text-slate-700 border-slate-200'
-                    }
-                  >
-                    Drawer: {summary.drawer.status}
-                  </Badge>
-                )}
-              </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Branch: <span className="font-medium text-slate-700">{summary.branch.name} ({summary.branch.code})</span>
-                {summary.drawer && (
-                  <span className="ml-3">
-                    Drawer Shift Date: <span className="font-medium text-slate-700">{formatDate(summary.drawer.date)}</span>
-                  </span>
-                )}
-              </p>
-            </div>
+      {/* Custom Date Pickers row if Custom is selected */}
+      {selectedPeriod === 'CUSTOM' && (
+        <div className="bg-white border border-slate-200/90 rounded-xl p-4 shadow-xs mb-6 flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-slate-600">From:</span>
+            <input
+              type="date"
+              value={customStartDate}
+              onChange={(e) => setCustomStartDate(e.target.value)}
+              className="text-xs border border-slate-300 rounded-md px-3 py-1.5 bg-white text-slate-700"
+            />
           </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-slate-600">To:</span>
+            <input
+              type="date"
+              value={customEndDate}
+              onChange={(e) => setCustomEndDate(e.target.value)}
+              className="text-xs border border-slate-300 rounded-md px-3 py-1.5 bg-white text-slate-700"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={loadStatement}
+            className="bg-[#0D6251] text-white text-xs font-semibold px-4 py-1.5 rounded-md hover:bg-[#0B5345] cursor-pointer"
+          >
+            Apply Dates
+          </button>
+        </div>
+      )}
 
-          {/* Drawer / Shift Selector */}
-          {branchDrawers.length > 0 && (
+      {/* Error Banner */}
+      {errorMessage && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 text-xs px-4 py-3 rounded-lg mb-6 flex items-center justify-between">
+          <span>{errorMessage}</span>
+          <button onClick={() => setErrorMessage(null)} className="text-rose-500 hover:text-rose-700 font-bold ml-2">
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* 3. Main Grid: Two Tables Side-by-Side */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-6">
+        {/* Left Card: Payments (Collections) */}
+        <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 overflow-hidden flex flex-col">
+          {/* Solid Green Header */}
+          <div className="bg-[#15803D] text-white px-4 py-3 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-500 font-medium">Drawer / Shift:</span>
-              <Select value={selectedDrawerId} onValueChange={(val) => setSelectedDrawerId(val)}>
-                <SelectTrigger className="w-[180px] h-8 text-xs bg-slate-50">
-                  <SelectValue placeholder="All Shifts" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ALL" className="text-xs">All Activity (Combined)</SelectItem>
-                  {branchDrawers.map((d) => (
-                    <SelectItem key={d.id} value={d.id} className="text-xs">
-                      {formatDate(d.date)} ({d.status})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <MinusSquare className="w-4 h-4 opacity-90" />
+              <span className="font-bold text-sm tracking-wide">Payments (Collections)</span>
             </div>
-          )}
-        </div>
-      )}
-
-      {/* Financial Summary KPI Cards */}
-      {summary && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Card 1: Expected Cash In Custody (HERO) */}
-          <Card className="p-4 bg-gradient-to-br from-[#2254E1] to-[#1B43B4] text-white border-0 shadow-md relative overflow-hidden">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold tracking-wide uppercase text-blue-100">Expected Cash In Custody</span>
-              <Banknote className="w-5 h-5 text-blue-200" />
-            </div>
-            <div className="mt-3">
-              <div className="text-2xl font-bold tracking-tight">
-                {formatCurrency(summary.expectedCashInCustody)}
-              </div>
-              <p className="text-[11px] text-blue-100 mt-1">
-                Opening Cash + Cash Inflows − Cash Outflows
-              </p>
-            </div>
-          </Card>
-
-          {/* Card 2: Cash Inflows */}
-          <Card className="p-4 bg-white border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold tracking-wide uppercase text-slate-500">Cash Inflows</span>
-              <div className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                <ArrowDownLeft className="w-4 h-4" />
-              </div>
-            </div>
-            <div className="mt-2">
-              <div className="text-xl font-bold text-emerald-600">
-                + {formatCurrency(summary.cashSalesTotal + summary.previousDuesCollectedTotal + summary.cashTipsTotal + summary.floatReceivedTotal + summary.cashReversalsRefundTotal)}
-              </div>
-              <div className="text-[11px] text-slate-500 mt-1 space-y-0.5">
-                <div className="flex justify-between">
-                  <span>Sales:</span> <span className="font-medium text-slate-700">{formatCurrency(summary.cashSalesTotal)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Prev Dues:</span> <span className="font-medium text-slate-700">{formatCurrency(summary.previousDuesCollectedTotal)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Cash Tips:</span> <span className="font-medium text-purple-700">{formatCurrency(summary.cashTipsTotal)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Float Replenished:</span> <span className="font-medium text-slate-700">{formatCurrency(summary.floatReceivedTotal)}</span>
-                </div>
-                {summary.cashReversalsRefundTotal > 0 && (
-                  <div className="flex justify-between">
-                    <span>Reversals:</span> <span className="font-medium text-amber-700">{formatCurrency(summary.cashReversalsRefundTotal)}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </Card>
-
-          {/* Card 3: Cash Outflows */}
-          <Card className="p-4 bg-white border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold tracking-wide uppercase text-slate-500">Cash Outflows</span>
-              <div className="w-7 h-7 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center">
-                <ArrowUpRight className="w-4 h-4" />
-              </div>
-            </div>
-            <div className="mt-2">
-              <div className="text-xl font-bold text-rose-600">
-                - {formatCurrency(summary.cashExpensesPaidTotal + summary.approvedHandoversTotal)}
-              </div>
-              <div className="text-[11px] text-slate-500 mt-1 space-y-0.5">
-                <div className="flex justify-between">
-                  <span>Cash Expenses Paid:</span> <span className="font-medium text-slate-700">{formatCurrency(summary.cashExpensesPaidTotal)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Settlement Handovers:</span> <span className="font-medium text-slate-700">{formatCurrency(summary.approvedHandoversTotal)}</span>
-                </div>
-                <div className="flex justify-between pt-1 border-t border-slate-100">
-                  <span>Opening Float:</span> <span className="font-medium text-slate-700">{formatCurrency(summary.openingCash)}</span>
-                </div>
-              </div>
-            </div>
-          </Card>
-
-          {/* Card 4: Last Physical Count & Reconciliation */}
-          <Card className="p-4 bg-white border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold tracking-wide uppercase text-slate-500">Last Physical Count</span>
-              <div className="w-7 h-7 rounded-lg bg-slate-100 text-slate-600 flex items-center justify-center">
-                <ShieldCheck className="w-4 h-4" />
-              </div>
-            </div>
-            <div className="mt-2">
-              <div className="text-xl font-bold text-slate-900">
-                {summary.lastCountedCash !== undefined ? formatCurrency(summary.lastCountedCash) : 'No Count Logged'}
-              </div>
-              <div className="text-[11px] text-slate-500 mt-1 space-y-0.5">
-                <div className="flex justify-between">
-                  <span>Variance:</span>
-                  <span
-                    className={`font-semibold ${
-                      (summary.lastVariance || 0) === 0
-                        ? 'text-emerald-600'
-                        : (summary.lastVariance || 0) > 0
-                        ? 'text-amber-600'
-                        : 'text-rose-600'
-                    }`}
-                  >
-                    {(summary.lastVariance || 0) > 0 ? '+' : ''}
-                    {formatCurrency(summary.lastVariance || 0)}
-                  </span>
-                </div>
-                <div className="text-[10px] text-slate-400 truncate mt-1">
-                  {summary.lastCountedTimestamp ? `Audited: ${new Date(summary.lastCountedTimestamp).toLocaleString()}` : 'Count separates from live expected cash'}
-                </div>
-              </div>
-            </div>
-          </Card>
-        </div>
-      )}
-
-      {/* Segregated Online Collections Banner */}
-      {summary && (
-        <Card className="p-4 bg-slate-50 border border-slate-200 shadow-sm">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <div className="w-8 h-8 rounded-lg bg-blue-100 text-[#2254E1] flex items-center justify-center mt-0.5">
-                <CreditCard className="w-4 h-4" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-bold text-slate-900">Segregated Online Collections</h3>
-                  <Badge variant="outline" className="text-[10px] bg-white text-slate-600">
-                    Processor / Bank Accounts
-                  </Badge>
-                </div>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Electronic payments processed into merchant bank accounts. These do{' '}
-                  <span className="font-semibold text-slate-700">NOT</span> alter physical cash custody.
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-4">
-              <div className="text-right">
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Total Online Processed</span>
-                <span className="text-lg font-bold text-[#2254E1]">{formatCurrency(summary.onlineCollectionsTotal)}</span>
-              </div>
-            </div>
-          </div>
-
-          {summary.onlineCollectionsBreakdown.length > 0 && (
-            <div className="mt-3 pt-3 border-t border-slate-200 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-              {summary.onlineCollectionsBreakdown.map((item) => (
-                <div key={item.paymentAccountId} className="bg-white border border-slate-200/80 rounded-lg p-2.5 flex items-center justify-between">
-                  <div className="truncate pr-2">
-                    <p className="text-xs font-semibold text-slate-800 truncate">{item.paymentAccountName}</p>
-                    <p className="text-[10px] text-slate-400">{item.count} payment(s) processed</p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span className="text-xs font-bold text-slate-900">{formatCurrency(item.amount)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
-      )}
-
-      {/* Filter Bar */}
-      <Card className="p-4 bg-white border border-slate-200 shadow-sm space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-          {/* Search */}
-          <div className="lg:col-span-2 relative">
-            <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-            <Input
-              placeholder="Search reference, customer, or note..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 h-9 text-xs"
-            />
-          </div>
-
-          {/* Transaction Type Filter */}
-          <div>
-            <Select
-              value={transactionTypeFilter}
-              onValueChange={(val) => setTransactionTypeFilter(val as any)}
-            >
-              <SelectTrigger className="h-9 text-xs">
-                <SelectValue placeholder="All Types" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ALL" className="text-xs">All Types</SelectItem>
-                <SelectItem value="POS_SALE" className="text-xs">POS Cash Sales</SelectItem>
-                <SelectItem value="DUES_COLLECTION" className="text-xs">Dues Collections</SelectItem>
-                <SelectItem value="TIP_RECEIVED" className="text-xs">Cash Tips</SelectItem>
-                <SelectItem value="FLOAT_RECEIVED" className="text-xs">Float Received</SelectItem>
-                <SelectItem value="EXPENSE_PAID" className="text-xs">Cash Expenses Paid</SelectItem>
-                <SelectItem value="EXPENSE_REVERSAL_REFUND" className="text-xs">Reversal Refunds</SelectItem>
-                <SelectItem value="HANDOVER_SETTLEMENT" className="text-xs">Vault Handovers</SelectItem>
-                <SelectItem value="VARIANCE_ADJUSTMENT" className="text-xs">Variance Adjustments</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Start Date */}
-          <div>
-            <Input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="h-9 text-xs"
-              placeholder="Start Date"
-            />
-          </div>
-
-          {/* End Date */}
-          <div>
-            <Input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="h-9 text-xs"
-              placeholder="End Date"
-            />
-          </div>
-
-          {/* Reset Filters */}
-          <div className="flex items-center gap-2">
-            {(startDate || endDate || transactionTypeFilter !== 'ALL' || searchQuery) && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setStartDate('');
-                  setEndDate('');
-                  setTransactionTypeFilter('ALL');
-                  setSearchQuery('');
-                }}
-                className="h-9 text-xs text-slate-500 hover:text-slate-800"
-              >
-                <X className="w-3.5 h-3.5 mr-1" /> Reset
-              </Button>
-            )}
-          </div>
-        </div>
-
-        {/* Carried Forward Balance Banner */}
-        {startDate && (
-          <div className="flex items-center justify-between text-xs bg-blue-50/70 border border-blue-100 rounded-lg px-3 py-1.5 text-blue-900">
-            <span>
-              Opening Balance Carried Forward prior to <span className="font-semibold">{formatDate(startDate)}</span>:
-            </span>
-            <span className="font-bold text-sm text-[#2254E1]">
-              {formatCurrency(openingBalanceCarriedForward)}
+            <span className="bg-white/20 text-white text-[11px] font-semibold px-2.5 py-0.5 rounded-full">
+              {collectionsList.length} items
             </span>
           </div>
-        )}
-      </Card>
 
-      {/* Transaction Table */}
-      <Card className="bg-white border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Receipt className="w-4 h-4 text-slate-500" />
-            <h3 className="font-semibold text-slate-800 text-sm">Custody Transaction Ledger</h3>
-            <Badge variant="secondary" className="text-xs ml-1 font-semibold">
-              {filteredTransactions.length}
-            </Badge>
-          </div>
-          <span className="text-xs text-slate-400">Chronological running balance</span>
-        </div>
-
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader className="bg-slate-50/80">
-              <TableRow>
-                <TableHead className="w-[120px] text-xs font-semibold text-slate-600">Date & Time</TableHead>
-                <TableHead className="w-[140px] text-xs font-semibold text-slate-600">Reference #</TableHead>
-                <TableHead className="w-[150px] text-xs font-semibold text-slate-600">Type</TableHead>
-                <TableHead className="text-xs font-semibold text-slate-600">Description</TableHead>
-                <TableHead className="text-right w-[110px] text-xs font-semibold text-slate-600">Cash In</TableHead>
-                <TableHead className="text-right w-[110px] text-xs font-semibold text-slate-600">Cash Out</TableHead>
-                <TableHead className="text-right w-[130px] text-xs font-semibold text-slate-600">Running Balance</TableHead>
-                <TableHead className="w-[120px] text-xs font-semibold text-slate-600">Actor</TableHead>
-                <TableHead className="text-center w-[80px] text-xs font-semibold text-slate-600">Document</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={9} className="h-32 text-center text-xs text-slate-400">
-                    Loading custody transactions...
-                  </TableCell>
-                </TableRow>
-              ) : filteredTransactions.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={9} className="h-32 text-center text-xs text-slate-400">
-                    No cash custody transactions recorded for this period.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                filteredTransactions.map((tx) => (
-                  <TableRow key={tx.id} className="hover:bg-slate-50/60 transition-colors text-xs">
-                    <TableCell className="font-mono text-slate-600">
-                      <div>{formatDate(tx.date)}</div>
-                      <div className="text-[10px] text-slate-400">{tx.time}</div>
-                    </TableCell>
-                    <TableCell className="font-mono font-medium text-slate-800">
-                      {tx.referenceNumber}
-                    </TableCell>
-                    <TableCell>{getTypeBadge(tx.type)}</TableCell>
-                    <TableCell className="max-w-[280px] truncate text-slate-700">
-                      {tx.description}
-                    </TableCell>
-                    <TableCell className="text-right font-medium text-emerald-600">
-                      {tx.cashIn > 0 ? `+ ${formatCurrency(tx.cashIn)}` : '—'}
-                    </TableCell>
-                    <TableCell className="text-right font-medium text-rose-600">
-                      {tx.cashOut > 0 ? `- ${formatCurrency(tx.cashOut)}` : '—'}
-                    </TableCell>
-                    <TableCell className="text-right font-bold text-slate-900 font-mono">
-                      {formatCurrency(tx.runningBalance)}
-                    </TableCell>
-                    <TableCell className="text-slate-600 truncate max-w-[120px]">
-                      {tx.actorName}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          setSelectedDocTransaction(tx);
-                          setIsDocModalOpen(true);
-                        }}
-                        className="h-7 w-7 p-0 text-slate-500 hover:text-[#2254E1]"
-                        title="View Linked Document"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </Card>
-
-      {/* Linked Document Modal */}
-      <Dialog open={isDocModalOpen} onOpenChange={setIsDocModalOpen}>
-        <DialogContent className="max-w-lg font-sans">
-          <DialogHeader>
-            <DialogTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <FileText className="w-4 h-4 text-[#2254E1]" />
-              Linked Financial Document
-            </DialogTitle>
-            <DialogDescription className="text-xs text-slate-500">
-              Audit snapshot of canonical document #{selectedDocTransaction?.referenceNumber}
-            </DialogDescription>
-          </DialogHeader>
-
-          {selectedDocTransaction && (
-            <div className="space-y-4 py-2 text-xs">
-              <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-200 space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Document Type:</span>
-                  <Badge variant="outline" className="text-xs font-semibold uppercase">
-                    {selectedDocTransaction.documentType}
-                  </Badge>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Reference Number:</span>
-                  <span className="font-mono font-bold text-slate-800">{selectedDocTransaction.referenceNumber}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Date & Time:</span>
-                  <span className="font-medium text-slate-700">{formatDate(selectedDocTransaction.date)} at {selectedDocTransaction.time}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Logged Custodian / Actor:</span>
-                  <span className="font-medium text-slate-700">{selectedDocTransaction.actorName}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Cash Flow:</span>
-                  <span className={`font-bold ${selectedDocTransaction.cashIn > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                    {selectedDocTransaction.cashIn > 0
-                      ? `+ ${formatCurrency(selectedDocTransaction.cashIn)} (Cash In)`
-                      : `- ${formatCurrency(selectedDocTransaction.cashOut)} (Cash Out)`}
-                  </span>
-                </div>
-              </div>
-
-              <div>
-                <span className="font-semibold text-slate-700 block mb-1">Description / Notes:</span>
-                <p className="text-slate-600 bg-white border border-slate-200 p-2.5 rounded-md leading-relaxed">
-                  {selectedDocTransaction.description}
-                </p>
-              </div>
-
-              {selectedDocTransaction.rawEntity && (
-                <div className="text-[11px] text-slate-500 bg-slate-50 p-2.5 rounded border border-slate-200">
-                  <p className="font-semibold text-slate-700 mb-1">Entity Metadata:</p>
-                  <pre className="overflow-x-auto text-[10px] text-slate-600 font-mono">
-                    {JSON.stringify(
-                      {
-                        id: selectedDocTransaction.rawEntity.id,
-                        status: selectedDocTransaction.rawEntity.status,
-                        clientName: selectedDocTransaction.rawEntity.clientName,
-                        voucherNumber: selectedDocTransaction.rawEntity.voucherNumber,
-                        settlementNumber: selectedDocTransaction.rawEntity.settlementNumber,
-                        total: selectedDocTransaction.rawEntity.total,
-                        amount: selectedDocTransaction.rawEntity.amount,
-                      },
-                      null,
-                      2
-                    )}
-                  </pre>
-                </div>
-              )}
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setIsDocModalOpen(false)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Printable Statement Modal */}
-      <Dialog open={isPrintModalOpen} onOpenChange={setIsPrintModalOpen}>
-        <DialogContent className="max-w-3xl font-sans">
-          <DialogHeader>
-            <DialogTitle className="text-base font-bold text-slate-900">
-              Print Cash Custody Statement
-            </DialogTitle>
-            <DialogDescription className="text-xs text-slate-500">
-              Preview printable statement for {summary?.user.name} ({summary?.branch.name})
-            </DialogDescription>
-          </DialogHeader>
-
-          <div ref={printAreaRef} className="p-4 border border-slate-200 rounded-lg bg-white space-y-4 max-h-[60vh] overflow-y-auto text-xs">
-            {/* Header */}
-            <div className="border-b border-slate-300 pb-3 flex justify-between items-start">
-              <div>
-                <h2 className="text-lg font-bold text-slate-900">iSysware SalonOS</h2>
-                <p className="text-xs text-slate-600">Cash Custody Statement & Continuous Reconciliation</p>
-                <p className="text-[11px] text-slate-500 mt-1">
-                  Branch: <span className="font-medium text-slate-800">{summary?.branch.name} ({summary?.branch.code})</span>
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="text-xs font-bold text-slate-800">Custodian: {summary?.user.name}</p>
-                <p className="text-[11px] text-slate-500">Role: {summary?.user.role}</p>
-                <p className="text-[10px] text-slate-400 mt-1">Printed: {new Date().toLocaleString()}</p>
-              </div>
-            </div>
-
-            {/* Summary Grid */}
-            <div className="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded border border-slate-200 text-[11px]">
-              <div>
-                <span className="text-slate-500 block">Opening Float:</span>
-                <span className="font-bold text-slate-800">{formatCurrency(summary?.openingCash || 0)}</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Total Inflows:</span>
-                <span className="font-bold text-emerald-700">
-                  + {formatCurrency(
-                    (summary?.cashSalesTotal || 0) +
-                    (summary?.previousDuesCollectedTotal || 0) +
-                    (summary?.cashTipsTotal || 0) +
-                    (summary?.floatReceivedTotal || 0) +
-                    (summary?.cashReversalsRefundTotal || 0)
-                  )}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Total Outflows:</span>
-                <span className="font-bold text-rose-700">
-                  - {formatCurrency(
-                    (summary?.cashExpensesPaidTotal || 0) +
-                    (summary?.approvedHandoversTotal || 0)
-                  )}
-                </span>
-              </div>
-              <div className="col-span-3 pt-2 mt-1 border-t border-slate-200 flex justify-between items-center text-sm font-bold text-slate-900">
-                <span>Expected Cash In Custody:</span>
-                <span className="text-[#2254E1]">{formatCurrency(summary?.expectedCashInCustody || 0)}</span>
-              </div>
-            </div>
-
-            {/* Transactions table */}
-            <table className="w-full text-[11px] border-collapse">
+          {/* Table Container */}
+          <div className="overflow-x-auto flex-1">
+            <table className="w-full text-left border-collapse text-xs">
               <thead>
-                <tr className="border-b border-slate-200 text-slate-600 bg-slate-50">
-                  <th className="py-1 text-left">Date</th>
-                  <th className="py-1 text-left">Ref #</th>
-                  <th className="py-1 text-left">Type</th>
-                  <th className="py-1 text-left">Description</th>
-                  <th className="py-1 text-right">In</th>
-                  <th className="py-1 text-right">Out</th>
-                  <th className="py-1 text-right">Balance</th>
+                <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[11px]">
+                  <th className="py-2.5 px-3.5 text-center w-10">#</th>
+                  <th className="py-2.5 px-3.5">RECEIPT / REF</th>
+                  <th className="py-2.5 px-3.5">CATEGORY</th>
+                  <th className="py-2.5 px-3.5">METHOD</th>
+                  <th className="py-2.5 px-3.5 text-right">AMOUNT</th>
                 </tr>
               </thead>
-              <tbody>
-                {filteredTransactions.map((tx) => (
-                  <tr key={tx.id} className="border-b border-slate-100">
-                    <td className="py-1 text-slate-600">{tx.date}</td>
-                    <td className="py-1 font-mono font-medium text-slate-800">{tx.referenceNumber}</td>
-                    <td className="py-1">{tx.type}</td>
-                    <td className="py-1 text-slate-700 max-w-[180px] truncate">{tx.description}</td>
-                    <td className="py-1 text-right text-emerald-600">{tx.cashIn > 0 ? formatCurrency(tx.cashIn) : '—'}</td>
-                    <td className="py-1 text-right text-rose-600">{tx.cashOut > 0 ? formatCurrency(tx.cashOut) : '—'}</td>
-                    <td className="py-1 text-right font-bold text-slate-900">{formatCurrency(tx.runningBalance)}</td>
+              <tbody className="divide-y divide-slate-100">
+                {collectionsList.length > 0 ? (
+                  collectionsList.map((t, idx) => (
+                    <tr key={t.id || idx} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="py-2.5 px-3.5 text-center text-slate-400 font-medium">{idx + 1}</td>
+                      <td className="py-2.5 px-3.5 font-semibold text-[#0047AB] hover:underline cursor-pointer">
+                        {t.referenceNumber || '—'}
+                      </td>
+                      <td className="py-2.5 px-3.5 text-slate-600 font-medium">
+                        {t.type === 'POS_SALE'
+                          ? 'Collection'
+                          : t.type === 'DUES_COLLECTION'
+                          ? 'Dues'
+                          : t.type === 'TIP_RECEIVED'
+                          ? 'Tip'
+                          : 'Collection'}
+                      </td>
+                      <td className="py-2.5 px-3.5 font-semibold text-slate-700 uppercase">
+                        {(t as any).paymentMethod || 'CASH'}
+                      </td>
+                      <td className="py-2.5 px-3.5 text-right font-bold text-[#15803D] tabular-nums">
+                        PKR {(t.cashIn || 0).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={5} className="py-12 text-center text-slate-400 font-medium">
+                      No payment records in current custody
+                    </td>
                   </tr>
-                ))}
+                )}
               </tbody>
+              {/* Footer Total Row */}
+              <tfoot>
+                <tr className="bg-slate-50 border-t border-slate-200 font-bold text-xs">
+                  <td colSpan={4} className="py-2.5 px-3.5 uppercase tracking-wide text-slate-700">
+                    TOTAL
+                  </td>
+                  <td className="py-2.5 px-3.5 text-right font-bold text-[#15803D] bg-emerald-50/90 tabular-nums">
+                    PKR {totalCollections.toLocaleString()}
+                  </td>
+                </tr>
+              </tfoot>
             </table>
+          </div>
+        </div>
 
-            {/* Signatures */}
-            <div className="pt-8 grid grid-cols-2 gap-8 text-center text-xs text-slate-600">
-              <div>
-                <div className="border-t border-slate-400 pt-1 font-medium">Custodian Signature: {summary?.user.name}</div>
-              </div>
-              <div>
-                <div className="border-t border-slate-400 pt-1 font-medium">Audited / Verified By Manager</div>
-              </div>
+        {/* Right Card: Expenses & Refunds */}
+        <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 overflow-hidden flex flex-col">
+          {/* Solid Red Header */}
+          <div className="bg-[#DC2626] text-white px-4 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <RotateCw className="w-4 h-4 opacity-90" />
+              <span className="font-bold text-sm tracking-wide">Expenses & Refunds</span>
             </div>
+            <span className="bg-white/20 text-white text-[11px] font-semibold px-2.5 py-0.5 rounded-full">
+              {expensesList.length} items
+            </span>
           </div>
 
-          <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setIsPrintModalOpen(false)}>
-              Close
-            </Button>
-            <Button size="sm" onClick={handlePrint} className="bg-[#2254E1] hover:bg-[#1B43B4] text-white">
-              <Printer className="w-3.5 h-3.5 mr-1.5" />
-              Print
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          {/* Table Container */}
+          <div className="overflow-x-auto flex-1">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[11px]">
+                  <th className="py-2.5 px-3.5 text-center w-10">#</th>
+                  <th className="py-2.5 px-3.5">REF / RECEIPT</th>
+                  <th className="py-2.5 px-3.5">EXPENSE / REASON</th>
+                  <th className="py-2.5 px-3.5">METHOD</th>
+                  <th className="py-2.5 px-3.5 text-right">AMOUNT</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {expensesList.length > 0 ? (
+                  expensesList.map((t, idx) => (
+                    <tr key={t.id || idx} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="py-2.5 px-3.5 text-center text-slate-400 font-medium">{idx + 1}</td>
+                      <td className="py-2.5 px-3.5 font-semibold text-[#DC2626]">
+                        {t.referenceNumber || '—'}
+                      </td>
+                      <td className="py-2.5 px-3.5 text-slate-600 font-medium">
+                        {t.description || t.type || 'Expense'}
+                      </td>
+                      <td className="py-2.5 px-3.5 font-semibold text-slate-700 uppercase">
+                        {(t as any).paymentMethod || 'CASH'}
+                      </td>
+                      <td className="py-2.5 px-3.5 text-right font-bold text-[#DC2626] tabular-nums">
+                        PKR {(t.cashOut || 0).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={5} className="py-12 text-center text-slate-400 font-medium">
+                      No expense / refund records in current custody
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+              {/* Footer Total Row */}
+              <tfoot>
+                <tr className="bg-slate-50 border-t border-slate-200 font-bold text-xs">
+                  <td colSpan={4} className="py-2.5 px-3.5 uppercase tracking-wide text-slate-700">
+                    TOTAL
+                  </td>
+                  <td className="py-2.5 px-3.5 text-right font-bold text-[#DC2626] bg-rose-50/90 tabular-nums">
+                    PKR {totalExpenses.toLocaleString()}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {/* 4. Bottom Full-Width Card: BALANCE SUMMARY */}
+      <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 overflow-hidden">
+        <div className="bg-slate-50/80 border-b border-slate-200 px-5 py-3">
+          <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700">BALANCE SUMMARY</h2>
+        </div>
+
+        <div className="divide-y divide-slate-100 text-xs font-medium">
+          {/* Row 1: Opening / Petty Cash */}
+          <div className="flex items-center justify-between px-5 py-3 hover:bg-slate-50/50">
+            <span className="text-slate-600">Opening / Petty Cash:</span>
+            <span className="font-bold text-slate-900 tabular-nums">{formatPKR(openingCash)}</span>
+          </div>
+
+          {/* Row 2: (+) Cash Collections */}
+          <div className="flex items-center justify-between px-5 py-3 bg-emerald-50/40">
+            <span className="text-slate-700 font-semibold">(+) Cash Collections:</span>
+            <span className="font-bold text-[#15803D] bg-emerald-100/80 px-3 py-1 rounded-sm tabular-nums">
+              {formatPKR(totalCashCollections)}
+            </span>
+          </div>
+
+          {/* Row 3: (-) Cash Expenses */}
+          <div className="flex items-center justify-between px-5 py-3 bg-rose-50/30">
+            <span className="text-slate-700">(-) Cash Expenses:</span>
+            <span className="font-bold text-[#DC2626] bg-rose-100/70 px-3 py-1 rounded-sm tabular-nums">
+              {formatPKR(cashExpenses)}
+            </span>
+          </div>
+
+          {/* Row 4: (-) Cash Refunds */}
+          <div className="flex items-center justify-between px-5 py-3 bg-rose-50/30">
+            <span className="text-slate-700">(-) Cash Refunds:</span>
+            <span className="font-bold text-[#DC2626] bg-rose-100/70 px-3 py-1 rounded-sm tabular-nums">
+              {formatPKR(cashRefunds)}
+            </span>
+          </div>
+
+          {/* Row 5: Non-Cash (Card / Bank / Online) */}
+          <div className="flex items-center justify-between px-5 py-3 bg-sky-50/30">
+            <span className="text-slate-700">
+              Non-Cash (Card / Bank / Online) — not physical cash:
+            </span>
+            <span className="font-bold text-[#0284C7] bg-sky-100/70 px-3 py-1 rounded-sm tabular-nums">
+              {formatPKR(nonCash)}
+            </span>
+          </div>
+
+          {/* Row 6: Expected Cash (Physical) */}
+          <div className="flex items-center justify-between px-5 py-3.5 bg-emerald-50/70 border-t border-slate-200">
+            <span className="text-slate-900 font-bold">Expected Cash (Physical):</span>
+            <span className="font-extrabold text-sm text-[#15803D] bg-emerald-200/80 px-3.5 py-1 rounded-sm tabular-nums">
+              {formatPKR(expectedCash)}
+            </span>
+          </div>
+
+          {/* Row 7: Remaining (Unsettled) Cash for My Balance Sheet */}
+          {!isSupervisorMode && (
+            <div className="flex items-center justify-between px-5 py-3.5 bg-amber-50/60 border-t border-amber-200/50">
+              <span className="text-slate-900 font-bold">Remaining (Unsettled) Cash:</span>
+              <span className="font-extrabold text-sm text-[#D97706] bg-amber-200/80 px-3.5 py-1 rounded-sm tabular-nums">
+                {formatPKR(remainingUnsettled)}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 };
+
+export default MyBalanceSheetPage;

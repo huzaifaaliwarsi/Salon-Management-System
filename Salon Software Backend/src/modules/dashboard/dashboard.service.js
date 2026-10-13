@@ -190,7 +190,7 @@ export const accountantDashboard = async (actor, { branchId } = {}) => {
     prisma.expense.aggregate({ where: { ...scope, status: 'POSTED', isReversalRecord: false, paidByUserId: me }, _sum: { amount: true } }),
     prisma.settlement.findMany({ where: { ...scope, submittedByUserId: me }, orderBy: { createdAt: 'desc' } }),
     prisma.invoice.aggregate({ where: { ...scope, lifecycle: { not: 'VOIDED' }, status: { in: ['UNPAID', 'PARTIAL'] } }, _sum: { amountDue: true }, _count: true }),
-    recentInvoices({ ...scope, payments: { some: { method: 'CASH', processedByUserId: me } } }),
+    recentInvoices({ ...scope, processedByUserId: me }),
     prisma.expense.findMany({ where: { ...scope, paidByUserId: me }, orderBy: [{ expenseDate: 'desc' }, { createdAt: 'desc' }], take: 5 }),
   ]);
   const d = drawer ? (await drawerDTOs(prisma, [drawer]))[0] : null;

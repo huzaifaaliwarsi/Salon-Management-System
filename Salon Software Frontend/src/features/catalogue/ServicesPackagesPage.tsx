@@ -76,6 +76,8 @@ import {
   Sparkles,
   Info,
   Trash2,
+  X,
+  Loader2,
 } from 'lucide-react';
 
 export const ServicesPackagesPage: React.FC = () => {
@@ -98,7 +100,9 @@ export const ServicesPackagesPage: React.FC = () => {
 
   // Data collections
   const [services, setServices] = useState<ServiceItem[]>([]);
+  const [allServices, setAllServices] = useState<ServiceItem[]>([]);
   const [packages, setPackages] = useState<PackageItem[]>([]);
+  const [allPackages, setAllPackages] = useState<PackageItem[]>([]);
   const [categories, setCategories] = useState<ServiceCategory[]>([]);
   const [taxRules, setTaxRules] = useState<TaxRule[]>([]);
   const [branchStaff, setBranchStaff] = useState<StaffMember[]>([]);
@@ -126,6 +130,12 @@ export const ServicesPackagesPage: React.FC = () => {
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [categoryError, setCategoryError] = useState<string | null>(null);
+
+  // Inline category creation inside Service modal
+  const [isInlineCategoryAdd, setIsInlineCategoryAdd] = useState(false);
+  const [inlineCategoryName, setInlineCategoryName] = useState('');
+  const [inlineCategoryError, setInlineCategoryError] = useState<string | null>(null);
+  const [isCreatingInlineCategory, setIsCreatingInlineCategory] = useState(false);
 
   // Staff Assignment Preview Modal (for packages)
   const [isStaffPreviewModalOpen, setIsStaffPreviewModalOpen] = useState(false);
@@ -172,7 +182,7 @@ export const ServicesPackagesPage: React.FC = () => {
     code: '',
     name: '',
     description: '',
-    price: 15000,
+    price: 0,
     taxTreatment: 'BRANCH_DEFAULT',
     specificTaxRuleId: '',
     isActive: true,
@@ -190,15 +200,19 @@ export const ServicesPackagesPage: React.FC = () => {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [srvList, pkgList, catList, taxList, staffList] = await Promise.all([
+      const [srvList, allSrv, pkgList, allPkg, catList, taxList, staffList] = await Promise.all([
         salonService.getServices(selectedBranchId),
+        salonService.getServices('ALL'),
         salonService.getPackages(selectedBranchId),
+        salonService.getPackages('ALL'),
         salonService.getServiceCategories(selectedBranchId),
         salonService.getTaxRules(selectedBranchId),
         salonService.getStaffMembers(user, selectedBranchId),
       ]);
       setServices(srvList);
+      setAllServices(allSrv);
       setPackages(pkgList);
+      setAllPackages(allPkg);
       setCategories(catList);
       setTaxRules(taxList);
       setBranchStaff(staffList.filter((s) => s.isActive));
@@ -278,6 +292,27 @@ export const ServicesPackagesPage: React.FC = () => {
       const msg = err.message || 'Failed to create category.';
       setCategoryError(msg);
       toast.error(msg);
+    }
+  };
+
+  // Handler: Add category inline inside Service modal
+  const handleCreateInlineCategory = async () => {
+    if (!inlineCategoryName.trim()) return;
+    setInlineCategoryError(null);
+    setIsCreatingInlineCategory(true);
+    try {
+      const created = await salonService.createServiceCategory(selectedBranchId, inlineCategoryName.trim(), user);
+      setCategories((prev) => [...prev, created]);
+      setServiceFormData((prev) => ({ ...prev, category: created.name }));
+      setInlineCategoryName('');
+      setIsInlineCategoryAdd(false);
+      toast.success(`Category '${created.name}' created successfully!`);
+    } catch (err: any) {
+      const msg = err.message || 'Failed to create category.';
+      setInlineCategoryError(msg);
+      toast.error(msg);
+    } finally {
+      setIsCreatingInlineCategory(false);
     }
   };
 
@@ -373,19 +408,9 @@ export const ServicesPackagesPage: React.FC = () => {
       },
     ];
 
-    const prevSum = packageFormData.components.reduce(
-      (sum, c) => sum + (c.unitPrice || 0) * (c.quantity || 1),
-      0
-    );
-    const newSum = prevSum + srv.price;
-    const shouldUpdatePrice =
-      packageFormData.price === 0 ||
-      packageFormData.price === prevSum ||
-      packageFormData.components.length === 0;
-
+    // Retain custom package selling price entered by user - do not overwrite with services sum
     setPackageFormData({
       ...packageFormData,
-      price: shouldUpdatePrice ? newSum : packageFormData.price,
       components: newComponents,
     });
   };
@@ -498,6 +523,9 @@ export const ServicesPackagesPage: React.FC = () => {
       specificTaxRuleId: srv.specificTaxRuleId || '',
       isActive: srv.isActive,
     });
+    setInlineCategoryName('');
+    setInlineCategoryError(null);
+    setIsInlineCategoryAdd(false);
     setIsEditServiceModalOpen(true);
   };
 
@@ -552,6 +580,58 @@ export const ServicesPackagesPage: React.FC = () => {
         Branch Default ({branchTaxPercent}%)
       </Badge>
     );
+  };
+
+  const generateNextServiceCode = (currentList: ServiceItem[] = (allServices.length > 0 ? allServices : services)) => {
+    let maxNum = 0;
+    const existingCodes = new Set(
+      currentList
+        .map((s) => s.code?.trim().toUpperCase())
+        .filter(Boolean) as string[]
+    );
+
+    for (const s of currentList) {
+      if (!s.code) continue;
+      const m = s.code.match(/(\d+)$/);
+      if (m) {
+        const val = parseInt(m[1], 10);
+        if (!isNaN(val) && val > maxNum) maxNum = val;
+      }
+    }
+
+    let nextNum = maxNum + 1;
+    let candidate = `SRV-${String(nextNum).padStart(2, '0')}`;
+    while (existingCodes.has(candidate)) {
+      nextNum++;
+      candidate = `SRV-${String(nextNum).padStart(2, '0')}`;
+    }
+    return candidate;
+  };
+
+  const generateNextPackageCode = (currentList: PackageItem[] = (allPackages.length > 0 ? allPackages : packages)) => {
+    let maxNum = 0;
+    const existingCodes = new Set(
+      currentList
+        .map((p) => p.code?.trim().toUpperCase())
+        .filter(Boolean) as string[]
+    );
+
+    for (const p of currentList) {
+      if (!p.code) continue;
+      const m = p.code.match(/(\d+)$/);
+      if (m) {
+        const val = parseInt(m[1], 10);
+        if (!isNaN(val) && val > maxNum) maxNum = val;
+      }
+    }
+
+    let nextNum = maxNum + 1;
+    let candidate = `PKG-${String(nextNum).padStart(2, '0')}`;
+    while (existingCodes.has(candidate)) {
+      nextNum++;
+      candidate = `PKG-${String(nextNum).padStart(2, '0')}`;
+    }
+    return candidate;
   };
 
   return (
@@ -642,10 +722,11 @@ export const ServicesPackagesPage: React.FC = () => {
                   size="sm"
                   leftIcon={<Plus className="w-3.5 h-3.5" />}
                   onClick={() => {
+                    const defaultCat = categories[0]?.name || '';
                     setServiceFormData({
-                      code: `SRV-${currentBranch?.code.split('-')[0] || 'LHE'}-00${services.length + 1}`,
+                      code: generateNextServiceCode(allServices.length > 0 ? allServices : services),
                       name: '',
-                      category: categories[0]?.name || 'Hair Styling & Cuts',
+                      category: defaultCat,
                       durationMinutes: 45,
                       price: 3500,
                       description: '',
@@ -653,6 +734,9 @@ export const ServicesPackagesPage: React.FC = () => {
                       specificTaxRuleId: '',
                       isActive: true,
                     });
+                    setInlineCategoryName('');
+                    setInlineCategoryError(null);
+                    setIsInlineCategoryAdd(categories.length === 0);
                     setIsAddServiceModalOpen(true);
                   }}
                 >
@@ -666,10 +750,10 @@ export const ServicesPackagesPage: React.FC = () => {
                 leftIcon={<Plus className="w-3.5 h-3.5" />}
                 onClick={() => {
                   setPackageFormData({
-                    code: `PKG-${currentBranch?.code.split('-')[0] || 'LHE'}-00${packages.length + 1}`,
+                    code: generateNextPackageCode(allPackages.length > 0 ? allPackages : packages),
                     name: '',
                     description: '',
-                    price: 15000,
+                    price: 0,
                     taxTreatment: 'BRANCH_DEFAULT',
                     specificTaxRuleId: '',
                     isActive: true,
@@ -1007,6 +1091,9 @@ export const ServicesPackagesPage: React.FC = () => {
           if (!open) {
             setIsAddServiceModalOpen(false);
             setIsEditServiceModalOpen(false);
+            setIsInlineCategoryAdd(false);
+            setInlineCategoryName('');
+            setInlineCategoryError(null);
           }
         }}
       >
@@ -1023,33 +1110,117 @@ export const ServicesPackagesPage: React.FC = () => {
           <form onSubmit={handleSaveService} className="space-y-3.5 text-xs">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Service Code *</label>
+                <label className="font-semibold text-slate-700 block mb-1">Service Code * (Auto-generated)</label>
                 <Input
                   value={serviceFormData.code}
                   onChange={(e) => setServiceFormData({ ...serviceFormData, code: e.target.value.toUpperCase() })}
-                  placeholder="e.g. SRV-LHE-01"
+                  placeholder="e.g. SRV-01"
                   required
                   className="font-mono text-xs uppercase"
                 />
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Category *</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-semibold text-slate-700 block">Category *</label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsInlineCategoryAdd((prev) => !prev);
+                      setInlineCategoryError(null);
+                    }}
+                    className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-0.5 cursor-pointer transition-colors"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>{isInlineCategoryAdd ? 'Cancel' : 'Add Category'}</span>
+                  </button>
+                </div>
+
+                {isInlineCategoryAdd && (
+                  <div className="p-2 mb-2 bg-blue-50/80 border border-blue-200 rounded-lg space-y-1.5 animate-in fade-in duration-150">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-900">
+                        Create New Category
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsInlineCategoryAdd(false);
+                          setInlineCategoryError(null);
+                          setInlineCategoryName('');
+                        }}
+                        className="text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    {inlineCategoryError && (
+                      <p className="text-[11px] text-rose-600 font-medium">{inlineCategoryError}</p>
+                    )}
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        value={inlineCategoryName}
+                        onChange={(e) => setInlineCategoryName(e.target.value)}
+                        placeholder="New category name (e.g. Hair Spa)..."
+                        className="h-8 text-xs bg-white"
+                        disabled={isCreatingInlineCategory}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleCreateInlineCategory();
+                          }
+                        }}
+                        autoFocus
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-8 px-3 text-xs bg-[#0047AB] hover:bg-[#003785] text-white shrink-0"
+                        onClick={handleCreateInlineCategory}
+                        disabled={isCreatingInlineCategory || !inlineCategoryName.trim()}
+                      >
+                        {isCreatingInlineCategory ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Add'}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
                 <Select
                   value={serviceFormData.category}
                   onValueChange={(val) => setServiceFormData({ ...serviceFormData, category: val })}
                 >
                   <SelectTrigger className="h-9 text-xs">
-                    <SelectValue placeholder="Select Category" />
+                    <SelectValue placeholder={categories.length === 0 ? 'No categories (Add above)' : 'Select Category'} />
                   </SelectTrigger>
                   <SelectContent>
-                    {categories.map((c) => (
-                      <SelectItem key={c.id} value={c.name} className="text-xs">
-                        {c.name}
-                      </SelectItem>
-                    ))}
+                    {categories.length === 0 ? (
+                      <div className="p-2 text-center text-xs text-slate-400">
+                        No categories found
+                      </div>
+                    ) : (
+                      categories.map((c) => (
+                        <SelectItem key={c.id} value={c.name} className="text-xs">
+                          {c.name}
+                        </SelectItem>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
+
+                {categories.length === 0 && !isInlineCategoryAdd && (
+                  <p className="text-[11px] text-amber-600 mt-1 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 shrink-0" />
+                    No category found. Please{' '}
+                    <button
+                      type="button"
+                      onClick={() => setIsInlineCategoryAdd(true)}
+                      className="underline font-semibold hover:text-amber-800 cursor-pointer"
+                    >
+                      add a category
+                    </button>
+                    .
+                  </p>
+                )}
               </div>
             </div>
 
@@ -1097,6 +1268,9 @@ export const ServicesPackagesPage: React.FC = () => {
                 onClick={() => {
                   setIsAddServiceModalOpen(false);
                   setIsEditServiceModalOpen(false);
+                  setIsInlineCategoryAdd(false);
+                  setInlineCategoryName('');
+                  setInlineCategoryError(null);
                 }}
               >
                 Cancel
@@ -1132,11 +1306,11 @@ export const ServicesPackagesPage: React.FC = () => {
           <form onSubmit={handleSavePackage} className="space-y-4 text-xs">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Package Code *</label>
+                <label className="font-semibold text-slate-700 block mb-1">Package Code * (Auto-generated)</label>
                 <Input
                   value={packageFormData.code}
                   onChange={(e) => setPackageFormData({ ...packageFormData, code: e.target.value.toUpperCase() })}
-                  placeholder="e.g. PKG-LHE-01"
+                  placeholder="e.g. PKG-01"
                   required
                   className="font-mono text-xs uppercase"
                 />
@@ -1156,7 +1330,7 @@ export const ServicesPackagesPage: React.FC = () => {
                   className="text-xs font-semibold tabular-nums text-slate-900"
                 />
                 <span className="text-[10px] text-slate-400 mt-0.5 block">
-                  Independently priced; not overwritten when component services change.
+                  Independently priced custom package rate; preserved as entered.
                 </span>
               </div>
             </div>
@@ -1193,11 +1367,23 @@ export const ServicesPackagesPage: React.FC = () => {
                 </div>
 
                 {packageFormData.components.length > 0 && (
-                  <div className="text-right">
-                    <span className="text-[11px] text-slate-500 block">Total Services Value:</span>
-                    <span className="font-mono font-semibold text-xs text-slate-800">
-                      {formatCurrency(servicesTotalValue)}
-                    </span>
+                  <div className="text-right flex items-center gap-2">
+                    <div>
+                      <span className="text-[11px] text-slate-500 block">Total Services Value:</span>
+                      <span className="font-mono font-semibold text-xs text-slate-800">
+                        {formatCurrency(servicesTotalValue)}
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-6 text-[10px] px-2 py-0 border-blue-200 text-blue-700 hover:bg-blue-50 cursor-pointer"
+                      onClick={() => setPackageFormData((prev) => ({ ...prev, price: servicesTotalValue }))}
+                      title="Set package selling price equal to total individual services value"
+                    >
+                      Use as Price
+                    </Button>
                   </div>
                 )}
               </div>

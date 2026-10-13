@@ -66,20 +66,46 @@ const itemData = (input) => {
   }
   if (input.sku !== undefined) data.sku = input.sku;
   if (input.defaultPurchaseCost !== undefined) data.defaultPurchaseCost = round2(input.defaultPurchaseCost);
-  if (input.sellingPrice !== undefined) data.sellingPrice = round2(input.sellingPrice);
+  if (input.itemType === 'SALON_CONSUMABLE') {
+    data.sellingPrice = round2(0);
+  } else if (input.sellingPrice !== undefined) {
+    data.sellingPrice = round2(input.sellingPrice);
+  }
   if (input.minStockLevel !== undefined) data.minStockLevel = Math.max(0, input.minStockLevel);
   if (input.unitConversionRatio !== undefined) data.unitConversionRatio = input.unitConversionRatio || null;
   if (input.branchAvailability !== undefined) data.branchAvailability = input.branchAvailability.length ? input.branchAvailability : ['ALL'];
   return data;
 };
 
+const generateNextSku = async (tx) => {
+  const items = await tx.inventoryItem.findMany({ select: { sku: true } });
+  let maxNum = 0;
+  const existing = new Set(items.map((i) => (i.sku || '').trim().toUpperCase()));
+  for (const item of items) {
+    if (!item.sku) continue;
+    const m = item.sku.match(/(\d+)$/);
+    if (m) {
+      const val = parseInt(m[1], 10);
+      if (!isNaN(val) && val > maxNum) maxNum = val;
+    }
+  }
+  let nextNum = maxNum + 1;
+  let candidate = `SKU-${String(nextNum).padStart(2, '0')}`;
+  while (existing.has(candidate)) {
+    nextNum++;
+    candidate = `SKU-${String(nextNum).padStart(2, '0')}`;
+  }
+  return candidate;
+};
+
 export const createItem = async (input, actor) =>
   prisma.$transaction(async (tx) => {
-    if (await tx.inventoryItem.findFirst({ where: { sku: { equals: input.sku, mode: 'insensitive' } } })) {
-      throw conflict('SKU_TAKEN', `An inventory item with SKU '${input.sku}' already exists.`);
+    const sku = input.sku ? input.sku.trim().toUpperCase() : await generateNextSku(tx);
+    if (await tx.inventoryItem.findFirst({ where: { sku: { equals: sku, mode: 'insensitive' } } })) {
+      throw conflict('SKU_TAKEN', `An inventory item with SKU '${sku}' already exists.`);
     }
     const item = await tx.inventoryItem.create({
-      data: { branchAvailability: ['ALL'], ...itemData(input), sku: input.sku, name: input.name, category: input.category || 'General', itemType: input.itemType },
+      data: { branchAvailability: ['ALL'], ...itemData(input), sku, name: input.name, category: input.category || 'General', itemType: input.itemType },
     });
     await audit(tx, actor, 'INVENTORY_ITEM_CREATED', 'InventoryItem', item.id, null, item);
     return toItemDTO(item);
@@ -92,7 +118,12 @@ export const updateItem = async (id, input, actor) =>
     if (input.sku && (await tx.inventoryItem.findFirst({ where: { sku: { equals: input.sku, mode: 'insensitive' }, NOT: { id } } }))) {
       throw conflict('SKU_TAKEN', `Another inventory item with SKU '${input.sku}' already exists.`);
     }
-    const item = await tx.inventoryItem.update({ where: { id }, data: itemData(input) });
+    const targetType = input.itemType ?? before.itemType;
+    const patch = itemData(input);
+    if (targetType === 'SALON_CONSUMABLE') {
+      patch.sellingPrice = round2(0);
+    }
+    const item = await tx.inventoryItem.update({ where: { id }, data: patch });
     await audit(tx, actor, 'INVENTORY_ITEM_UPDATED', 'InventoryItem', id, null, item);
     return toItemDTO(item);
   });
@@ -130,7 +161,7 @@ export const stockSnapshots = async (actor, branchId) => {
         currentStock: current, minStockLevel: min,
         isLowStock: current <= min && current > 0, isOutOfStock: current <= 0,
         valuationCostBasis: round2(value).toNumber(),
-        potentialRetailValue: round2(stock.times(item.sellingPrice)).toNumber(),
+        potentialRetailValue: item.itemType === 'SALON_CONSUMABLE' ? 0 : round2(stock.times(item.sellingPrice)).toNumber(),
         validBatchesCount: counts.VALID, nearExpiryBatchesCount: counts.NEAR_EXPIRY, expiredBatchesCount: counts.EXPIRED,
       });
     }

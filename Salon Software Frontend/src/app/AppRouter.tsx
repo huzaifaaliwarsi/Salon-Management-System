@@ -35,11 +35,16 @@ import { AppointmentsPage } from '../features/appointments/AppointmentsPage';
 import { ClientsPage } from '../features/clients/ClientsPage';
 import { AppointmentReportPage } from '../features/reports/AppointmentReportPage';
 import { InventoryPage } from '../features/inventory/InventoryPage';
+import { InventoryItemsPage } from '../features/inventory/InventoryItemsPage';
+import { StockInPurchasesPage } from '../features/inventory/StockInPurchasesPage';
+import { SuppliersVendorsPage } from '../features/inventory/SuppliersVendorsPage';
+import { StockAdjustmentsPage } from '../features/inventory/StockAdjustmentsPage';
 import { InventoryReportsPage } from '../features/reports/InventoryReportsPage';
 import { COGSReportPage } from '../features/reports/COGSReportPage';
 import { GeneralLedgerPage } from '../features/ledger/GeneralLedgerPage';
 import { ActivityLogPage } from '../features/audit/ActivityLogPage';
 import { IncomeExpenseReportPage } from '../features/reports/IncomeExpenseReportPage';
+import { TaxReportPage } from '../features/reports/TaxReportPage';
 import { PaymentAccountsReportPage } from '../features/reports/PaymentAccountsReportPage';
 import { CashDrawerLogsReportPage } from '../features/reports/CashDrawerLogsReportPage';
 import { DetailedExpensesReportPage } from '../features/reports/DetailedExpensesReportPage';
@@ -177,6 +182,11 @@ export const AppRouter: React.FC = () => {
       return <IncomeExpenseReportPage />;
     }
 
+    // 7E. Tax Management & Summary Report
+    if (pathname === '/reports/tax' || pathname === '/reports/tax-management') {
+      return <TaxReportPage />;
+    }
+
     // 8. Staff Attendance & Punches (Operational)
     if (pathname === '/operations/attendance') {
       return <StaffAttendancePage />;
@@ -259,14 +269,33 @@ export const AppRouter: React.FC = () => {
       return <AppointmentReportPage />;
     }
 
-    // 19. Phase 3H: Inventory & Supplier Management
+    // 19. Inventory Management Modules
     if (
-      pathname === '/operations/inventory-suppliers' ||
       pathname === '/operations/inventory' ||
       pathname === '/inventory' ||
-      pathname === '/operations/suppliers'
+      pathname === '/operations/inventory-suppliers'
     ) {
-      return <InventoryPage />;
+      return <InventoryItemsPage />;
+    }
+    if (
+      pathname === '/operations/stock-in' ||
+      pathname === '/operations/purchases' ||
+      pathname === '/purchases'
+    ) {
+      return <StockInPurchasesPage />;
+    }
+    if (
+      pathname === '/operations/suppliers' ||
+      pathname === '/suppliers' ||
+      pathname === '/operations/vendors'
+    ) {
+      return <SuppliersVendorsPage />;
+    }
+    if (
+      pathname === '/operations/stock-adjustments' ||
+      pathname === '/operations/adjustments'
+    ) {
+      return <StockAdjustmentsPage />;
     }
 
     // 20. Phase 3H: Inventory Valuation, Batches & Movement Reporting

@@ -117,14 +117,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     onClick={() => handleItemClick(item.href)}
                     title={isCollapsed ? item.label : undefined}
                     className={`w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-xs font-medium transition-all duration-150 cursor-pointer group text-left ${isActive
-                        ? 'bg-blue-50 text-[#2254E1] font-semibold shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80'
+                      ? 'bg-blue-50 text-[#2254E1] font-semibold shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80'
                       }`}
                   >
                     <div
                       className={`p-1 rounded-md shrink-0 transition-colors ${isActive
-                          ? 'bg-[#2254E1] text-white'
-                          : 'text-slate-500 group-hover:text-slate-800 group-hover:bg-slate-200/60'
+                        ? 'bg-[#2254E1] text-white'
+                        : 'text-slate-500 group-hover:text-slate-800 group-hover:bg-slate-200/60'
                         }`}
                     >
                       <NavIcon name={item.iconName} className="w-3.5 h-3.5" />

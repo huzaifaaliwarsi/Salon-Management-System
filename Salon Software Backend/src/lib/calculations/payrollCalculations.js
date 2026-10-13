@@ -73,6 +73,7 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
     return a.date.startsWith(month);
   });
 
+  let halfDayUnpaidDays = 0;
   let presentDays = 0, paidLeaveDays = 0, unpaidLeaveDays = 0, absentDays = 0, missingPunchDays = 0, unrecordedDays = 0;
   let paidHolidayDays = 0, paidWeeklyOffDays = 0;
   const exceptionDetails = [];
@@ -104,8 +105,9 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
       else if (att.status === "PAID_LEAVE") paidLeaveDays++;
       else if (att.status === "UNPAID_LEAVE") unpaidLeaveDays++;
       else {
-        presentDays++;
-        attendancePenaltyDeductions += att.calculationSnapshot?.totalDeductionAmount || 0;
+        presentDays += att.status === 'HALF_DAY' ? 0.5 : 1;
+        if (att.status === 'HALF_DAY') halfDayUnpaidDays += 0.5;
+        attendancePenaltyDeductions += (att.status === 'HALF_DAY' ? att.calculationSnapshot?.lateDeductionAmount : att.calculationSnapshot?.totalDeductionAmount) || 0;
       }
     } else if (att && att.status !== "HOLIDAY" && att.status !== "OFF_DAY") {
       // Worked (or took leave) on a holiday / weekly off.
@@ -113,8 +115,9 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
       if (att.status === "PAID_LEAVE") paidLeaveDays++;
       else if (att.status === "UNPAID_LEAVE") unpaidLeaveDays++;
       else if (PRESENT_STATUSES.includes(att.status)) {
-        presentDays++;
-        attendancePenaltyDeductions += att.calculationSnapshot?.totalDeductionAmount || 0;
+        presentDays += att.status === 'HALF_DAY' ? 0.5 : 1;
+        if (att.status === 'HALF_DAY') halfDayUnpaidDays += 0.5;
+        attendancePenaltyDeductions += (att.status === 'HALF_DAY' ? att.calculationSnapshot?.lateDeductionAmount : att.calculationSnapshot?.totalDeductionAmount) || 0;
       }
     } else if (check.reason?.startsWith("Holiday")) {
       if (policy.nonWorkedHolidayPaid) paidHolidayDays++;
@@ -178,7 +181,7 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
     const rawBase = roundCurrency(fullMonthlyBase / 30 * payableDays);
     const reconciliation = roundCurrency(baseEarnings - rawBase);
     prorationFormula = `PKR ${fmt(fullMonthlyBase)} / 30 ? ${payableDays} eligible days = PKR ${fmt(rawBase)}; monthly reconciliation PKR ${fmt(reconciliation)}; earned base PKR ${fmt(baseEarnings)}`;
-    absenceDeductions = roundCurrency(fullMonthlyBase / 30 * (absentDays + unpaidLeaveDays));
+    absenceDeductions = roundCurrency(fullMonthlyBase / 30 * (absentDays + unpaidLeaveDays + halfDayUnpaidDays));
   } else if (isDaily) {
     const dailyRate = staff.dailySalaryRate || 0;
     baseEarnings = roundCurrency(dailyRate * presentDays);
@@ -267,7 +270,7 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
   const extrasText = ` + Allowances (PKR ${fmt(allowancesTotal)}) - Other Deductions (PKR ${fmt(otherDeductions)}) - Advance Recovery (PKR ${fmt(advanceRecoveryAmount)})`;
   let formula;
   if (isMonthly) {
-    formula = `${prorationFormula}. Base Salary (PKR ${fmt(baseEarnings)}) - Absences (${absentDays + unpaidLeaveDays}d @ PKR ${fmt(roundCurrency((staff.baseSalary || 0) / divisorUsed))}/d = PKR ${fmt(absenceDeductions)}) - Penalties (PKR ${fmt(attendancePenaltyDeductions)}) + Overtime (${approvedOvertimeMinutes}m @ PKR ${fmt(hourlyRateSnapshot)}/hr = PKR ${fmt(approvedOvertimeAmount)})${extrasText} = Net PKR ${fmt(netPayable)}`;
+    formula = `${prorationFormula}. Base Salary (PKR ${fmt(baseEarnings)}) - Absences (${absentDays + unpaidLeaveDays + halfDayUnpaidDays}d @ PKR ${fmt(roundCurrency((staff.baseSalary || 0) / divisorUsed))}/d = PKR ${fmt(absenceDeductions)}) - Penalties (PKR ${fmt(attendancePenaltyDeductions)}) + Overtime (${approvedOvertimeMinutes}m @ PKR ${fmt(hourlyRateSnapshot)}/hr = PKR ${fmt(approvedOvertimeAmount)})${extrasText} = Net PKR ${fmt(netPayable)}`;
   } else if (isDaily) {
     formula = `Daily Rate (PKR ${fmt(staff.dailySalaryRate)} × ${presentDays} present days = PKR ${fmt(baseEarnings)}) + Paid Leave (${paidLeaveDays}d = PKR ${fmt(leaveEarnings)}) + Holidays/Weekly Off (${paidHolidayDays + paidWeeklyOffDays}d = PKR ${fmt(holidayEarnings)}) - Penalties (PKR ${fmt(attendancePenaltyDeductions)}) + Overtime (PKR ${fmt(approvedOvertimeAmount)})${extrasText} = Net PKR ${fmt(netPayable)}`;
   } else {
@@ -299,6 +302,9 @@ function evaluateEmployeePayroll(staff, month, policy, attendanceRecords, overti
       workingDaysInMonth,
       calendarDaysInMonth: totalCalendarDays,
       presentDays,
+      halfDayDays: halfDayUnpaidDays * 2,
+      lateDays: empAttendance.filter(a => consumedAttendanceDates.includes(a.date) && a.isLate).length,
+      earlyExitDays: empAttendance.filter(a => consumedAttendanceDates.includes(a.date) && a.isEarlyExit).length,
       paidLeaveDays,
       unpaidLeaveDays,
       absentDays,

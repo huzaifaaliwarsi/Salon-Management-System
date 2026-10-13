@@ -8,37 +8,39 @@ import {
   StaffMember,
 } from '@/types/salon';
 import { AccessDeniedView } from '@/features/scaffold/AccessDeniedView';
-import { formatCurrency } from '@/lib/formatters';
-import { Badge } from '@/components/ui/badge';
-import { ReportShell } from '@/features/reports/components/ReportShell';
-import { ReportTable, ColumnDef } from '@/features/reports/components/ReportTable';
 import {
+  Filter,
+  FileSpreadsheet,
+  FileText,
+  Printer,
+  Loader2,
+  Clock,
+} from 'lucide-react';
+import {
+  DATE_PRESETS,
+  DatePreset,
   downloadReportCsv,
   downloadReportExcel,
   printReportWindow,
-  DATE_PRESETS,
-  DatePreset,
-} from '@/features/reports/reportUtils';
-import {
-  Clock,
-  ClockAlert,
-  CalendarCheck,
-  UserCheck,
-  UserX,
-  Calendar,
-  Building2,
-  Timer,
-  AlertTriangle,
-  RotateCcw,
-  Info,
-} from 'lucide-react';
+  resolvePreset,
+} from './reportUtils';
 
-const selectField = 'text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] h-8';
-const inputField = 'text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] h-8';
-const filterLabel = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1';
+const selectClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const inputClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const labelClass = 'block text-[11px] font-semibold text-[#0B2545] mb-1.5';
+
+const formatPKR = (amt: number) => {
+  const num = Number(amt) || 0;
+  return Math.abs(num).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+};
 
 export const AttendanceOvertimeReportPage: React.FC = () => {
-  const { user, activeBranchId, allBranches } = useAuth();
+  const { user, activeBranchId, allBranches, demoDate } = useAuth();
 
   // Role guard: Super Admin and Admin only (Accountants denied confidential HR data)
   if (!user || (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN')) {
@@ -46,624 +48,670 @@ export const AttendanceOvertimeReportPage: React.FC = () => {
   }
 
   const isSuperAdmin = user.role === 'SUPER_ADMIN';
-  const defaultBranch = isSuperAdmin ? (activeBranchId || 'ALL') : (user.branchId || '');
+  const businessDate = demoDate || new Date().toISOString().slice(0, 10);
+  const defaultMonth = resolvePreset('THIS_MONTH', businessDate)!;
 
   // Filter Form State
-  const [selectedBranch, setSelectedBranch] = useState<string>(defaultBranch);
+  const [selectedBranch, setSelectedBranch] = useState<string>(
+    activeBranchId || user.branchId || 'ALL'
+  );
   const [selectedStaffId, setSelectedStaffId] = useState<string>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
   const [selectedOtStatus, setSelectedOtStatus] = useState<string>('ALL');
   const [selectedPreset, setSelectedPreset] = useState<DatePreset>('THIS_MONTH');
-  const [customFrom, setCustomFrom] = useState<string>('');
-  const [customTo, setCustomTo] = useState<string>('');
+  const [customFrom, setCustomFrom] = useState<string>(defaultMonth.from);
+  const [customTo, setCustomTo] = useState<string>(defaultMonth.to);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Applied Query State (triggers API fetch)
-  const [appliedQuery, setAppliedQuery] = useState<AttendanceOvertimeReportQuery>({
-    branchId: defaultBranch,
-    staffId: 'ALL',
-    status: 'ALL',
-    otStatus: 'ALL',
-    preset: 'THIS_MONTH',
-  });
-
   const [staffList, setStaffList] = useState<StaffMember[]>([]);
+
+  // Page state: Only fetch when user explicitly clicks Filter ("filter karna sa aae default nhi")
+  const [hasFiltered, setHasFiltered] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [reportData, setReportData] = useState<AttendanceOvertimeReport | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Load staff list for filter
   useEffect(() => {
-    salonService.getStaff(selectedBranch || 'ALL').then(setStaffList).catch(() => setStaffList([]));
+    salonService
+      .getStaff(selectedBranch || 'ALL')
+      .then(setStaffList)
+      .catch(() => setStaffList([]));
   }, [selectedBranch]);
 
-  // Load report data when appliedQuery changes
-  const loadReportData = useCallback(async () => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    try {
-      const data = await salonService.getAttendanceOvertimeReport(appliedQuery);
-      setReportData(data);
-    } catch (err: any) {
-      console.error('Failed to load Attendance & Overtime report:', err);
-      setErrorMessage(err.message || 'Unable to load attendance and overtime report data.');
-    } finally {
-      setIsLoading(false);
+  const handlePresetChange = (p: DatePreset) => {
+    setSelectedPreset(p);
+    const r = resolvePreset(p, businessDate);
+    if (r) {
+      setCustomFrom(r.from);
+      setCustomTo(r.to);
     }
-  }, [appliedQuery]);
+  };
 
-  useEffect(() => {
-    loadReportData();
-  }, [loadReportData]);
+  const branchNameDisplay = useMemo(() => {
+    if (selectedBranch === 'ALL') return 'All Campuses';
+    return (
+      allBranches?.find((b) => b.id === selectedBranch)?.name ||
+      reportData?.meta.branchName ||
+      selectedBranch
+    );
+  }, [selectedBranch, allBranches, reportData]);
 
-  // Filter submission handler
-  const handleApplyFilter = (e?: React.FormEvent) => {
+  // Fetch report data on demand from backend API
+  const fetchReport = useCallback(
+    async (q: AttendanceOvertimeReportQuery) => {
+      setIsLoading(true);
+      setErrorMessage(null);
+      try {
+        const data = await salonService.getAttendanceOvertimeReport(q);
+        setReportData(data);
+      } catch (err: any) {
+        console.error('Failed to load Attendance & Overtime report:', err);
+        setErrorMessage(
+          err.message || 'Failed to fetch live attendance report from server.'
+        );
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    []
+  );
+
+  const handleApplyFilters = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    setAppliedQuery({
+    setHasFiltered(true);
+
+    const query: AttendanceOvertimeReportQuery = {
       branchId: selectedBranch,
       staffId: selectedStaffId,
       status: selectedStatus,
       otStatus: selectedOtStatus,
       preset: selectedPreset,
-      from: selectedPreset === 'CUSTOM' ? customFrom : undefined,
-      to: selectedPreset === 'CUSTOM' ? customTo : undefined,
+      from: customFrom || undefined,
+      to: customTo || undefined,
       search: searchQuery.trim() || undefined,
-    });
+    };
+
+    fetchReport(query);
   };
 
-  const handleResetFilter = () => {
-    setSelectedBranch(defaultBranch);
-    setSelectedStaffId('ALL');
-    setSelectedStatus('ALL');
-    setSelectedOtStatus('ALL');
-    setSelectedPreset('THIS_MONTH');
-    setCustomFrom('');
-    setCustomTo('');
-    setSearchQuery('');
-    setAppliedQuery({
-      branchId: defaultBranch,
-      staffId: 'ALL',
-      status: 'ALL',
-      otStatus: 'ALL',
-      preset: 'THIS_MONTH',
-    });
-  };
-
-  // Status badge styling helper
-  const renderStatusBadge = (status: string) => {
-    switch (status) {
-      case 'PRESENT':
-        return <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200">Present</Badge>;
-      case 'ABSENT':
-        return <Badge className="bg-rose-100 text-rose-800 border-rose-200">Absent</Badge>;
-      case 'PAID_LEAVE':
-        return <Badge className="bg-blue-100 text-blue-800 border-blue-200">Paid Leave</Badge>;
-      case 'UNPAID_LEAVE':
-        return <Badge className="bg-amber-100 text-amber-800 border-amber-200">Unpaid Leave</Badge>;
-      case 'HALF_DAY':
-        return <Badge className="bg-purple-100 text-purple-800 border-purple-200">Half Day</Badge>;
-      case 'MISSING_PUNCH':
-        return <Badge className="bg-orange-100 text-orange-800 border-orange-200">Missing Punch</Badge>;
-      case 'OFF_DAY':
-        return <Badge className="bg-slate-100 text-slate-700 border-slate-200">Off Day</Badge>;
-      case 'HOLIDAY':
-        return <Badge className="bg-teal-100 text-teal-800 border-teal-200">Holiday</Badge>;
-      case 'APPROVED_OVERTIME':
-        return <Badge className="bg-indigo-100 text-indigo-800 border-indigo-200">Overtime Only</Badge>;
-      default:
-        return <Badge variant="outline" className="text-slate-600">{status}</Badge>;
-    }
-  };
-
-  const renderOtBadge = (otStatus: string, otHours: number) => {
-    if (otStatus === 'APPROVED' && otHours > 0) {
-      return <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 font-semibold">{otHours.toFixed(1)}h Approved</Badge>;
-    }
-    if (otStatus === 'SUBMITTED') {
-      return <Badge className="bg-amber-100 text-amber-800 border-amber-200">Pending Review</Badge>;
-    }
-    if (otStatus === 'REJECTED') {
-      return <Badge className="bg-rose-100 text-rose-800 border-rose-200">Rejected</Badge>;
-    }
-    return <span className="text-slate-400 text-xs">—</span>;
-  };
-
-  // Landscape Table Column Definitions
-  const columns: ColumnDef<AttendanceOvertimeReportRow>[] = useMemo(() => [
-    {
-      key: 'date',
-      header: 'Date',
-      render: (row: AttendanceOvertimeReportRow) => (
-        <span className="font-mono font-semibold text-slate-800 text-xs">{row.date}</span>
-      ),
-    },
-    {
-      key: 'staffName',
-      header: 'Staff Member',
-      render: (row: AttendanceOvertimeReportRow) => (
-        <div>
-          <div className="font-semibold text-slate-900">{row.staffName}</div>
-          <div className="text-[10px] text-slate-500 font-mono">
-            {row.employeeCode} • {row.designation}
-          </div>
-        </div>
-      ),
-    },
-    {
-      key: 'branchName',
-      header: 'Branch',
-      render: (row: AttendanceOvertimeReportRow) => (
-        <span className="text-slate-700 text-xs">{row.branchName}</span>
-      ),
-    },
-    {
-      key: 'shift',
-      header: 'Shift / Schedule',
-      render: (row: AttendanceOvertimeReportRow) => (
-        <span className="text-slate-600 text-[11px] font-mono">{row.shift}</span>
-      ),
-    },
-    {
-      key: 'checkIn',
-      header: 'In / Out',
-      render: (row: AttendanceOvertimeReportRow) => (
-        <div className="text-[11px] font-mono">
-          <span className="text-emerald-700 font-semibold">{row.checkIn}</span>
-          <span className="text-slate-400 mx-1">→</span>
-          <span className="text-slate-700">{row.checkOut}</span>
-        </div>
-      ),
-    },
-    {
-      key: 'scheduledHours',
-      header: 'Sched.',
-      align: 'right',
-      render: (row: AttendanceOvertimeReportRow) => (
-        <span className="text-slate-600 text-xs font-mono">{row.scheduledHours}h</span>
-      ),
-    },
-    {
-      key: 'workedHours',
-      header: 'Worked',
-      align: 'right',
-      render: (row: AttendanceOvertimeReportRow) => (
-        <span className={`text-xs font-mono font-bold ${row.workedHours > 0 ? 'text-indigo-700' : 'text-slate-400'}`}>
-          {row.workedHours}h
-        </span>
-      ),
-    },
-    {
-      key: 'lateMinutes',
-      header: 'Late / Early',
-      render: (row: AttendanceOvertimeReportRow) => (
-        <div className="text-[11px]">
-          {row.lateMinutes > 0 ? (
-            <span className="text-amber-700 font-semibold">{row.lateMinutes}m late</span>
-          ) : row.earlyExitMinutes > 0 ? (
-            <span className="text-rose-700 font-semibold">{row.earlyExitMinutes}m early</span>
-          ) : (
-            <span className="text-emerald-600">On time</span>
-          )}
-        </div>
-      ),
-    },
-    {
-      key: 'status',
-      header: 'Attendance Status',
-      align: 'center',
-      render: (row: AttendanceOvertimeReportRow) => renderStatusBadge(row.status),
-    },
-    {
-      key: 'otHours',
-      header: 'Overtime',
-      align: 'center',
-      render: (row: AttendanceOvertimeReportRow) => renderOtBadge(row.otStatus, row.otHours),
-    },
-    {
-      key: 'otAmount',
-      header: 'OT Amount',
-      align: 'right',
-      render: (row: AttendanceOvertimeReportRow) => (
-        <span className={`text-xs font-mono font-semibold ${row.otAmount > 0 ? 'text-purple-700' : 'text-slate-400'}`}>
-          {row.otAmount > 0 ? formatCurrency(row.otAmount) : '—'}
-        </span>
-      ),
-    },
-    {
-      key: 'otApprovedBy',
-      header: 'Approved By',
-      render: (row: AttendanceOvertimeReportRow) => (
-        <span className="text-slate-600 text-[11px]">{row.otApprovedBy}</span>
-      ),
-    },
-    {
-      key: 'notes',
-      header: 'Reason / Notes',
-      render: (row: AttendanceOvertimeReportRow) => (
-        <span className="text-slate-500 text-[11px] max-w-xs truncate block" title={row.notes || row.otReason}>
-          {row.notes || row.otReason || '—'}
-        </span>
-      ),
-    },
-  ], []);
-
-  // Export metadata & rows
-  const exportHeaders = [
-    'Date',
-    'Staff Name',
-    'Code',
-    'Designation',
-    'Branch',
-    'Shift',
-    'Check-In',
-    'Check-Out',
-    'Scheduled Hours',
-    'Worked Hours',
-    'Late Minutes',
-    'Early Exit Minutes',
-    'Status',
-    'OT Hours',
-    'OT Amount',
-    'OT Status',
-    'Approved By',
-    'Notes',
-  ];
-
-  const exportRows = useMemo(() => {
-    if (!reportData) return [];
-    return reportData.rows.map((r) => [
-      r.date,
-      r.staffName,
-      r.employeeCode,
-      r.designation,
-      r.branchName,
-      r.shift,
-      r.checkIn,
-      r.checkOut,
-      r.scheduledHours,
-      r.workedHours,
-      r.lateMinutes,
-      r.earlyExitMinutes,
-      r.status,
-      r.otHours,
-      r.otAmount,
-      r.otStatus,
-      r.otApprovedBy,
-      r.notes || r.otReason,
-    ]);
-  }, [reportData]);
-
-  const exportMeta: [string, string][] = useMemo(() => [
-    ['Report', 'Staff Attendance & Overtime Report'],
-    ['Branch', reportData?.meta.branchName || 'All Branches'],
-    ['Period', `${reportData?.meta.from || ''} to ${reportData?.meta.to || ''}`],
-    ['Date Basis', reportData?.meta.dateBasis || 'WORK_DATE'],
-    ['Generated By', reportData?.meta.generatedBy || user?.name || 'Administrator'],
-    ['Generated At', reportData?.meta.generatedAt || new Date().toISOString()],
-  ], [reportData, user]);
-
+  // Export handlers
   const handleExportExcel = () => {
     if (!reportData || !reportData.rows.length) return;
-    downloadReportExcel('attendance_overtime_report', exportMeta, [
-      { title: 'Attendance & Overtime', headers: exportHeaders, rows: exportRows },
+    const meta: [string, string][] = [
+      ['Report', 'Staff Attendance & Overtime Reports'],
+      ['Campus', branchNameDisplay],
+      ['From Date', customFrom || reportData.meta.from || '—'],
+      ['To Date', customTo || reportData.meta.to || '—'],
+      ['Generated By', user.name],
+      ['Generated At', new Date().toLocaleString()],
+    ];
+
+    const headers = [
+      'Date',
+      'Staff Name',
+      'Code',
+      'Designation',
+      'Campus',
+      'Shift',
+      'Check-In',
+      'Check-Out',
+      'Scheduled Hours',
+      'Worked Hours',
+      'Late Minutes',
+      'Early Exit Minutes',
+      'Status',
+      'OT Hours',
+      'OT Amount (PKR)',
+      'OT Status',
+      'Approved By',
+      'Notes',
+    ];
+
+    const rows = [
+      ...reportData.rows.map((r) => [
+        r.date,
+        r.staffName,
+        r.employeeCode,
+        r.designation,
+        r.branchName,
+        r.shift,
+        r.checkIn,
+        r.checkOut,
+        r.scheduledHours,
+        r.workedHours,
+        r.lateMinutes,
+        r.earlyExitMinutes,
+        r.status,
+        r.otHours,
+        r.otAmount.toFixed(2),
+        r.otStatus,
+        r.otApprovedBy,
+        r.notes || r.otReason,
+      ]),
+      [
+        'TOTALS',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        reportData.totals.scheduledHours.toFixed(1),
+        reportData.totals.workedHours.toFixed(1),
+        '',
+        '',
+        '',
+        reportData.totals.otHours.toFixed(1),
+        reportData.totals.otAmount.toFixed(2),
+        '',
+        '',
+        '',
+      ],
+    ];
+
+    downloadReportExcel(`Attendance_Report_${customFrom}_${customTo}.csv`, meta, [
+      { title: 'Attendance & Overtime Records', headers, rows },
     ]);
   };
 
   const handleExportCsv = () => {
     if (!reportData || !reportData.rows.length) return;
-    const fileName = `Attendance_Overtime_Report_${reportData.meta.from}_${reportData.meta.to}.csv`;
-    downloadReportCsv(
-      fileName,
-      exportMeta,
-      [{ headers: exportHeaders, rows: exportRows }]
-    );
+    const meta: [string, string][] = [
+      ['Report', 'Staff Attendance & Overtime Reports'],
+      ['Campus', branchNameDisplay],
+      ['Date Range', `${customFrom} to ${customTo}`],
+      ['Generated At', new Date().toLocaleString()],
+    ];
+
+    const headers = [
+      'Date',
+      'Staff Name',
+      'Code',
+      'Designation',
+      'Campus',
+      'Shift',
+      'Check-In',
+      'Check-Out',
+      'Scheduled Hours',
+      'Worked Hours',
+      'Late Minutes',
+      'Early Exit Minutes',
+      'Status',
+      'OT Hours',
+      'OT Amount (PKR)',
+      'OT Status',
+      'Approved By',
+      'Notes',
+    ];
+
+    const rows = [
+      ...reportData.rows.map((r) => [
+        r.date,
+        r.staffName,
+        r.employeeCode,
+        r.designation,
+        r.branchName,
+        r.shift,
+        r.checkIn,
+        r.checkOut,
+        r.scheduledHours,
+        r.workedHours,
+        r.lateMinutes,
+        r.earlyExitMinutes,
+        r.status,
+        r.otHours,
+        r.otAmount.toFixed(2),
+        r.otStatus,
+        r.otApprovedBy,
+        r.notes || r.otReason,
+      ]),
+      [
+        'TOTALS',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        reportData.totals.scheduledHours.toFixed(1),
+        reportData.totals.workedHours.toFixed(1),
+        '',
+        '',
+        '',
+        reportData.totals.otHours.toFixed(1),
+        reportData.totals.otAmount.toFixed(2),
+        '',
+        '',
+        '',
+      ],
+    ];
+
+    downloadReportCsv(`Attendance_Report_${customFrom}_${customTo}.csv`, meta, [
+      { title: 'Attendance Records', headers, rows },
+    ]);
   };
 
   const handlePrint = () => {
     if (!reportData || !reportData.rows.length) return;
-    const totalsRow = [
-      'TOTAL',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      totals?.scheduledHours ?? 0,
-      totals?.workedHours ?? 0,
-      totals?.lateMinutes ?? 0,
-      '',
-      '',
-      totals?.otHours ?? 0,
-      totals?.otAmount ?? 0,
-      '',
-      '',
-      '',
+    const meta: [string, string][] = [
+      ['Campus', branchNameDisplay],
+      ['Date Range', `${customFrom} to ${customTo}`],
+      ['Generated By', user.name],
     ];
+
+    const headers = [
+      'Date',
+      'Staff Name',
+      'Campus',
+      'Shift',
+      'In / Out',
+      'Sched.',
+      'Worked',
+      'Late/Early',
+      'Status',
+      'OT Hours',
+      'OT Amount',
+    ];
+
+    const rows = reportData.rows.map((r) => [
+      r.date,
+      `${r.staffName} (${r.employeeCode})`,
+      r.branchName,
+      r.shift,
+      `${r.checkIn} - ${r.checkOut}`,
+      `${r.scheduledHours}h`,
+      `${r.workedHours}h`,
+      r.lateMinutes > 0 ? `${r.lateMinutes}m late` : 'On time',
+      r.status,
+      `${r.otHours}h`,
+      formatPKR(r.otAmount),
+    ]);
+
+    const footers = [
+      'TOTALS',
+      '',
+      '',
+      '',
+      '',
+      `${reportData.totals.scheduledHours.toFixed(1)}h`,
+      `${reportData.totals.workedHours.toFixed(1)}h`,
+      '',
+      '',
+      `${reportData.totals.otHours.toFixed(1)}h`,
+      formatPKR(reportData.totals.otAmount),
+    ];
+
     printReportWindow({
       title: 'Staff Attendance & Overtime Report',
-      subtitle: `Branch: ${reportData.meta.branchName} · Window: ${reportData.meta.from.slice(0, 10)} to ${reportData.meta.to.slice(0, 10)}`,
-      meta: exportMeta,
-      headers: exportHeaders,
-      rows: exportRows,
-      totals: totalsRow,
+      subtitle: `Working Hours, Overtime Audits & Shift Compliance`,
+      meta,
+      headers,
+      rows,
+      totals: footers,
     });
   };
 
-  const kpis = reportData?.kpis;
-  const totals = reportData?.totals;
-
   return (
-    <ReportShell
-      title="Staff Attendance & Overtime Report"
-      description="Consolidated daily attendance records, punch timelines, late arrival infractions, and authorized overtime allowances."
-      icon={CalendarCheck}
-      bannerTitle="Staff Attendance & Overtime Audit"
-      onExportExcel={handleExportExcel}
-      onExportCsv={handleExportCsv}
-      onExportPdf={handlePrint}
-      onExportPrint={handlePrint}
-      isFilterLoading={isLoading}
-      onFilterSubmit={handleApplyFilter}
-      filterChildren={
-        <>
-          {/* Branch Filter */}
-          {isSuperAdmin && (
+    <div className="min-h-screen bg-[#F4F6F9] px-4 py-5 md:px-8 md:py-6 text-slate-800">
+      {/* Top Header Card with Title & Filters */}
+      <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 p-5 md:p-6 mb-6">
+        <div className="mb-5">
+          <h1 className="text-xl font-bold text-[#0B2545] tracking-tight">Staff Attendance & Overtime Reports</h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Audit of staff attendance, working hours, punctuality, and overtime costs across campuses.
+          </p>
+        </div>
+
+        {/* Filters Form Row */}
+        <form onSubmit={handleApplyFilters} className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3.5">
+            {/* Campus / Branch */}
             <div>
-              <label className={filterLabel}>Branch</label>
+              <label className={labelClass}>Campus</label>
               <select
-                className={selectField}
+                className={selectClass}
                 value={selectedBranch}
                 onChange={(e) => {
                   setSelectedBranch(e.target.value);
                   setSelectedStaffId('ALL');
                 }}
               >
-                <option value="ALL">All Branches</option>
-                {allBranches.map((b) => (
+                {isSuperAdmin && <option value="ALL">All Campuses</option>}
+                {allBranches?.map((b) => (
                   <option key={b.id} value={b.id}>
                     {b.name}
                   </option>
                 ))}
               </select>
             </div>
-          )}
 
-          {/* Date Presets */}
-          <div>
-            <label className={filterLabel}>Date Preset</label>
-            <select
-              className={selectField}
-              value={selectedPreset}
-              onChange={(e) => setSelectedPreset(e.target.value as DatePreset)}
-            >
-              {DATE_PRESETS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
+            {/* Staff */}
+            <div>
+              <label className={labelClass}>Staff</label>
+              <select
+                className={selectClass}
+                value={selectedStaffId}
+                onChange={(e) => setSelectedStaffId(e.target.value)}
+              >
+                <option value="ALL">All Staff</option>
+                {staffList.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Attendance Status */}
+            <div>
+              <label className={labelClass}>Attendance Status</label>
+              <select
+                className={selectClass}
+                value={selectedStatus}
+                onChange={(e) => setSelectedStatus(e.target.value)}
+              >
+                <option value="ALL">All Statuses</option>
+                <option value="PRESENT">Present</option>
+                <option value="ABSENT">Absent</option>
+                <option value="PAID_LEAVE">Paid Leave</option>
+                <option value="UNPAID_LEAVE">Unpaid Leave</option>
+                <option value="HALF_DAY">Half Day</option>
+                <option value="MISSING_PUNCH">Missing Punch</option>
+                <option value="OFF_DAY">Off Day</option>
+                <option value="HOLIDAY">Holiday</option>
+              </select>
+            </div>
+
+            {/* OT Status */}
+            <div>
+              <label className={labelClass}>OT Status</label>
+              <select
+                className={selectClass}
+                value={selectedOtStatus}
+                onChange={(e) => setSelectedOtStatus(e.target.value)}
+              >
+                <option value="ALL">All OT Statuses</option>
+                <option value="APPROVED">Approved</option>
+                <option value="SUBMITTED">Pending Review</option>
+                <option value="REJECTED">Rejected</option>
+                <option value="NONE">No Overtime</option>
+              </select>
+            </div>
+
+            {/* Date Preset */}
+            <div>
+              <label className={labelClass}>Date Preset</label>
+              <select
+                className={selectClass}
+                value={selectedPreset}
+                onChange={(e) => handlePresetChange(e.target.value as DatePreset)}
+              >
+                {DATE_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* From Date */}
+            <div>
+              <label className={labelClass}>From Date</label>
+              <input
+                type="date"
+                className={inputClass}
+                value={customFrom}
+                max={customTo || undefined}
+                onChange={(e) => {
+                  setCustomFrom(e.target.value);
+                  setSelectedPreset('CUSTOM');
+                }}
+              />
+            </div>
           </div>
 
-          {/* Custom Date Inputs */}
-          {selectedPreset === 'CUSTOM' && (
-            <>
-              <div>
-                <label className={filterLabel}>From</label>
-                <input
-                  type="date"
-                  className={inputField}
-                  value={customFrom}
-                  onChange={(e) => setCustomFrom(e.target.value)}
-                  required
-                />
-              </div>
-              <div>
-                <label className={filterLabel}>To</label>
-                <input
-                  type="date"
-                  className={inputField}
-                  value={customTo}
-                  onChange={(e) => setCustomTo(e.target.value)}
-                  required
-                />
-              </div>
-            </>
-          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3.5 items-end">
+            {/* To Date */}
+            <div>
+              <label className={labelClass}>To Date</label>
+              <input
+                type="date"
+                className={inputClass}
+                value={customTo}
+                min={customFrom || undefined}
+                onChange={(e) => {
+                  setCustomTo(e.target.value);
+                  setSelectedPreset('CUSTOM');
+                }}
+              />
+            </div>
 
-          {/* Staff Member */}
-          <div>
-            <label className={filterLabel}>Staff Member</label>
-            <select
-              className={selectField}
-              value={selectedStaffId}
-              onChange={(e) => setSelectedStaffId(e.target.value)}
-            >
-              <option value="ALL">All Staff</option>
-              {staffList.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} ({s.employeeCode || s.designation || 'Staff'})
-                </option>
-              ))}
-            </select>
-          </div>
+            {/* Search Query */}
+            <div className="md:col-span-4">
+              <label className={labelClass}>Search</label>
+              <input
+                type="text"
+                placeholder="Search staff, code, shift, designation..."
+                className={inputClass}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
 
-          {/* Attendance Status */}
-          <div>
-            <label className={filterLabel}>Status</label>
-            <select
-              className={selectField}
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
-            >
-              <option value="ALL">All Statuses</option>
-              <option value="PRESENT">Present</option>
-              <option value="ABSENT">Absent</option>
-              <option value="PAID_LEAVE">Paid Leave</option>
-              <option value="UNPAID_LEAVE">Unpaid Leave</option>
-              <option value="HALF_DAY">Half Day</option>
-              <option value="MISSING_PUNCH">Missing Punch</option>
-              <option value="HOLIDAY">Holiday</option>
-            </select>
+            {/* Filter Action Button */}
+            <div>
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full h-[35px] bg-[#0047AB] hover:bg-[#003785] active:bg-[#002b66] text-white font-medium text-xs rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-70"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Loading...</span>
+                  </>
+                ) : (
+                  <>
+                    <Filter className="w-3.5 h-3.5 fill-current" />
+                    <span>Filter</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
+        </form>
+      </div>
 
-          {/* Overtime Status */}
-          <div>
-            <label className={filterLabel}>Overtime</label>
-            <select
-              className={selectField}
-              value={selectedOtStatus}
-              onChange={(e) => setSelectedOtStatus(e.target.value)}
-            >
-              <option value="ALL">All Overtime</option>
-              <option value="APPROVED">Approved OT Only</option>
-              <option value="SUBMITTED">Pending Approval</option>
-              <option value="REJECTED">Rejected</option>
-            </select>
+      {/* Main Content Area */}
+      {!hasFiltered ? (
+        /* Empty State before Filter clicked */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 md:p-24 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <div className="text-slate-400 mb-3">
+            <Filter className="w-14 h-14 stroke-[1.25] text-slate-400" />
           </div>
-
-          {/* Keyword Search */}
-          <div>
-            <label className={filterLabel}>Search</label>
-            <input
-              type="text"
-              placeholder="Staff, code, or role..."
-              className={inputField}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          </div>
-
-          {/* Reset button */}
-          <div className="pt-1">
-            <button
-              type="button"
-              onClick={handleResetFilter}
-              className="p-1.5 border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 rounded-lg text-xs h-8 transition-colors"
-              title="Reset Filters"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </>
-      }
-      metaNotice={
-        <div className="flex items-center gap-2">
-          <Info className="w-4 h-4 text-[#0047AB] shrink-0" />
-          <span>
-            <strong>Regulatory Rule:</strong> Overtime is authorized exclusively by Administrators via approved manual entry (§11.1). Biometric duration never automatically generates payable overtime without managerial sanction.
-          </span>
+          <p className="text-slate-400 text-sm font-medium">Please apply filters to view reports</p>
         </div>
-      }
-      kpiStrip={
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center gap-1.5 text-slate-500 text-[10px] font-semibold uppercase tracking-wider mb-1">
-              <CalendarCheck className="w-3.5 h-3.5 text-slate-400" />
-              <span>Records</span>
-            </div>
-            <div className="text-lg font-bold text-slate-900">{kpis?.totalRecords ?? 0}</div>
-            <div className="text-[10px] text-slate-400">Total days tracked</div>
-          </div>
-
-          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center gap-1.5 text-emerald-700 text-[10px] font-semibold uppercase tracking-wider mb-1">
-              <UserCheck className="w-3.5 h-3.5 text-emerald-500" />
-              <span>Present</span>
-            </div>
-            <div className="text-lg font-bold text-emerald-700">{kpis?.presentCount ?? 0}</div>
-            <div className="text-[10px] text-emerald-600">Days attended</div>
-          </div>
-
-          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center gap-1.5 text-rose-700 text-[10px] font-semibold uppercase tracking-wider mb-1">
-              <UserX className="w-3.5 h-3.5 text-rose-500" />
-              <span>Absent</span>
-            </div>
-            <div className="text-lg font-bold text-rose-700">{kpis?.absentCount ?? 0}</div>
-            <div className="text-[10px] text-rose-600">Unexcused days</div>
-          </div>
-
-          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center gap-1.5 text-amber-700 text-[10px] font-semibold uppercase tracking-wider mb-1">
-              <Calendar className="w-3.5 h-3.5 text-amber-500" />
-              <span>On Leave</span>
-            </div>
-            <div className="text-lg font-bold text-amber-700">{kpis?.leaveCount ?? 0}</div>
-            <div className="text-[10px] text-amber-600">Paid / Unpaid leaves</div>
-          </div>
-
-          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center gap-1.5 text-orange-700 text-[10px] font-semibold uppercase tracking-wider mb-1">
-              <ClockAlert className="w-3.5 h-3.5 text-orange-500" />
-              <span>Late Arrivals</span>
-            </div>
-            <div className="text-lg font-bold text-orange-700">{kpis?.lateCount ?? 0}</div>
-            <div className="text-[10px] text-orange-600">Infractions logged</div>
-          </div>
-
-          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center gap-1.5 text-indigo-700 text-[10px] font-semibold uppercase tracking-wider mb-1">
-              <Clock className="w-3.5 h-3.5 text-indigo-500" />
-              <span>Worked Hours</span>
-            </div>
-            <div className="text-lg font-bold text-indigo-700">{kpis?.totalWorkedHours ?? 0}h</div>
-            <div className="text-[10px] text-indigo-600">Cumulative time</div>
-          </div>
-
-          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center gap-1.5 text-purple-700 text-[10px] font-semibold uppercase tracking-wider mb-1">
-              <Timer className="w-3.5 h-3.5 text-purple-500" />
-              <span>Auth. Overtime</span>
-            </div>
-            <div className="text-lg font-bold text-purple-700">{kpis?.authorizedOtHours ?? 0}h</div>
-            <div className="text-[10px] text-purple-600">Approved OT hours</div>
-          </div>
-
-          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center gap-1.5 text-purple-800 text-[10px] font-semibold uppercase tracking-wider mb-1">
-              <Building2 className="w-3.5 h-3.5 text-purple-600" />
-              <span>OT Payable</span>
-            </div>
-            <div className="text-lg font-bold text-purple-900">{formatCurrency(kpis?.authorizedOtAmount ?? 0)}</div>
-            <div className="text-[10px] text-purple-600">Total authorized pay</div>
-          </div>
+      ) : isLoading ? (
+        /* Loading Skeleton */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <Loader2 className="w-10 h-10 animate-spin text-[#0047AB] mb-3" />
+          <p className="text-slate-600 text-sm font-medium">Loading Attendance & Overtime Reports...</p>
         </div>
-      }
-    >
-      {/* Error state */}
-      {errorMessage && (
-        <div className="mb-4 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-rose-600" />
-          <span>{errorMessage}</span>
+      ) : errorMessage ? (
+        /* Error Message */
+        <div className="bg-white rounded-xl border border-rose-200 p-8 shadow-xs text-center">
+          <p className="text-rose-600 text-sm font-medium mb-3">{errorMessage}</p>
+          <button
+            onClick={() => handleApplyFilters()}
+            className="px-4 py-1.5 bg-[#0047AB] text-white text-xs font-semibold rounded-md shadow-xs hover:bg-[#003785]"
+          >
+            Retry
+          </button>
+        </div>
+      ) : (
+        /* Filtered Data Layout */
+        <div className="shadow-sm rounded-xl overflow-hidden border border-slate-200/90 mb-8 bg-white">
+          {/* Royal Blue Banner Header */}
+          <div className="bg-[#0047AB] text-white px-5 py-3 flex flex-wrap items-center justify-between gap-3 rounded-t-xl">
+            <div className="flex items-center gap-2.5 font-bold text-sm tracking-wide text-white">
+              <Clock className="w-4 h-4 stroke-[2.5]" />
+              <span>Staff Attendance & Overtime Reports ({reportData?.rows.length ?? 0} records)</span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                className="bg-[#009688] hover:bg-[#00897B] active:bg-[#00796B] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>CSV</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="bg-[#DC2626] hover:bg-[#B91C1C] active:bg-[#991B1B] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>PDF</span>
+              </button>
+              <button
+                type="button"
+                onClick={handlePrint}
+                className="bg-[#4B5563] hover:bg-[#374151] active:bg-[#1F2937] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Print</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Table Container */}
+          <div className="bg-white overflow-x-auto rounded-b-xl border-t border-blue-200/40">
+            <table className="w-full text-left border-collapse min-w-[1100px] font-['Inter',sans-serif] text-[13px] antialiased">
+              <thead>
+                <tr className="bg-[#EAF2FB] border-b border-blue-100 text-[#475569] font-medium text-[13px]">
+                  <th className="py-3.5 px-4">Date</th>
+                  <th className="py-3.5 px-4">Staff Member</th>
+                  <th className="py-3.5 px-4">Campus</th>
+                  <th className="py-3.5 px-4">Shift</th>
+                  <th className="py-3.5 px-4">In / Out</th>
+                  <th className="py-3.5 px-4 text-right">Sched.</th>
+                  <th className="py-3.5 px-4 text-right">Worked</th>
+                  <th className="py-3.5 px-4">Late / Early</th>
+                  <th className="py-3.5 px-4">Status</th>
+                  <th className="py-3.5 px-4 text-center">Overtime</th>
+                  <th className="py-3.5 px-4 text-right">OT Amount</th>
+                  <th className="py-3.5 px-4">Approved By</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-dashed divide-slate-200">
+                {!reportData || reportData.rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={12} className="py-12 text-center text-slate-400">
+                      No attendance and overtime records found for the selected criteria.
+                    </td>
+                  </tr>
+                ) : (
+                  reportData.rows.map((r, i) => (
+                    <tr key={`${r.date}-${r.staffId}-${i}`} className="hover:bg-blue-50/20 transition-colors border-b border-dashed border-slate-200">
+                      <td className="py-3.5 px-4 font-semibold text-[#0B2545] whitespace-nowrap">
+                        {r.date}
+                      </td>
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        <div className="font-semibold text-slate-900">{r.staffName}</div>
+                        <div className="text-[11px] text-slate-500">
+                          {r.employeeCode} • {r.designation}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-600 whitespace-nowrap">
+                        {r.branchName}
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-600 whitespace-nowrap text-[12px]">
+                        {r.shift}
+                      </td>
+                      <td className="py-3.5 px-4 whitespace-nowrap text-[12px]">
+                        <span className="text-[#0B2545] font-semibold">{r.checkIn}</span>
+                        <span className="text-slate-400 mx-1">→</span>
+                        <span className="text-slate-700">{r.checkOut}</span>
+                      </td>
+                      <td className="py-3.5 px-4 text-right text-slate-600 whitespace-nowrap font-medium">
+                        {r.scheduledHours}h
+                      </td>
+                      <td className="py-3.5 px-4 text-right font-bold text-[#0B2545] whitespace-nowrap">
+                        {r.workedHours}h
+                      </td>
+                      <td className="py-3.5 px-4 whitespace-nowrap text-[12px]">
+                        {r.lateMinutes > 0 ? (
+                          <span className="text-[#0047AB] font-semibold">{r.lateMinutes}m late</span>
+                        ) : r.earlyExitMinutes > 0 ? (
+                          <span className="text-slate-600 font-semibold">{r.earlyExitMinutes}m early</span>
+                        ) : (
+                          <span className="text-slate-500">On time</span>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-[#0047AB] border border-blue-200">
+                          {r.status}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        {r.otHours > 0 ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-[#0B2545]">
+                            {r.otHours.toFixed(1)}h {r.otStatus}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 text-xs">—</span>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-4 text-right font-semibold text-[#0047AB] whitespace-nowrap">
+                        {r.otAmount > 0 ? formatPKR(r.otAmount) : '—'}
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-500 whitespace-nowrap text-[12px]">
+                        {r.otApprovedBy || '—'}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+              {reportData && reportData.rows.length > 0 && (
+                <tfoot className="bg-[#F8FAFC] font-bold text-[#0B2545] border-t-2 border-slate-200 text-[13px]">
+                  <tr>
+                    <td className="py-3.5 px-4 text-left">Totals</td>
+                    <td className="py-3.5 px-4">—</td>
+                    <td className="py-3.5 px-4">{reportData.rows.length} Records</td>
+                    <td className="py-3.5 px-4">—</td>
+                    <td className="py-3.5 px-4">—</td>
+                    <td className="py-3.5 px-4 text-right">
+                      {reportData.totals.scheduledHours.toFixed(1)}h
+                    </td>
+                    <td className="py-3.5 px-4 text-right text-[#0B2545]">
+                      {reportData.totals.workedHours.toFixed(1)}h
+                    </td>
+                    <td className="py-3.5 px-4">—</td>
+                    <td className="py-3.5 px-4">—</td>
+                    <td className="py-3.5 px-4 text-center text-[#0047AB]">
+                      {reportData.totals.otHours.toFixed(1)}h
+                    </td>
+                    <td className="py-3.5 px-4 text-right text-[#0047AB]">
+                      {formatPKR(reportData.totals.otAmount)}
+                    </td>
+                    <td className="py-3.5 px-4">—</td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
         </div>
       )}
 
-      {/* Main Landscape Scrolling Table */}
-      <ReportTable
-        columns={columns}
-        data={reportData?.rows || []}
-        loading={isLoading}
-        emptyMessage="No attendance or overtime records found for this period and filter criteria."
-        renderTotals={() =>
-          totals && reportData && reportData.rows.length > 0 ? (
-            <tr className="bg-slate-100/90 font-bold text-slate-900 border-t-2 border-slate-300 text-xs">
-              <td colSpan={6} className="py-2.5 px-3">
-                Summary Totals ({reportData.rows.length} records)
-              </td>
-              <td className="py-2.5 px-3 text-right font-mono">{totals.scheduledHours}h</td>
-              <td className="py-2.5 px-3 text-right font-mono text-indigo-700">{totals.workedHours}h</td>
-              <td className="py-2.5 px-3 text-amber-700 font-mono">
-                {totals.lateMinutes > 0 ? `${totals.lateMinutes}m total late` : '—'}
-              </td>
-              <td className="py-2.5 px-3 text-center">—</td>
-              <td className="py-2.5 px-3 text-center text-emerald-700 font-mono">{totals.otHours}h OT</td>
-              <td className="py-2.5 px-3 text-right font-mono text-purple-700">{formatCurrency(totals.otAmount)}</td>
-              <td colSpan={2} />
-            </tr>
-          ) : null
-        }
-      />
-    </ReportShell>
+      {/* Footer Branding */}
+      <div className="mt-8 text-center text-xs text-slate-400 pb-6">
+        © iSysware Management System
+      </div>
+    </div>
   );
 };

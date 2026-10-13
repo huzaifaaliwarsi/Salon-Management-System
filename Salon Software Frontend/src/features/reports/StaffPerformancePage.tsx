@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { salonService } from '../../services';
 import {
@@ -10,36 +10,43 @@ import {
   PackageItem,
 } from '../../types/salon';
 import {
-  TrendingUp,
   Award,
-  Users,
-  DollarSign,
-  Calendar,
   Filter,
   Search,
-  RotateCcw,
   Printer,
   Download,
-  Building2,
-  Clock,
-  Sparkles,
-  ChevronRight,
   Eye,
   X,
   FileSpreadsheet,
-  AlertCircle,
-  Briefcase,
-  Layers,
-  Percent,
+  FileText,
+  Loader2,
 } from 'lucide-react';
 import { AccessDeniedView } from '../scaffold/AccessDeniedView';
+import {
+  DATE_PRESETS,
+  DatePreset,
+  downloadReportCsv,
+  downloadReportExcel,
+  printReportWindow,
+  resolvePreset,
+} from './reportUtils';
+
+const selectClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const inputClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const labelClass = 'block text-[11px] font-semibold text-[#0B2545] mb-1.5';
 
 function formatCurrency(val: number): string {
-  return `PKR ${val.toLocaleString('en-PK', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+  const num = Number(val) || 0;
+  return Math.abs(num).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }
 
 export const StaffPerformancePage: React.FC = () => {
-  const { user } = useAuth();
+  const { user, activeBranchId, allBranches, demoDate } = useAuth();
 
   // Role guard: Super Admin and Branch Admin only. Accountant and Staff denied.
   if (!user || (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN')) {
@@ -47,46 +54,44 @@ export const StaffPerformancePage: React.FC = () => {
   }
 
   const isSuperAdmin = user.role === 'SUPER_ADMIN';
+  const businessDate = demoDate || new Date().toISOString().slice(0, 10);
+  const defaultMonth = resolvePreset('THIS_MONTH', businessDate)!;
 
   // Filters State
   const [branches, setBranches] = useState<Branch[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState<string>(
-    isSuperAdmin ? 'ALL' : user.branchId || ''
+    activeBranchId || user.branchId || 'ALL'
   );
   const [allStaff, setAllStaff] = useState<StaffMember[]>([]);
   const [servicesList, setServicesList] = useState<ServiceItem[]>([]);
   const [packagesList, setPackagesList] = useState<PackageItem[]>([]);
 
-  // Default date window: Current month
-  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
-  const monthStartStr = useMemo(() => todayStr.slice(0, 7) + '-01', [todayStr]);
-
-  const [startDate, setStartDate] = useState<string>(monthStartStr);
-  const [endDate, setEndDate] = useState<string>(todayStr);
+  const [preset, setPreset] = useState<DatePreset>('THIS_MONTH');
+  const [startDate, setStartDate] = useState<string>(defaultMonth.from);
+  const [endDate, setEndDate] = useState<string>(defaultMonth.to);
   const [selectedStaffId, setSelectedStaffId] = useState<string>('ALL');
   const [selectedServiceId, setSelectedServiceId] = useState<string>('ALL');
   const [selectedPackageId, setSelectedPackageId] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Data State
-  const [loading, setLoading] = useState<boolean>(true);
+  // Page state: Only fetch when user explicitly clicks Filter ("filter karna sa aae default nhi")
+  const [hasFiltered, setHasFiltered] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(false);
   const [performanceRecords, setPerformanceRecords] = useState<StaffPerformanceRecord[]>([]);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Drilldown Modal State
   const [selectedStaffRecord, setSelectedStaffRecord] = useState<StaffPerformanceRecord | null>(null);
   const [drilldownSearch, setDrilldownSearch] = useState<string>('');
   const [drilldownFilterType, setDrilldownFilterType] = useState<'ALL' | 'SERVICE' | 'PACKAGE_COMPONENT'>('ALL');
 
-  // Print Modal State
-  const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
-
   // Load auxiliary data
   useEffect(() => {
     const loadAux = async () => {
       try {
-        const branchParam = isSuperAdmin ? 'ALL' : user.branchId || '';
+        const branchParam = selectedBranchId || 'ALL';
         const [bList, sList, svcList, pkgList] = await Promise.all([
-          salonService.getBranches(),
+          allBranches && allBranches.length > 0 ? Promise.resolve(allBranches) : salonService.getBranches(),
           salonService.getStaff(branchParam),
           salonService.getServices(branchParam),
           salonService.getPackages(branchParam),
@@ -100,12 +105,27 @@ export const StaffPerformancePage: React.FC = () => {
       }
     };
     loadAux();
-  }, [user, isSuperAdmin]);
+  }, [allBranches, selectedBranchId]);
 
-  // Load performance report data
-  const fetchReport = async () => {
+  const handlePresetChange = (p: DatePreset) => {
+    setPreset(p);
+    const r = resolvePreset(p, businessDate);
+    if (r) {
+      setStartDate(r.from);
+      setEndDate(r.to);
+    }
+  };
+
+  const branchNameDisplay = useMemo(() => {
+    if (selectedBranchId === 'ALL') return 'All Campuses';
+    return branches.find((b) => b.id === selectedBranchId)?.name || selectedBranchId;
+  }, [selectedBranchId, branches]);
+
+  // Load performance report data on demand from backend API
+  const fetchReport = useCallback(async () => {
     try {
       setLoading(true);
+      setErrorMessage(null);
       const data = await salonService.getStaffPerformanceReport(
         selectedBranchId,
         startDate,
@@ -118,50 +138,26 @@ export const StaffPerformancePage: React.FC = () => {
         user
       );
       setPerformanceRecords(data);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to load staff performance report', err);
+      setErrorMessage(err.message || 'Failed to fetch live staff performance data.');
     } finally {
       setLoading(false);
     }
-  };
+  }, [
+    selectedBranchId,
+    startDate,
+    endDate,
+    selectedStaffId,
+    selectedServiceId,
+    selectedPackageId,
+    user,
+  ]);
 
-  useEffect(() => {
+  const handleApplyFilters = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setHasFiltered(true);
     fetchReport();
-  }, [selectedBranchId, startDate, endDate, selectedStaffId, selectedServiceId, selectedPackageId]);
-
-  // Quick Date Preset Helpers
-  const handleApplyPreset = (preset: 'THIS_MONTH' | 'LAST_MONTH' | 'LAST_30_DAYS' | 'TODAY') => {
-    const now = new Date();
-    if (preset === 'TODAY') {
-      const today = now.toISOString().slice(0, 10);
-      setStartDate(today);
-      setEndDate(today);
-    } else if (preset === 'THIS_MONTH') {
-      const start = now.toISOString().slice(0, 7) + '-01';
-      const end = now.toISOString().slice(0, 10);
-      setStartDate(start);
-      setEndDate(end);
-    } else if (preset === 'LAST_MONTH') {
-      const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const lastDayPrevMonth = new Date(now.getFullYear(), now.getMonth(), 0);
-      setStartDate(prevMonthDate.toISOString().slice(0, 10));
-      setEndDate(lastDayPrevMonth.toISOString().slice(0, 10));
-    } else if (preset === 'LAST_30_DAYS') {
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(now.getDate() - 30);
-      setStartDate(thirtyDaysAgo.toISOString().slice(0, 10));
-      setEndDate(now.toISOString().slice(0, 10));
-    }
-  };
-
-  const handleResetFilters = () => {
-    setSelectedBranchId(isSuperAdmin ? 'ALL' : user.branchId || '');
-    setStartDate(monthStartStr);
-    setEndDate(todayStr);
-    setSelectedStaffId('ALL');
-    setSelectedServiceId('ALL');
-    setSelectedPackageId('ALL');
-    setSearchQuery('');
   };
 
   // Filter records by search query
@@ -250,636 +246,627 @@ export const StaffPerformancePage: React.FC = () => {
     return items;
   }, [selectedStaffRecord, drilldownFilterType, drilldownSearch]);
 
-  // CSV Export for Main Table
+  // Export Handlers
   const handleExportCSV = () => {
+    if (!filteredRecords.length) return;
+    const meta: [string, string][] = [
+      ['Report', 'Staff Productivity & Performance Reports'],
+      ['Campus', branchNameDisplay],
+      ['Date Range', `${startDate} to ${endDate}`],
+      ['Generated At', new Date().toLocaleString()],
+    ];
+
     const headers = [
       'Staff Code',
       'Staff Name',
-      'Designation',
+      'Role',
       'Branch',
+      'Total Units',
       'Direct Services',
       'Package Components',
-      'Total Service Units',
       'Unique Clients',
       'Gross Sales (PKR)',
-      'Discount Allocated (PKR)',
+      'Discount (PKR)',
       'Attributed Net Sales (PKR)',
       'Estimated Commission (PKR)',
       'Finalized Commission (PKR)',
       'Allocated Tips (PKR)',
-      'Paid Tips (PKR)',
-      'Outstanding Tips (PKR)',
       'Worked Hours',
-      'Present Days',
-      'Late Punches',
-      'Approved OT (Mins)',
+      'Overtime Minutes',
     ];
 
-    const rows = filteredRecords.map((r) => [
-      r.staffCode,
-      `"${r.staffName.replace(/"/g, '""')}"`,
-      `"${r.roleTitle.replace(/"/g, '""')}"`,
-      `"${r.branchName.replace(/"/g, '""')}"`,
-      r.directServicesCount,
-      r.packageComponentsCount,
-      r.totalServiceUnits,
-      r.uniqueClientsCount,
-      r.attributedGrossSales.toFixed(2),
-      r.discountAllocation.toFixed(2),
-      r.attributedNetSales.toFixed(2),
-      r.estimatedCommission.toFixed(2),
-      r.finalizedCommission.toFixed(2),
-      r.allocatedTips.toFixed(2),
-      r.paidTips.toFixed(2),
-      r.outstandingTips.toFixed(2),
-      r.workedHours.toFixed(1),
-      r.presentDays,
-      r.latePunchesCount,
-      r.approvedOvertimeMinutes,
-    ]);
+    const rows = [
+      ...filteredRecords.map((r) => [
+        r.staffCode,
+        r.staffName,
+        r.roleTitle,
+        r.branchName,
+        r.totalServiceUnits,
+        r.directServicesCount,
+        r.packageComponentsCount,
+        r.uniqueClientsCount,
+        r.attributedGrossSales.toFixed(2),
+        r.discountAllocation.toFixed(2),
+        r.attributedNetSales.toFixed(2),
+        r.estimatedCommission.toFixed(2),
+        r.finalizedCommission.toFixed(2),
+        r.allocatedTips.toFixed(2),
+        r.workedHours,
+        r.approvedOvertimeMinutes,
+      ]),
+      [
+        'TOTALS',
+        '',
+        '',
+        '',
+        aggregatedMetrics.totalUnits,
+        aggregatedMetrics.totalDirectServices,
+        aggregatedMetrics.totalPackageComponents,
+        aggregatedMetrics.totalUniqueClients,
+        aggregatedMetrics.totalGrossSales.toFixed(2),
+        aggregatedMetrics.totalDiscount.toFixed(2),
+        aggregatedMetrics.totalNetSales.toFixed(2),
+        aggregatedMetrics.totalEstimatedCommission.toFixed(2),
+        aggregatedMetrics.totalFinalizedCommission.toFixed(2),
+        aggregatedMetrics.totalAllocatedTips.toFixed(2),
+        aggregatedMetrics.totalWorkedHours,
+        aggregatedMetrics.totalOvertimeMinutes,
+      ],
+    ];
 
-    const csvContent =
-      'data:text/csv;charset=utf-8,' +
-      [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute(
-      'download',
-      `Staff_Performance_Report_${startDate}_to_${endDate}.csv`
-    );
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadReportCsv(`Staff_Performance_${startDate}_${endDate}.csv`, meta, [
+      { title: 'Performance Summary', headers, rows },
+    ]);
   };
 
-  // CSV Export for Drilldown
-  const handleExportDrilldownCSV = () => {
-    if (!selectedStaffRecord) return;
-    const headers = [
-      'Date',
-      'Time',
-      'Invoice #',
-      'Client Name',
-      'Item Type',
-      'Service / Component Name',
-      'Catalogue Price (PKR)',
-      'Discount Allocated (PKR)',
-      'Attributed Net Sales (PKR)',
-      'Commission Rate (%)',
-      'Commission Earned (PKR)',
+  const handleExportExcel = () => {
+    if (!filteredRecords.length) return;
+    const meta: [string, string][] = [
+      ['Report', 'Staff Productivity & Performance Reports'],
+      ['Campus', branchNameDisplay],
+      ['Date Range', `${startDate} to ${endDate}`],
+      ['Generated At', new Date().toLocaleString()],
     ];
 
-    const rows = (selectedStaffRecord.detailedServices || []).map((s) => [
-      s.date,
-      s.time || '',
-      s.invoiceNumber,
-      `"${(s.clientName || 'Walk-in Client').replace(/"/g, '""')}"`,
-      s.itemType,
-      `"${s.serviceName.replace(/"/g, '""')}"`,
-      s.cataloguePrice.toFixed(2),
-      s.discountAllocated.toFixed(2),
-      s.netSales.toFixed(2),
-      s.commissionRatePercent.toFixed(1),
-      s.commissionEarned.toFixed(2),
+    const headers = [
+      'Staff Code',
+      'Staff Name',
+      'Role',
+      'Branch',
+      'Total Units',
+      'Direct Services',
+      'Package Components',
+      'Unique Clients',
+      'Gross Sales (PKR)',
+      'Discount (PKR)',
+      'Attributed Net Sales (PKR)',
+      'Estimated Commission (PKR)',
+      'Finalized Commission (PKR)',
+      'Allocated Tips (PKR)',
+      'Worked Hours',
+      'Overtime Minutes',
+    ];
+
+    const rows = [
+      ...filteredRecords.map((r) => [
+        r.staffCode,
+        r.staffName,
+        r.roleTitle,
+        r.branchName,
+        r.totalServiceUnits,
+        r.directServicesCount,
+        r.packageComponentsCount,
+        r.uniqueClientsCount,
+        r.attributedGrossSales.toFixed(2),
+        r.discountAllocation.toFixed(2),
+        r.attributedNetSales.toFixed(2),
+        r.estimatedCommission.toFixed(2),
+        r.finalizedCommission.toFixed(2),
+        r.allocatedTips.toFixed(2),
+        r.workedHours,
+        r.approvedOvertimeMinutes,
+      ]),
+      [
+        'TOTALS',
+        '',
+        '',
+        '',
+        aggregatedMetrics.totalUnits,
+        aggregatedMetrics.totalDirectServices,
+        aggregatedMetrics.totalPackageComponents,
+        aggregatedMetrics.totalUniqueClients,
+        aggregatedMetrics.totalGrossSales.toFixed(2),
+        aggregatedMetrics.totalDiscount.toFixed(2),
+        aggregatedMetrics.totalNetSales.toFixed(2),
+        aggregatedMetrics.totalEstimatedCommission.toFixed(2),
+        aggregatedMetrics.totalFinalizedCommission.toFixed(2),
+        aggregatedMetrics.totalAllocatedTips.toFixed(2),
+        aggregatedMetrics.totalWorkedHours,
+        aggregatedMetrics.totalOvertimeMinutes,
+      ],
+    ];
+
+    downloadReportExcel(`Staff_Performance_${startDate}_${endDate}.csv`, meta, [
+      { title: 'Performance Summary', headers, rows },
+    ]);
+  };
+
+  const handlePrint = () => {
+    if (!filteredRecords.length) return;
+    const meta: [string, string][] = [
+      ['Campus', branchNameDisplay],
+      ['Date Range', `${startDate} to ${endDate}`],
+      ['Generated By', user.name],
+    ];
+
+    const headers = [
+      '#',
+      'Employee',
+      'Campus',
+      'Units',
+      'Clients',
+      'Attributed Net Sales',
+      'Commission',
+      'Tips',
+      'Worked Hours',
+    ];
+
+    const rows = filteredRecords.map((r, i) => [
+      i + 1,
+      `${r.staffName} (${r.staffCode})`,
+      r.branchName,
+      `${r.totalServiceUnits} (${r.directServicesCount} dir / ${r.packageComponentsCount} pkg)`,
+      r.uniqueClientsCount,
+      formatCurrency(r.attributedNetSales),
+      formatCurrency(r.estimatedCommission),
+      formatCurrency(r.allocatedTips),
+      `${r.workedHours}h (OT ${r.approvedOvertimeMinutes}m)`,
     ]);
 
-    const csvContent =
-      'data:text/csv;charset=utf-8,' +
-      [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
+    const footers = [
+      'TOTALS',
+      '',
+      '',
+      `${aggregatedMetrics.totalUnits} Units`,
+      aggregatedMetrics.totalUniqueClients,
+      formatCurrency(aggregatedMetrics.totalNetSales),
+      formatCurrency(aggregatedMetrics.totalEstimatedCommission),
+      formatCurrency(aggregatedMetrics.totalAllocatedTips),
+      `${aggregatedMetrics.totalWorkedHours}h`,
+    ];
+
+    printReportWindow({
+      title: 'Staff Productivity & Performance Report',
+      subtitle: `Attributed Sales Velocity & Commission Analysis`,
+      meta,
+      headers,
+      rows,
+      totals: footers,
+    });
+  };
+
+  const handleExportDrilldownCSV = () => {
+    if (!selectedStaffRecord || !filteredDetailedServices.length) return;
+    let csv = `STAFF SERVICE DETAIL: ${selectedStaffRecord.staffName} (${selectedStaffRecord.staffCode})\n`;
+    csv += `Scope: ${selectedStaffRecord.branchName}\n`;
+    csv += `Period: ${startDate} to ${endDate}\n`;
+    csv += `Generated On: ${new Date().toLocaleString()}\n\n`;
+
+    csv += 'Date,Time,Invoice #,Type,Item Name,Client Name,Gross Price,Discount,Attributed Net,Commission Est,Tip Alloc\n';
+    filteredDetailedServices.forEach((item) => {
+      csv += `"${item.date}","${item.time || ''}","${item.invoiceNumber}","${item.itemType}","${item.serviceName}","${item.clientName || '-'}","${item.cataloguePrice}","${item.discountAllocated}","${item.netSales}","${item.commissionEarned}","0"\n`;
+    });
+
+    const encodedUri = encodeURI('data:text/csv;charset=utf-8,' + csv);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute(
-      'download',
-      `Staff_${selectedStaffRecord.staffCode}_Services_${startDate}_to_${endDate}.csv`
-    );
+    link.setAttribute('download', `Staff_Detail_${selectedStaffRecord.staffCode}_${startDate}_${endDate}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6 font-sans">
-      {/* Top Banner */}
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-blue-50 text-[#2254E1] rounded-xl">
-              <Award className="w-6 h-6" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Staff Performance Report</h1>
-                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  Read-Only Analytics
-                </span>
-              </div>
-              <p className="text-sm text-slate-500">
-                Staff service attribution, completed units, discount allocations, estimated commission, tips, and punctuality audit.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setShowPrintModal(true)}
-            className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-xs"
-          >
-            <Printer className="w-4 h-4 text-slate-500" />
-            Print Report
-          </button>
-          <button
-            onClick={handleExportCSV}
-            className="flex items-center gap-1.5 px-3 py-2 bg-[#2254E1] text-white rounded-xl text-xs font-semibold hover:bg-blue-700 transition-colors shadow-xs"
-          >
-            <Download className="w-4 h-4" />
-            Export CSV
-          </button>
-        </div>
-      </div>
-
-      {/* Filters Bar Card */}
-      <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-          <div className="flex items-center gap-2 text-xs font-bold text-slate-800 uppercase tracking-wider">
-            <Filter className="w-4 h-4 text-slate-500" />
-            Filters & Date Window
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => handleApplyPreset('TODAY')}
-              className="px-2.5 py-1 text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
-            >
-              Today
-            </button>
-            <button
-              onClick={() => handleApplyPreset('THIS_MONTH')}
-              className="px-2.5 py-1 text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
-            >
-              This Month
-            </button>
-            <button
-              onClick={() => handleApplyPreset('LAST_MONTH')}
-              className="px-2.5 py-1 text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
-            >
-              Last Month
-            </button>
-            <button
-              onClick={() => handleApplyPreset('LAST_30_DAYS')}
-              className="px-2.5 py-1 text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
-            >
-              Last 30 Days
-            </button>
-            <button
-              onClick={handleResetFilters}
-              className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-500 hover:text-slate-800 transition-colors ml-1"
-            >
-              <RotateCcw className="w-3 h-3" />
-              Reset
-            </button>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-          {/* Branch Filter */}
+    <div className="min-h-screen bg-[#F4F6F9] px-4 py-5 md:px-8 md:py-6 text-slate-800 font-sans">
+      {/* Top Header & Filters Card */}
+      <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 p-5 md:p-6 mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
           <div>
-            <label className="text-[11px] font-semibold text-slate-500 uppercase block mb-1">
-              Branch Scope
-            </label>
-            <select
-              disabled={!isSuperAdmin}
-              value={selectedBranchId}
-              onChange={(e) => setSelectedBranchId(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 outline-none focus:bg-white disabled:opacity-60"
-            >
-              {isSuperAdmin && <option value="ALL">All Branches (Consolidated)</option>}
-              {branches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Date Range Start */}
-          <div>
-            <label className="text-[11px] font-semibold text-slate-500 uppercase block mb-1">
-              From Date
-            </label>
-            <div className="relative">
-              <Calendar className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 outline-none focus:bg-white"
-              />
-            </div>
-          </div>
-
-          {/* Date Range End */}
-          <div>
-            <label className="text-[11px] font-semibold text-slate-500 uppercase block mb-1">
-              To Date
-            </label>
-            <div className="relative">
-              <Calendar className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 outline-none focus:bg-white"
-              />
-            </div>
-          </div>
-
-          {/* Staff Filter */}
-          <div>
-            <label className="text-[11px] font-semibold text-slate-500 uppercase block mb-1">
-              Employee Filter
-            </label>
-            <select
-              value={selectedStaffId}
-              onChange={(e) => setSelectedStaffId(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 outline-none focus:bg-white"
-            >
-              <option value="ALL">All Staff Members</option>
-              {allStaff.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} ({s.employeeCode || s.id.slice(-4)})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Service / Package Filter */}
-          <div>
-            <label className="text-[11px] font-semibold text-slate-500 uppercase block mb-1">
-              Catalogue Filter
-            </label>
-            <select
-              value={
-                selectedServiceId !== 'ALL'
-                  ? `svc:${selectedServiceId}`
-                  : selectedPackageId !== 'ALL'
-                  ? `pkg:${selectedPackageId}`
-                  : 'ALL'
-              }
-              onChange={(e) => {
-                const val = e.target.value;
-                if (val === 'ALL') {
-                  setSelectedServiceId('ALL');
-                  setSelectedPackageId('ALL');
-                } else if (val.startsWith('svc:')) {
-                  setSelectedServiceId(val.replace('svc:', ''));
-                  setSelectedPackageId('ALL');
-                } else if (val.startsWith('pkg:')) {
-                  setSelectedPackageId(val.replace('pkg:', ''));
-                  setSelectedServiceId('ALL');
-                }
-              }}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 outline-none focus:bg-white"
-            >
-              <option value="ALL">All Services & Packages</option>
-              <optgroup label="Direct Services">
-                {servicesList.map((svc) => (
-                  <option key={svc.id} value={`svc:${svc.id}`}>
-                    {svc.name}
-                  </option>
-                ))}
-              </optgroup>
-              <optgroup label="Bundled Packages">
-                {packagesList.map((pkg) => (
-                  <option key={pkg.id} value={`pkg:${pkg.id}`}>
-                    {pkg.name}
-                  </option>
-                ))}
-              </optgroup>
-            </select>
-          </div>
-        </div>
-
-        {/* Search Bar */}
-        <div className="pt-2">
-          <div className="relative">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-            <input
-              type="text"
-              placeholder="Search by staff employee code, name or role title..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 outline-none focus:bg-white placeholder:text-slate-400"
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* KPI Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Card 1: Attributed Net Sales */}
-        <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Attributed Net Sales
-            </span>
-            <div className="p-2.5 bg-blue-50 text-[#2254E1] rounded-xl">
-              <DollarSign className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3">
-            <div className="text-2xl font-bold text-slate-900 tracking-tight">
-              {formatCurrency(aggregatedMetrics.totalNetSales)}
-            </div>
-            <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-1">
-              <span>Gross: {formatCurrency(aggregatedMetrics.totalGrossSales)}</span>
-              <span>·</span>
-              <span className="text-amber-600">Disc: {formatCurrency(aggregatedMetrics.totalDiscount)}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Card 2: Completed Service Units */}
-        <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Service Units Delivered
-            </span>
-            <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl">
-              <Briefcase className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3">
-            <div className="text-2xl font-bold text-slate-900 tracking-tight">
-              {aggregatedMetrics.totalUnits.toLocaleString()} units
-            </div>
-            <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-1">
-              <span>Direct: {aggregatedMetrics.totalDirectServices}</span>
-              <span>·</span>
-              <span className="text-indigo-600">Package: {aggregatedMetrics.totalPackageComponents}</span>
-              <span>·</span>
-              <span>{aggregatedMetrics.totalUniqueClients} clients</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Card 3: Commission Earnings */}
-        <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Staff Commission
-            </span>
-            <div className="p-2.5 bg-purple-50 text-purple-600 rounded-xl">
-              <Percent className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3">
-            <div className="text-2xl font-bold text-purple-700 tracking-tight">
-              {formatCurrency(aggregatedMetrics.totalEstimatedCommission)}
-            </div>
-            <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-1">
-              <span>Estimated: {formatCurrency(aggregatedMetrics.totalEstimatedCommission)}</span>
-              <span>·</span>
-              <span className="text-emerald-600">Finalized: {formatCurrency(aggregatedMetrics.totalFinalizedCommission)}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Card 4: Allocated Gratuity & Punctuality */}
-        <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Gratuity & Overtime
-            </span>
-            <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl">
-              <Sparkles className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3">
-            <div className="text-2xl font-bold text-amber-700 tracking-tight">
-              {formatCurrency(aggregatedMetrics.totalAllocatedTips)}
-            </div>
-            <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-1">
-              <span>Paid: {formatCurrency(aggregatedMetrics.totalPaidTips)}</span>
-              <span>·</span>
-              <span className="text-rose-600">Due: {formatCurrency(aggregatedMetrics.totalOutstandingTips)}</span>
-              <span>·</span>
-              <span>OT: {aggregatedMetrics.totalOvertimeMinutes}m</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Staff Performance Table */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-        <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-          <div>
-            <h2 className="text-base font-bold text-slate-900">
-              Staff Member Performance Ledger
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Ranked by attributed net service sales. Click on any employee to inspect detailed line items.
+            <h1 className="text-xl font-bold text-[#0B2545] tracking-tight">
+              Staff Productivity & Performance Reports
+            </h1>
+            <p className="text-xs text-slate-500 mt-1">
+              Attributed net sales, direct & package service volume, commissions, gratuities, and operational hours.
             </p>
           </div>
-          <div className="text-xs font-semibold text-slate-500">
-            Showing {filteredRecords.length} staff members
-          </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="bg-slate-50/75 border-b border-slate-100 text-slate-600 font-semibold uppercase text-[11px] tracking-wider">
-                <th className="py-3 px-4">#</th>
-                <th className="py-3 px-4">Employee</th>
-                <th className="py-3 px-4">Branch</th>
-                <th className="py-3 px-4 text-center">Units (Dir / Pkg)</th>
-                <th className="py-3 px-4 text-center">Clients</th>
-                <th className="py-3 px-4 text-right">Attributed Net Sales</th>
-                <th className="py-3 px-4 text-right">Commission (Est / Fin)</th>
-                <th className="py-3 px-4 text-right">Tips (Alloc / Due)</th>
-                <th className="py-3 px-4 text-center">Attendance & OT</th>
-                <th className="py-3 px-4 text-center">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 text-slate-700">
-              {loading ? (
-                <tr>
-                  <td colSpan={10} className="py-12 text-center text-slate-400">
-                    <div className="flex flex-col items-center justify-center gap-2">
-                      <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-                      <p className="text-xs">Computing staff performance metrics...</p>
-                    </div>
-                  </td>
-                </tr>
-              ) : filteredRecords.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="py-12 text-center text-slate-400">
-                    <div className="flex flex-col items-center justify-center gap-2">
-                      <AlertCircle className="w-8 h-8 text-slate-300" />
-                      <p className="text-xs font-medium">No service performance records found for the selected criteria.</p>
-                      <button
-                        onClick={handleResetFilters}
-                        className="text-xs text-[#2254E1] font-semibold hover:underline mt-1"
-                      >
-                        Reset filters
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                filteredRecords.map((record, idx) => (
-                  <tr
-                    key={record.staffId}
-                    className="hover:bg-slate-50/70 transition-colors cursor-pointer group"
-                    onClick={() => setSelectedStaffRecord(record)}
-                  >
-                    {/* Index Rank */}
-                    <td className="py-3.5 px-4 font-semibold text-slate-400 font-mono text-[11px]">
-                      {idx + 1}
-                    </td>
+        <form onSubmit={handleApplyFilters}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 items-end">
+            {/* Campus / Branch */}
+            <div>
+              <label className={labelClass}>Campus</label>
+              <select
+                className={selectClass}
+                value={selectedBranchId}
+                onChange={(e) => {
+                  setSelectedBranchId(e.target.value);
+                  setSelectedStaffId('ALL');
+                }}
+              >
+                {isSuperAdmin && <option value="ALL">All Campuses</option>}
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-                    {/* Employee Profile */}
-                    <td className="py-3.5 px-4">
-                      <div>
-                        <div className="font-bold text-slate-900 group-hover:text-[#2254E1] transition-colors flex items-center gap-1.5">
+            {/* Staff */}
+            <div>
+              <label className={labelClass}>Staff Member</label>
+              <select
+                className={selectClass}
+                value={selectedStaffId}
+                onChange={(e) => setSelectedStaffId(e.target.value)}
+              >
+                <option value="ALL">All Staff</option>
+                {allStaff.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.employeeCode || s.id.slice(-4)})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Catalogue Filter */}
+            <div>
+              <label className={labelClass}>Catalogue Item</label>
+              <select
+                className={selectClass}
+                value={
+                  selectedServiceId !== 'ALL'
+                    ? `svc:${selectedServiceId}`
+                    : selectedPackageId !== 'ALL'
+                    ? `pkg:${selectedPackageId}`
+                    : 'ALL'
+                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === 'ALL') {
+                    setSelectedServiceId('ALL');
+                    setSelectedPackageId('ALL');
+                  } else if (val.startsWith('svc:')) {
+                    setSelectedServiceId(val.replace('svc:', ''));
+                    setSelectedPackageId('ALL');
+                  } else if (val.startsWith('pkg:')) {
+                    setSelectedPackageId(val.replace('pkg:', ''));
+                    setSelectedServiceId('ALL');
+                  }
+                }}
+              >
+                <option value="ALL">All Services & Packages</option>
+                <optgroup label="Direct Services">
+                  {servicesList.map((svc) => (
+                    <option key={svc.id} value={`svc:${svc.id}`}>
+                      {svc.name}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="Bundled Packages">
+                  {packagesList.map((pkg) => (
+                    <option key={pkg.id} value={`pkg:${pkg.id}`}>
+                      {pkg.name}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+            </div>
+
+            {/* Date Preset */}
+            <div>
+              <label className={labelClass}>Date Preset</label>
+              <select
+                className={selectClass}
+                value={preset}
+                onChange={(e) => handlePresetChange(e.target.value as DatePreset)}
+              >
+                {DATE_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* From Date */}
+            <div>
+              <label className={labelClass}>From Date</label>
+              <input
+                type="date"
+                className={inputClass}
+                value={startDate}
+                max={endDate || undefined}
+                onChange={(e) => {
+                  setStartDate(e.target.value);
+                  setPreset('CUSTOM');
+                }}
+              />
+            </div>
+
+            {/* To Date */}
+            <div>
+              <label className={labelClass}>To Date</label>
+              <input
+                type="date"
+                className={inputClass}
+                value={endDate}
+                min={startDate || undefined}
+                onChange={(e) => {
+                  setEndDate(e.target.value);
+                  setPreset('CUSTOM');
+                }}
+              />
+            </div>
+
+            {/* Search Query */}
+            <div>
+              <label className={labelClass}>Search</label>
+              <input
+                type="text"
+                placeholder="Code, name, role..."
+                className={inputClass}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
+
+            {/* Filter Button */}
+            <div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full h-[35px] bg-[#0047AB] hover:bg-[#003785] active:bg-[#002d6b] text-white text-xs font-semibold rounded-md shadow-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Loading...</span>
+                  </>
+                ) : (
+                  <>
+                    <Filter className="w-3.5 h-3.5 fill-current" />
+                    <span>Filter</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      {/* Main Content Area */}
+      {!hasFiltered ? (
+        /* Empty State before Filter clicked */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 md:p-24 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <div className="text-slate-400 mb-3">
+            <Filter className="w-14 h-14 stroke-[1.25] text-slate-400" />
+          </div>
+          <p className="text-slate-400 text-sm font-medium">
+            Please apply filters to view reports
+          </p>
+        </div>
+      ) : loading ? (
+        /* Loading Skeleton */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <Loader2 className="w-10 h-10 animate-spin text-[#0047AB] mb-3" />
+          <p className="text-slate-600 text-sm font-medium">
+            Calculating Staff Performance Metrics...
+          </p>
+        </div>
+      ) : errorMessage ? (
+        /* Error Message */
+        <div className="bg-white rounded-xl border border-rose-200 p-8 shadow-xs text-center">
+          <p className="text-rose-600 text-sm font-medium mb-3">{errorMessage}</p>
+          <button
+            onClick={() => handleApplyFilters()}
+            className="px-4 py-1.5 bg-[#0047AB] text-white text-xs font-semibold rounded-md shadow-xs hover:bg-[#003785]"
+          >
+            Retry
+          </button>
+        </div>
+      ) : (
+        /* Filtered Data Layout */
+        <div className="mb-8">
+          {/* Royal Blue Banner Header */}
+          <div className="bg-[#0047AB] text-white px-5 py-3 rounded-t-xl flex flex-wrap items-center justify-between gap-3 shadow-sm">
+            <div className="flex items-center gap-2.5">
+              <Award className="w-5 h-5 text-white/90" />
+              <span className="font-semibold text-sm tracking-wide">
+                Staff Productivity & Performance Reports ({filteredRecords.length} staff members)
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="bg-[#009688] hover:bg-[#00897B] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                CSV
+              </button>
+              <button
+                type="button"
+                onClick={handleExportCSV}
+                className="bg-[#DC2626] hover:bg-[#B91C1C] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                PDF
+              </button>
+              <button
+                type="button"
+                onClick={handlePrint}
+                className="bg-[#4B5563] hover:bg-[#374151] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                Print
+              </button>
+            </div>
+          </div>
+
+          {/* Table Container with Horizontal Scroll */}
+          <div className="bg-white overflow-x-auto rounded-b-xl border border-t-0 border-slate-200/90 shadow-sm">
+            <table className="w-full min-w-[1300px] text-left border-collapse font-['Inter',sans-serif] text-[13px] antialiased">
+              <thead>
+                <tr className="bg-[#EAF2FB] border-b border-blue-100 text-[#475569] font-medium text-[13px]">
+                  <th className="py-3.5 px-3 text-center w-8">#</th>
+                  <th className="py-3.5 px-4">Employee</th>
+                  <th className="py-3.5 px-4">Campus</th>
+                  <th className="py-3.5 px-4 text-center">Units (Dir / Pkg)</th>
+                  <th className="py-3.5 px-4 text-center">Clients</th>
+                  <th className="py-3.5 px-4 text-right">Attributed Net Sales</th>
+                  <th className="py-3.5 px-4 text-right">Commission (Est / Fin)</th>
+                  <th className="py-3.5 px-4 text-right">Tips (Alloc / Due)</th>
+                  <th className="py-3.5 px-4 text-center">Worked Hours</th>
+                  <th className="py-3.5 px-4 text-center">Action</th>
+                </tr>
+              </thead>
+              <tbody className="text-[#334155]">
+                {filteredRecords.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="py-12 text-center text-slate-400 font-medium">
+                      No staff performance records found for the selected criteria.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredRecords.map((record, idx) => (
+                    <tr
+                      key={record.staffId}
+                      className="hover:bg-blue-50/20 transition-colors border-b border-dashed border-slate-200 cursor-pointer"
+                      onClick={() => setSelectedStaffRecord(record)}
+                    >
+                      <td className="py-3.5 px-3 text-center font-normal text-slate-400">
+                        {idx + 1}
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <div className="font-semibold text-slate-800 flex items-center gap-1.5">
                           {record.staffName}
-                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-500 font-normal">
                             {record.staffCode}
                           </span>
                         </div>
-                        <div className="text-[11px] text-slate-400 mt-0.5">{record.roleTitle}</div>
-                      </div>
-                    </td>
-
-                    {/* Branch */}
-                    <td className="py-3.5 px-4">
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700">
+                        <div className="text-[11px] text-slate-400">{record.roleTitle}</div>
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-600">
                         {record.branchName}
-                      </span>
+                      </td>
+                      <td className="py-3.5 px-4 text-center">
+                        <div className="font-semibold text-slate-800">{record.totalServiceUnits}</div>
+                        <div className="text-[11px] text-slate-400">
+                          {record.directServicesCount} dir · {record.packageComponentsCount} pkg
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4 text-center font-medium text-slate-800">
+                        {record.uniqueClientsCount}
+                      </td>
+                      <td className="py-3.5 px-4 text-right">
+                        <div className="font-semibold text-slate-800 tabular-nums">{formatCurrency(record.attributedNetSales)}</div>
+                        <div className="text-[11px] text-slate-400 font-normal tabular-nums">
+                          Gross: {formatCurrency(record.attributedGrossSales)}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4 text-right">
+                        <div className="font-semibold text-[#10B981] tabular-nums">{formatCurrency(record.estimatedCommission)}</div>
+                        <div className="text-[11px] text-slate-500 tabular-nums">
+                          Fin: {formatCurrency(record.finalizedCommission)}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4 text-right">
+                        <div className="font-semibold text-slate-800 tabular-nums">{formatCurrency(record.allocatedTips)}</div>
+                        <div className="text-[11px] text-slate-400 tabular-nums">
+                          Due: {formatCurrency(record.outstandingTips)}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4 text-center">
+                        <div className="font-medium text-slate-800">
+                          {record.workedHours}h
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          OT: {record.approvedOvertimeMinutes}m
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4 text-center">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedStaffRecord(record);
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-blue-50 text-[#0047AB] hover:bg-blue-100 font-semibold text-xs transition-colors cursor-pointer"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          Breakdown
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+              {filteredRecords.length > 0 && (
+                <tfoot className="bg-[#F8FAFC] border-t-2 border-slate-200 font-['Inter',sans-serif] text-[13px] text-[#334155]">
+                  <tr>
+                    <td colSpan={3} className="py-3.5 px-4 font-bold text-slate-800 text-right uppercase tracking-wider">
+                      Totals:
                     </td>
-
-                    {/* Service Units */}
-                    <td className="py-3.5 px-4 text-center">
-                      <div className="font-bold text-slate-900">{record.totalServiceUnits}</div>
-                      <div className="text-[10px] text-slate-400">
-                        {record.directServicesCount} dir · {record.packageComponentsCount} pkg
+                    <td className="py-3.5 px-4 text-center font-bold text-slate-800">
+                      {aggregatedMetrics.totalUnits}
+                      <div className="text-[11px] font-normal text-slate-400">
+                        ({aggregatedMetrics.totalDirectServices} dir / {aggregatedMetrics.totalPackageComponents} pkg)
                       </div>
                     </td>
-
-                    {/* Clients Served */}
-                    <td className="py-3.5 px-4 text-center">
-                      <span className="font-semibold text-slate-800">{record.uniqueClientsCount}</span>
+                    <td className="py-3.5 px-4 text-center font-bold text-slate-800">{aggregatedMetrics.totalUniqueClients}</td>
+                    <td className="py-3.5 px-4 text-right tabular-nums font-bold text-slate-800">
+                      {formatCurrency(aggregatedMetrics.totalNetSales)}
                     </td>
-
-                    {/* Attributed Net Sales */}
-                    <td className="py-3.5 px-4 text-right">
-                      <div className="font-bold text-slate-900">{formatCurrency(record.attributedNetSales)}</div>
-                      <div className="text-[10px] text-slate-400">
-                        Gross: {formatCurrency(record.attributedGrossSales)}
-                      </div>
+                    <td className="py-3.5 px-4 text-right tabular-nums font-bold text-[#10B981]">
+                      {formatCurrency(aggregatedMetrics.totalEstimatedCommission)}
                     </td>
-
-                    {/* Commission */}
-                    <td className="py-3.5 px-4 text-right">
-                      <div className="font-bold text-purple-700">{formatCurrency(record.estimatedCommission)}</div>
-                      <div className="text-[10px] text-emerald-600 font-medium">
-                        Fin: {formatCurrency(record.finalizedCommission)}
-                      </div>
+                    <td className="py-3.5 px-4 text-right tabular-nums font-bold text-slate-800">
+                      {formatCurrency(aggregatedMetrics.totalAllocatedTips)}
                     </td>
-
-                    {/* Tips */}
-                    <td className="py-3.5 px-4 text-right">
-                      <div className="font-bold text-amber-700">{formatCurrency(record.allocatedTips)}</div>
-                      <div className="text-[10px] text-slate-400">
-                        Due: {formatCurrency(record.outstandingTips)}
-                      </div>
+                    <td className="py-3.5 px-4 text-center text-slate-600">
+                      OT: {aggregatedMetrics.totalOvertimeMinutes}m
                     </td>
-
-                    {/* Attendance & OT */}
-                    <td className="py-3.5 px-4 text-center">
-                      <div className="font-medium text-slate-800">
-                        {record.presentDays} days ({record.workedHours}h)
-                      </div>
-                      <div className="text-[10px] text-slate-400">
-                        {record.latePunchesCount > 0 ? (
-                          <span className="text-amber-600 font-medium">{record.latePunchesCount} late · </span>
-                        ) : null}
-                        OT: {record.approvedOvertimeMinutes}m
-                      </div>
-                    </td>
-
-                    {/* Action */}
-                    <td className="py-3.5 px-4 text-center">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedStaffRecord(record);
-                        }}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-50 text-[#2254E1] hover:bg-blue-100 font-semibold text-xs transition-colors"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                        Drilldown
-                      </button>
-                    </td>
+                    <td className="py-3.5 px-4"></td>
                   </tr>
-                ))
+                </tfoot>
               )}
-            </tbody>
-            {/* Table Footer Totals */}
-            {filteredRecords.length > 0 && (
-              <tfoot>
-                <tr className="bg-slate-50 border-t-2 border-slate-200 font-bold text-slate-900 text-xs">
-                  <td colSpan={3} className="py-3 px-4 uppercase tracking-wider text-slate-600 text-right">
-                    Total Consolidated:
-                  </td>
-                  <td className="py-3 px-4 text-center">
-                    {aggregatedMetrics.totalUnits}
-                    <div className="text-[10px] font-normal text-slate-500">
-                      ({aggregatedMetrics.totalDirectServices} dir / {aggregatedMetrics.totalPackageComponents} pkg)
-                    </div>
-                  </td>
-                  <td className="py-3 px-4 text-center">{aggregatedMetrics.totalUniqueClients}</td>
-                  <td className="py-3 px-4 text-right">
-                    {formatCurrency(aggregatedMetrics.totalNetSales)}
-                  </td>
-                  <td className="py-3 px-4 text-right text-purple-700">
-                    {formatCurrency(aggregatedMetrics.totalEstimatedCommission)}
-                  </td>
-                  <td className="py-3 px-4 text-right text-amber-700">
-                    {formatCurrency(aggregatedMetrics.totalAllocatedTips)}
-                  </td>
-                  <td className="py-3 px-4 text-center text-slate-600">
-                    OT: {aggregatedMetrics.totalOvertimeMinutes}m
-                  </td>
-                  <td className="py-3 px-4"></td>
-                </tr>
-              </tfoot>
-            )}
-          </table>
+            </table>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Employee Service Drilldown Modal */}
       {selectedStaffRecord && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-5xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
             {/* Modal Header */}
-            <div className="p-6 border-b border-slate-100 flex items-start justify-between">
+            <div className="p-5 border-b border-slate-100 flex items-start justify-between">
               <div className="flex items-center gap-3">
-                <div className="p-3 bg-blue-50 text-[#2254E1] rounded-xl">
-                  <Award className="w-6 h-6" />
+                <div className="p-2.5 bg-blue-50 text-[#0047AB] rounded-xl">
+                  <Award className="w-5 h-5" />
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <h3 className="text-xl font-bold text-slate-900 tracking-tight">
+                    <h3 className="text-lg font-bold text-slate-900 tracking-tight">
                       {selectedStaffRecord.staffName}
                     </h3>
                     <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-700">
                       {selectedStaffRecord.staffCode}
                     </span>
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-[#2254E1] font-medium">
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-[#0047AB] font-medium">
                       {selectedStaffRecord.branchName}
                     </span>
                   </div>
@@ -891,15 +878,17 @@ export const StaffPerformancePage: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 <button
+                  type="button"
                   onClick={handleExportDrilldownCSV}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition-colors"
+                  className="flex items-center gap-1 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
                 >
                   <Download className="w-3.5 h-3.5" />
                   Export Items CSV
                 </button>
                 <button
+                  type="button"
                   onClick={() => setSelectedStaffRecord(null)}
-                  className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+                  className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -907,7 +896,7 @@ export const StaffPerformancePage: React.FC = () => {
             </div>
 
             {/* Modal Sub-Banner Summary Metrics */}
-            <div className="bg-slate-50/70 p-4 border-b border-slate-100 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <div className="bg-slate-50/70 p-3.5 border-b border-slate-100 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
               <div>
                 <span className="text-[11px] text-slate-500 block uppercase font-medium">Attributed Net Sales</span>
                 <span className="text-base font-bold text-slate-900">
@@ -928,7 +917,7 @@ export const StaffPerformancePage: React.FC = () => {
               </div>
               <div>
                 <span className="text-[11px] text-slate-500 block uppercase font-medium">Estimated Commission</span>
-                <span className="text-base font-bold text-purple-700">
+                <span className="text-base font-bold text-[#0047AB]">
                   {formatCurrency(selectedStaffRecord.estimatedCommission)}
                 </span>
                 <span className="text-[10px] text-slate-400 block">
@@ -937,7 +926,7 @@ export const StaffPerformancePage: React.FC = () => {
               </div>
               <div>
                 <span className="text-[11px] text-slate-500 block uppercase font-medium">Gratuity Entitlement</span>
-                <span className="text-base font-bold text-amber-700">
+                <span className="text-base font-bold text-[#0B2545]">
                   {formatCurrency(selectedStaffRecord.allocatedTips)}
                 </span>
                 <span className="text-[10px] text-slate-400 block">
@@ -947,33 +936,36 @@ export const StaffPerformancePage: React.FC = () => {
             </div>
 
             {/* Drilldown Filters */}
-            <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="p-3.5 border-b border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <button
+                  type="button"
                   onClick={() => setDrilldownFilterType('ALL')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  className={`px-3 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
                     drilldownFilterType === 'ALL'
-                      ? 'bg-slate-900 text-white'
+                      ? 'bg-[#0B2545] text-white'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
                   All Items ({selectedStaffRecord.detailedServices.length})
                 </button>
                 <button
+                  type="button"
                   onClick={() => setDrilldownFilterType('SERVICE')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  className={`px-3 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
                     drilldownFilterType === 'SERVICE'
-                      ? 'bg-[#2254E1] text-white'
+                      ? 'bg-[#0047AB] text-white'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
                   Direct Services ({selectedStaffRecord.directServicesCount})
                 </button>
                 <button
+                  type="button"
                   onClick={() => setDrilldownFilterType('PACKAGE_COMPONENT')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  className={`px-3 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
                     drilldownFilterType === 'PACKAGE_COMPONENT'
-                      ? 'bg-indigo-600 text-white'
+                      ? 'bg-[#0047AB] text-white'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
@@ -988,7 +980,7 @@ export const StaffPerformancePage: React.FC = () => {
                   placeholder="Search invoice or service name..."
                   value={drilldownSearch}
                   onChange={(e) => setDrilldownSearch(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 outline-none focus:bg-white placeholder:text-slate-400"
+                  className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 outline-none focus:bg-white placeholder:text-slate-400"
                 />
               </div>
             </div>
@@ -997,218 +989,63 @@ export const StaffPerformancePage: React.FC = () => {
             <div className="p-4 flex-1 overflow-y-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
-                  <tr className="bg-slate-50 border-b border-slate-100 text-slate-600 font-semibold uppercase text-[10px] tracking-wider">
+                  <tr className="bg-slate-50 border-b border-slate-100 text-[#0B2545] font-semibold text-[11px]">
                     <th className="py-2.5 px-3">Date</th>
                     <th className="py-2.5 px-3">Invoice #</th>
-                    <th className="py-2.5 px-3">Client</th>
                     <th className="py-2.5 px-3">Type</th>
-                    <th className="py-2.5 px-3">Service / Component</th>
-                    <th className="py-2.5 px-3 text-right">Catalogue Price</th>
+                    <th className="py-2.5 px-3">Service Name</th>
+                    <th className="py-2.5 px-3">Client</th>
+                    <th className="py-2.5 px-3 text-right">Gross</th>
                     <th className="py-2.5 px-3 text-right">Discount</th>
                     <th className="py-2.5 px-3 text-right">Net Sales</th>
-                    <th className="py-2.5 px-3 text-right">Rate %</th>
-                    <th className="py-2.5 px-3 text-right">Earned</th>
+                    <th className="py-2.5 px-3 text-right">Comm.</th>
+                    <th className="py-2.5 px-3 text-right">Tip</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-700">
                   {filteredDetailedServices.length === 0 ? (
                     <tr>
                       <td colSpan={10} className="py-8 text-center text-slate-400">
-                        No service line items found matching filter criteria.
+                        No service records found matching the filter.
                       </td>
                     </tr>
                   ) : (
                     filteredDetailedServices.map((item, idx) => (
-                      <tr key={`${item.invoiceId}-${item.itemId}-${idx}`} className="hover:bg-slate-50/70">
-                        <td className="py-2.5 px-3 font-mono text-[11px] text-slate-500 whitespace-nowrap">
-                          {item.date} {item.time ? `· ${item.time}` : ''}
+                      <tr key={idx} className="hover:bg-slate-50/70 transition-colors">
+                        <td className="py-2 px-3 font-mono text-[11px] text-slate-600">{item.date}</td>
+                        <td className="py-2 px-3 font-mono text-[11px] font-medium text-slate-900">{item.invoiceNumber}</td>
+                        <td className="py-2 px-3">
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                              item.itemType === 'SERVICE'
+                                ? 'bg-blue-50 text-[#0047AB]'
+                                : 'bg-slate-100 text-slate-700'
+                            }`}
+                          >
+                            {item.itemType === 'SERVICE' ? 'Service' : 'Package'}
+                          </span>
                         </td>
-                        <td className="py-2.5 px-3 font-mono text-[11px] font-semibold text-slate-800">
-                          {item.invoiceNumber}
-                        </td>
-                        <td className="py-2.5 px-3 text-slate-700 font-medium">
-                          {item.clientName || 'Walk-in Client'}
-                        </td>
-                        <td className="py-2.5 px-3">
-                          {item.itemType === 'SERVICE' ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-[#2254E1]">
-                              Direct Service
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700">
-                              Package Comp
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3 font-medium text-slate-900">{item.serviceName}</td>
-                        <td className="py-2.5 px-3 text-right font-mono text-slate-600">
-                          {formatCurrency(item.cataloguePrice)}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono text-amber-600">
-                          {item.discountAllocated > 0 ? `-${formatCurrency(item.discountAllocated)}` : '—'}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-bold font-mono text-slate-900">
-                          {formatCurrency(item.netSales)}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono text-slate-600">
-                          {item.commissionRatePercent > 0 ? `${item.commissionRatePercent}%` : '0%'}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-bold font-mono text-purple-700">
-                          {formatCurrency(item.commissionEarned)}
-                        </td>
+                        <td className="py-2 px-3 font-medium text-slate-900">{item.serviceName}</td>
+                        <td className="py-2 px-3 text-slate-600">{item.clientName || 'Walk-in'}</td>
+                        <td className="py-2 px-3 text-right">{formatCurrency(item.cataloguePrice)}</td>
+                        <td className="py-2 px-3 text-right text-slate-500">{formatCurrency(item.discountAllocated)}</td>
+                        <td className="py-2 px-3 text-right font-bold text-[#0B2545]">{formatCurrency(item.netSales)}</td>
+                        <td className="py-2 px-3 text-right text-[#0047AB] font-semibold">{formatCurrency(item.commissionEarned)}</td>
+                        <td className="py-2 px-3 text-right text-slate-700 font-semibold">—</td>
                       </tr>
                     ))
                   )}
                 </tbody>
               </table>
             </div>
-
-            {/* Modal Footer */}
-            <div className="p-4 border-t border-slate-100 flex items-center justify-between bg-slate-50/50">
-              <span className="text-xs text-slate-500">
-                Derived directly from completed invoices and immutable line item attributions.
-              </span>
-              <button
-                onClick={() => setSelectedStaffRecord(null)}
-                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-semibold transition-colors"
-              >
-                Close Drilldown
-              </button>
-            </div>
           </div>
         </div>
       )}
 
-      {/* Print Statement Modal */}
-      {showPrintModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[95vh] flex flex-col shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between print:hidden">
-              <div className="flex items-center gap-2">
-                <Printer className="w-5 h-5 text-[#2254E1]" />
-                <h3 className="font-bold text-slate-900 text-sm">Print Staff Performance Report</h3>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => window.print()}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2254E1] text-white rounded-xl text-xs font-semibold hover:bg-blue-700 transition-colors"
-                >
-                  <Printer className="w-4 h-4" />
-                  Print Now
-                </button>
-                <button
-                  onClick={() => setShowPrintModal(false)}
-                  className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Printable Document Sheet */}
-            <div className="p-8 overflow-y-auto space-y-6 print:p-0" id="printable-performance-report">
-              {/* Report Header */}
-              <div className="border-b-2 border-slate-900 pb-4 flex justify-between items-start">
-                <div>
-                  <h1 className="text-2xl font-black text-slate-900 tracking-tight">iSysware SalonOS</h1>
-                  <h2 className="text-base font-bold text-slate-700 mt-0.5">Staff Performance & Attribution Audit</h2>
-                  <p className="text-xs text-slate-500 mt-1">
-                    Branch: {selectedBranchId === 'ALL' ? 'All Branches Consolidated' : branches.find((b) => b.id === selectedBranchId)?.name || selectedBranchId}
-                  </p>
-                </div>
-                <div className="text-right text-xs text-slate-500 space-y-1">
-                  <div><strong>Period:</strong> {startDate} to {endDate}</div>
-                  <div><strong>Generated:</strong> {new Date().toLocaleString()}</div>
-                  <div><strong>Auditor:</strong> {user.name} ({user.role})</div>
-                </div>
-              </div>
-
-              {/* Summary KPIs Row */}
-              <div className="grid grid-cols-4 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs">
-                <div>
-                  <div className="text-slate-500 uppercase text-[10px] font-semibold">Total Net Sales</div>
-                  <div className="text-base font-bold text-slate-900 mt-0.5">
-                    {formatCurrency(aggregatedMetrics.totalNetSales)}
-                  </div>
-                  <div className="text-[10px] text-slate-400">
-                    Gross: {formatCurrency(aggregatedMetrics.totalGrossSales)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-slate-500 uppercase text-[10px] font-semibold">Service Units</div>
-                  <div className="text-base font-bold text-slate-900 mt-0.5">
-                    {aggregatedMetrics.totalUnits} units
-                  </div>
-                  <div className="text-[10px] text-slate-400">
-                    {aggregatedMetrics.totalDirectServices} dir · {aggregatedMetrics.totalPackageComponents} pkg
-                  </div>
-                </div>
-                <div>
-                  <div className="text-slate-500 uppercase text-[10px] font-semibold">Estimated Comm.</div>
-                  <div className="text-base font-bold text-purple-700 mt-0.5">
-                    {formatCurrency(aggregatedMetrics.totalEstimatedCommission)}
-                  </div>
-                  <div className="text-[10px] text-slate-400">
-                    Finalized: {formatCurrency(aggregatedMetrics.totalFinalizedCommission)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-slate-500 uppercase text-[10px] font-semibold">Staff Gratuity</div>
-                  <div className="text-base font-bold text-amber-700 mt-0.5">
-                    {formatCurrency(aggregatedMetrics.totalAllocatedTips)}
-                  </div>
-                  <div className="text-[10px] text-slate-400">
-                    Paid: {formatCurrency(aggregatedMetrics.totalPaidTips)}
-                  </div>
-                </div>
-              </div>
-
-              {/* Staff Table */}
-              <div className="space-y-2">
-                <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider">
-                  Employee Performance Ranking ({filteredRecords.length})
-                </h4>
-                <table className="w-full text-left text-[11px] border border-slate-200">
-                  <thead className="bg-slate-100 font-semibold text-slate-700 border-b border-slate-200">
-                    <tr>
-                      <th className="py-1.5 px-2">#</th>
-                      <th className="py-1.5 px-2">Code</th>
-                      <th className="py-1.5 px-2">Staff Name</th>
-                      <th className="py-1.5 px-2">Role</th>
-                      <th className="py-1.5 px-2 text-center">Units</th>
-                      <th className="py-1.5 px-2 text-right">Net Sales</th>
-                      <th className="py-1.5 px-2 text-right">Est. Comm</th>
-                      <th className="py-1.5 px-2 text-right">Tips</th>
-                      <th className="py-1.5 px-2 text-center">Present / OT</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {filteredRecords.map((r, i) => (
-                      <tr key={r.staffId}>
-                        <td className="py-1.5 px-2 font-mono text-slate-400">{i + 1}</td>
-                        <td className="py-1.5 px-2 font-mono">{r.staffCode}</td>
-                        <td className="py-1.5 px-2 font-semibold text-slate-900">{r.staffName}</td>
-                        <td className="py-1.5 px-2 text-slate-600">{r.roleTitle}</td>
-                        <td className="py-1.5 px-2 text-center">{r.totalServiceUnits}</td>
-                        <td className="py-1.5 px-2 text-right font-semibold">{formatCurrency(r.attributedNetSales)}</td>
-                        <td className="py-1.5 px-2 text-right text-purple-700">{formatCurrency(r.estimatedCommission)}</td>
-                        <td className="py-1.5 px-2 text-right text-amber-700">{formatCurrency(r.allocatedTips)}</td>
-                        <td className="py-1.5 px-2 text-center">{r.presentDays}d / {r.approvedOvertimeMinutes}m</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Signatures block */}
-              <div className="pt-10 grid grid-cols-2 gap-12 text-center text-slate-500 text-[11px]">
-                <div className="border-t border-slate-300 pt-2 font-medium">Branch Administrator Signature</div>
-                <div className="border-t border-slate-300 pt-2 font-medium">Salon General Manager / Auditor</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Footer Branding */}
+      <div className="mt-8 text-center text-xs text-slate-400 pb-6">
+        © iSysware Management System
+      </div>
     </div>
   );
 };

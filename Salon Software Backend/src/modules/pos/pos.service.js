@@ -37,15 +37,23 @@ const loadInvoice = async (tx, id) => {
 
 // ═══ QUERIES ══════════════════════════════════════════════════════════════════
 
-export const listInvoices = async (actor, { branchId, status, date, startDate, endDate, clientId } = {}) => {
+export const listInvoices = async (actor, { branchId, status, date, startDate, endDate, clientId, soldByUserId, processedByUserId } = {}) => {
   if (actor.role === 'STAFF') throw forbidden('FORBIDDEN', 'Access Denied: Staff members cannot access invoices.');
   const b = resolveReadBranch(actor, branchId);
   const dateFilter = {};
   if (date) dateFilter.equals = dateOnly(date);
   if (startDate) dateFilter.gte = dateOnly(startDate);
   if (endDate) dateFilter.lte = dateOnly(endDate);
+
+  const userFilter = actor.role === 'ACCOUNTANT' ? actor.id : (soldByUserId || processedByUserId);
   const rows = await prisma.invoice.findMany({
-    where: { ...(b ? { branchId: b } : {}), ...(status ? { status } : {}), ...(clientId ? { clientId } : {}), ...(Object.keys(dateFilter).length ? { date: dateFilter } : {}) },
+    where: {
+      ...(b ? { branchId: b } : {}),
+      ...(status ? { status } : {}),
+      ...(clientId ? { clientId } : {}),
+      ...(Object.keys(dateFilter).length ? { date: dateFilter } : {}),
+      ...(userFilter && userFilter !== 'ALL' ? { processedByUserId: userFilter } : {}),
+    },
     include: invoiceInclude,
     orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
   });
@@ -318,17 +326,38 @@ export const postInvoice = async (input, actor, idempotencyKey) => {
       if (d.c.type === 'SERVICE') await earn(d.staff, d.net);
 
       if (d.c.type === 'PACKAGE') {
-        const assignedStaffList = d.c.assignedStaff && d.c.assignedStaff.length > 0
-          ? d.c.assignedStaff.map((s) => requireStaff(s.staffId, d.catalogue.name))
+        const rawAssigned = d.c.assignedStaff && d.c.assignedStaff.length > 0
+          ? d.c.assignedStaff
+          : null;
+        const assignedStaffList = rawAssigned
+          ? rawAssigned.map((s) => {
+              const staff = requireStaff(s.staffId, d.catalogue.name);
+              return {
+                ...s,
+                id: staff.id,
+                name: staff.name,
+                commissionRate: staff.commissionRate,
+                staff,
+              };
+            })
           : (d.c.packageComponents?.length && d.c.packageComponents.some((pc) => pc.staffId && pc.staffId !== d.staff.id)
               ? null
-              : [d.staff]);
+              : [{ staffId: d.staff.id, id: d.staff.id, name: d.staff.name, commissionRate: d.staff.commissionRate, staff: d.staff, allocatedAmount: d.net.toNumber() }]);
 
         if (assignedStaffList && assignedStaffList.length > 0) {
-          // Multi-staff assigned to package: split revenue & commission equally across all assigned staff
-          const shares = splitWithRemainder(d.net, assignedStaffList.map(() => toDec(1)));
+          // Check if custom allocated amounts/shares are specified (e.g. 500, 300, 200)
+          const hasCustomAllocation = assignedStaffList.some(
+            (s) => typeof s.allocatedAmount === 'number' && s.allocatedAmount > 0
+          );
+          const rawWeights = hasCustomAllocation
+            ? assignedStaffList.map((s) => toDec(s.allocatedAmount || 0))
+            : assignedStaffList.map(() => toDec(1));
+          const sumWeights = rawWeights.reduce((s, w) => s.plus(w), toDec(0));
+          const weights = sumWeights.isZero() ? assignedStaffList.map(() => toDec(1)) : rawWeights;
+
+          const shares = splitWithRemainder(d.net, weights);
           for (const [si, st] of assignedStaffList.entries()) {
-            await earn(st, shares[si]);
+            await earn(st.staff, shares[si]);
           }
 
           const comps = [...d.catalogue.components].sort((a, b) => a.sortOrder - b.sortOrder);
@@ -338,7 +367,7 @@ export const postInvoice = async (input, actor, idempotencyKey) => {
                 lineId: line.id, sortOrder: ci, serviceId: k.serviceId, serviceCode: k.service.code, serviceName: k.service.name,
                 quantity: k.quantity, staffId: assignedStaffList[0].id, staffName: assignedStaffList.map((s) => s.name).join(', '),
                 allocationPercentage: k.allocationPercentage,
-                allocatedAmount: toDec(0), staffCommissionRate: commissionRate(assignedStaffList[0]),
+                allocatedAmount: toDec(0), staffCommissionRate: commissionRate(assignedStaffList[0].staff),
               },
             });
           }

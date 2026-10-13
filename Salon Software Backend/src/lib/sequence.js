@@ -14,6 +14,18 @@
  */
 export const nextSequence = async (tx, branchCode, prefix, year, pad = 4) => {
   const y = year ?? new Date().getFullYear();
+  if (prefix === 'INV') {
+    const scope = 'GLOBAL';
+    const rows = await tx.$queryRaw`
+      INSERT INTO "Sequence" (id, "branchCode", prefix, year, "lastValue")
+      VALUES (gen_random_uuid()::text, ${scope}, ${prefix}, 0, 1)
+      ON CONFLICT ("branchCode", prefix, year)
+      DO UPDATE SET "lastValue" = "Sequence"."lastValue" + 1
+      RETURNING "lastValue"
+    `;
+    return `${prefix}-${String(rows[0].lastValue).padStart(pad, '0')}`;
+  }
+
   const rows = await tx.$queryRaw`
     INSERT INTO "Sequence" (id, "branchCode", prefix, year, "lastValue")
     VALUES (gen_random_uuid()::text, ${branchCode}, ${prefix}, ${y}, 1)
@@ -25,7 +37,7 @@ export const nextSequence = async (tx, branchCode, prefix, year, pad = 4) => {
 };
 
 /**
- * Monthly numbers such as PAY-LHE-01-2026-09-0001 (period = 'YYYY-MM'). Counter resets each month.
+ * Period sequences such as PAY-LHE-01-2026-08-0001 (period = 'YYYY-MM')
  */
 export const nextPeriodSequence = async (tx, branchCode, prefix, period, pad = 4) => {
   const scope = `${branchCode}:${period}`;

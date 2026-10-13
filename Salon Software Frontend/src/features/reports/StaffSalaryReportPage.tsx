@@ -1,261 +1,556 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { useRouter } from '@/context/RouterContext';
 import { salonService } from '@/services';
 import { Branch, StaffMember, StaffSalaryReport, StaffSalaryReportQuery } from '@/types/salon';
-import { formatCurrency } from '@/lib/formatters';
 import { AccessDeniedView } from '@/features/scaffold/AccessDeniedView';
-import { AlertCircle, ExternalLink, FileSpreadsheet, Printer, RefreshCw, Wallet } from 'lucide-react';
-import { downloadReportCsv, monthLabel } from './reportUtils';
+import {
+  downloadReportCsv,
+  downloadReportExcel,
+  printReportWindow,
+} from '@/features/reports/reportUtils';
+import {
+  Filter,
+  FileSpreadsheet,
+  FileText,
+  Printer,
+  Loader2,
+  Banknote,
+} from 'lucide-react';
 
-const STATUS_CLS: Record<string, string> = {
-  PAID: 'bg-emerald-100 text-emerald-800',
-  PARTIALLY_PAID: 'bg-amber-100 text-amber-800',
-  FINALIZED: 'bg-indigo-100 text-indigo-800',
+const selectClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const inputClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const labelClass = 'block text-[11px] font-semibold text-[#0B2545] mb-1.5';
+
+const formatPKR = (amt: number, withSign = false) => {
+  const num = Number(amt) || 0;
+  const abs = Math.abs(num);
+  const formatted = abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (withSign) {
+    return num >= 0 ? `+${formatted}` : `-${formatted}`;
+  }
+  return formatted;
 };
-const field = 'w-full text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:ring-2 focus:ring-indigo-500';
-const label = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1';
 
-/**
- * Spec §10.2 Staff Salary Report — read-only. Date basis: payroll period of FINALIZED runs;
- * paid date shown separately. Salary payments settle the liability (never a second expense).
- */
 export const StaffSalaryReportPage: React.FC = () => {
   const { user, demoDate } = useAuth();
-  const { navigate } = useRouter();
+
   if (!user || (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN')) {
     return <AccessDeniedView attemptedPath="/reports/staff-salary" />;
   }
-  const isSuperAdmin = user.role === 'SUPER_ADMIN';
+
   const thisMonth = (demoDate || new Date().toISOString().slice(0, 10)).slice(0, 7);
   const yearStart = `${thisMonth.slice(0, 4)}-01`;
 
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [staff, setStaff] = useState<StaffMember[]>([]);
-  const initial: StaffSalaryReportQuery = { branchId: isSuperAdmin ? 'ALL' : user.branchId || '', fromMonth: yearStart, toMonth: thisMonth };
-  const [form, setForm] = useState<StaffSalaryReportQuery>(initial);
-  const [applied, setApplied] = useState<StaffSalaryReportQuery>(initial);
-  const [report, setReport] = useState<StaffSalaryReport | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [staffList, setStaffList] = useState<StaffMember[]>([]);
+
+  // Filter Form State
+  const [selectedBranch, setSelectedBranch] = useState<string>(user.branchId || 'ALL');
+  const [selectedStaff, setSelectedStaff] = useState<string>('ALL');
+  const [paymentStatus, setPaymentStatus] = useState<string>('ALL');
+  const [fromMonth, setFromMonth] = useState<string>(yearStart);
+  const [toMonth, setToMonth] = useState<string>(thisMonth);
+
+  // Page state: Only fetch when user explicitly clicks Filter ("filter karna sa aae default nhi")
+  const [hasFiltered, setHasFiltered] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [reportData, setReportData] = useState<StaffSalaryReport | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     salonService.getBranches().then(setBranches).catch(() => undefined);
   }, []);
-  useEffect(() => {
-    salonService.getStaff(form.branchId || 'ALL').then(setStaff).catch(() => setStaff([]));
-  }, [form.branchId]);
-  useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    setError(null);
-    const q = Object.fromEntries(Object.entries(applied).filter(([, v]) => v)) as StaffSalaryReportQuery;
-    salonService.getStaffSalaryReport(q)
-      .then((r) => alive && setReport(r))
-      .catch((e) => alive && setError(e.message || 'Failed to load the salary report.'))
-      .finally(() => alive && setLoading(false));
-    return () => { alive = false; };
-  }, [applied]);
 
-  const designations = useMemo(() => [...new Set(staff.map((s) => s.designation).filter(Boolean))].sort(), [staff]);
-  const branchName = (id?: string) => (!id || id === 'ALL' ? 'All Branches' : branches.find((b) => b.id === id)?.name || id);
-  const t = report?.totals;
+  useEffect(() => {
+    salonService.getStaff(selectedBranch || 'ALL').then(setStaffList).catch(() => setStaffList([]));
+  }, [selectedBranch]);
 
-  const exportCsv = () => {
-    if (!report) return;
-    downloadReportCsv(`Staff_Salary_${applied.fromMonth}_${applied.toMonth}.csv`, [
-      ['Report', 'Staff Salary Report'],
-      ['Branch', branchName(applied.branchId)],
-      ['Payroll period', `${applied.fromMonth} to ${applied.toMonth}`],
-      ['Date basis', report.dateBasis],
-      ['Filters', [applied.staffId && `Staff: ${staff.find((s) => s.id === applied.staffId)?.name}`, applied.designation && `Designation: ${applied.designation}`,
-        applied.paymentStatus && `Status: ${applied.paymentStatus}`, applied.paymentMethod && `Method: ${applied.paymentMethod}`].filter(Boolean).join('; ') || 'None'],
-      ['Generated by', user.name],
-      ['Generated at', new Date().toLocaleString()],
-    ], [{
-      headers: ['Period', 'Payslip #', 'Staff', 'Code', 'Branch', 'Basic', 'Attendance', 'OT', 'Allowances', 'Deductions', 'Advance Recovery', 'Gross', 'Net', 'Paid', 'Outstanding', 'Status', 'Paid Date', 'Processed By'],
-      rows: [
-        ...report.rows.map((r) => [r.period, r.payslipNumber, r.staffName, r.employeeCode, r.branchName, r.basic, r.attendance, r.overtime, r.allowances,
-          r.deductions, r.advanceRecovery, r.gross, r.net, r.paid, r.outstanding, r.status, r.paidDate ?? '', r.processedBy ?? '']),
-        ['TOTAL', '', '', '', '', t!.basic, t!.attendance, t!.overtime, t!.allowances, t!.deductions, t!.advanceRecovery, t!.gross, t!.net, t!.paid, t!.outstanding, '', '', ''],
-      ],
-    }]);
+  // Fetch report data on demand from backend API
+  const fetchReport = useCallback(
+    async (q: StaffSalaryReportQuery) => {
+      setIsLoading(true);
+      setErrorMessage(null);
+      try {
+        const data = await salonService.getStaffSalaryReport(q);
+        setReportData(data);
+      } catch (err: any) {
+        console.error('Failed to load Staff Salary report:', err);
+        setErrorMessage(err.message || 'Failed to fetch live staff salary report from server.');
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    []
+  );
+
+  const handleApplyFilters = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setHasFiltered(true);
+
+    const query: StaffSalaryReportQuery = {
+      branchId: selectedBranch,
+      fromMonth,
+      toMonth,
+      staffId: selectedStaff !== 'ALL' ? selectedStaff : undefined,
+      paymentStatus: paymentStatus !== 'ALL' ? (paymentStatus as any) : undefined,
+    };
+
+    fetchReport(query);
   };
 
-  const kpis: [string, number | undefined, string][] = [
-    ['Basic', t?.basic, 'text-slate-900'],
-    ['Attendance Impact', t?.attendance, 'text-rose-600'],
-    ['Overtime', t?.overtime, 'text-indigo-600'],
-    ['Allowances', t?.allowances, 'text-emerald-600'],
-    ['Deductions', t?.deductions, 'text-rose-600'],
-    ['Gross', t?.gross, 'text-slate-900'],
-    ['Net Salary', t?.net, 'text-indigo-700'],
-    ['Paid', t?.paid, 'text-emerald-600'],
-    ['Outstanding', t?.outstanding, 'text-amber-600'],
-  ];
+  // Export handlers
+  const handleExportExcel = () => {
+    if (!reportData || !reportData.rows.length) return;
+    const meta: [string, string][] = [
+      ['Report', 'Staff Salary Report'],
+      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : branches.find((b) => b.id === selectedBranch)?.name || selectedBranch],
+      ['Payroll Period', `${fromMonth} to ${toMonth}`],
+      ['Generated At', new Date().toLocaleString()],
+    ];
+
+    const headers = [
+      '#',
+      'Period',
+      'Payslip #',
+      'Staff',
+      'Code',
+      'Campus',
+      'Basic',
+      'Gross',
+      'Net Salary',
+      'Paid',
+      'Outstanding',
+      'Status',
+    ];
+
+    const rows = reportData.rows.map((r, i) => [
+      i + 1,
+      r.period,
+      r.payslipNumber,
+      r.staffName,
+      r.employeeCode,
+      r.branchName,
+      r.basic.toFixed(2),
+      r.gross.toFixed(2),
+      r.net.toFixed(2),
+      r.paid.toFixed(2),
+      r.outstanding.toFixed(2),
+      r.status,
+    ]);
+
+    downloadReportExcel('Staff_Salary_Report', meta, [{ headers, rows }]);
+  };
+
+  const handleExportPdf = () => {
+    if (!reportData || !reportData.rows.length) return;
+    const meta: [string, string][] = [
+      ['Report', 'Staff Salary Report'],
+      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : branches.find((b) => b.id === selectedBranch)?.name || selectedBranch],
+      ['Payroll Period', `${fromMonth} to ${toMonth}`],
+      ['Generated At', new Date().toLocaleString()],
+    ];
+
+    const headers = [
+      '#',
+      'Period',
+      'Payslip #',
+      'Staff',
+      'Code',
+      'Campus',
+      'Basic',
+      'Gross',
+      'Net Salary',
+      'Paid',
+      'Outstanding',
+      'Status',
+    ];
+
+    const rows = reportData.rows.map((r, i) => [
+      i + 1,
+      r.period,
+      r.payslipNumber,
+      r.staffName,
+      r.employeeCode,
+      r.branchName,
+      r.basic.toFixed(2),
+      r.gross.toFixed(2),
+      r.net.toFixed(2),
+      r.paid.toFixed(2),
+      r.outstanding.toFixed(2),
+      r.status,
+    ]);
+
+    downloadReportCsv('Staff_Salary_Report', meta, [{ headers, rows }]);
+  };
+
+  const handlePrint = () => {
+    if (!reportData || !reportData.rows.length) {
+      window.print();
+      return;
+    }
+    const meta: [string, string][] = [
+      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : branches.find((b) => b.id === selectedBranch)?.name || selectedBranch],
+      ['Payroll Period', `${fromMonth} to ${toMonth}`],
+      ['Total Gross', formatPKR(reportData.totals.gross)],
+      ['Total Net Salary', formatPKR(reportData.totals.net)],
+      ['Total Paid', formatPKR(reportData.totals.paid)],
+    ];
+    const headers = ['#', 'Period', 'Payslip #', 'Staff', 'Campus', 'Gross', 'Net', 'Paid', 'Outstanding', 'Status'];
+    const rows = reportData.rows.map((r, i) => [
+      i + 1,
+      r.period,
+      r.payslipNumber,
+      r.staffName,
+      r.branchName,
+      formatPKR(r.gross),
+      formatPKR(r.net),
+      formatPKR(r.paid),
+      formatPKR(r.outstanding),
+      r.status,
+    ]);
+
+    printReportWindow({
+      title: 'Staff Salary Report',
+      meta,
+      headers,
+      rows,
+    });
+  };
+
+  const totals = reportData?.totals || {
+    basic: 0,
+    attendance: 0,
+    overtime: 0,
+    allowances: 0,
+    deductions: 0,
+    advanceRecovery: 0,
+    gross: 0,
+    net: 0,
+    paid: 0,
+    outstanding: 0,
+  };
 
   return (
-    <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-4 font-sans">
-      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl"><Wallet className="w-5 h-5" /></div>
-          <div>
-            <h1 className="text-xl font-bold text-slate-900">Staff Salary Report</h1>
-            <p className="text-xs text-slate-500">Finalized payroll by period — basic, attendance impact, overtime, allowances, deductions, paid and outstanding.</p>
-          </div>
+    <div className="min-h-screen bg-[#F4F6F9] px-4 py-5 md:px-8 md:py-6 text-slate-800">
+      {/* Top Header Card with Title & Filters */}
+      <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 p-5 md:p-6 mb-6">
+        <div className="mb-5">
+          <h1 className="text-xl font-bold text-[#0B2545] tracking-tight">Staff Salary Reports</h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Finalized staff remuneration payroll audit: basic wages, attendance penalties, overtime additions, allowances, gross earnings, net pay and payouts
+          </p>
         </div>
-        <div className="flex gap-2 print:hidden">
-          <button onClick={() => navigate('/accounts/payroll')} className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 bg-white rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50">
-            <ExternalLink className="w-3.5 h-3.5" /> Open Payroll
-          </button>
-          <button onClick={exportCsv} disabled={!report?.rows.length} className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 bg-white rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" /> Excel
-          </button>
-          <button onClick={() => window.print()} className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 bg-white rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50">
-            <Printer className="w-3.5 h-3.5" /> Print / PDF
-          </button>
-        </div>
-      </div>
 
-      {/* Filter row */}
-      <form
-        onSubmit={(e) => { e.preventDefault(); setApplied({ ...form }); }}
-        className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 items-end print:hidden"
-      >
-        {isSuperAdmin && (
+        {/* Filters Form Row */}
+        <form onSubmit={handleApplyFilters} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3.5 items-end">
+          {/* Campus Filter */}
           <div>
-            <label className={label}>Branch</label>
-            <select className={field} value={form.branchId} onChange={(e) => setForm({ ...form, branchId: e.target.value, staffId: undefined })}>
-              <option value="ALL">All Branches</option>
-              {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            <label className={labelClass}>Campus</label>
+            <select
+              value={selectedBranch}
+              onChange={(e) => setSelectedBranch(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">All Campuses</option>
+              {branches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
             </select>
           </div>
-        )}
-        <div>
-          <label className={label}>From Period</label>
-          <input type="month" className={field} value={form.fromMonth} max={form.toMonth} required onChange={(e) => setForm({ ...form, fromMonth: e.target.value })} />
+
+          {/* Staff Filter */}
+          <div>
+            <label className={labelClass}>Staff Member</label>
+            <select
+              value={selectedStaff}
+              onChange={(e) => setSelectedStaff(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">All Staff</option>
+              {staffList.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.employeeCode})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* From Month */}
+          <div>
+            <label className={labelClass}>From Month</label>
+            <input
+              type="month"
+              value={fromMonth}
+              onChange={(e) => setFromMonth(e.target.value)}
+              className={inputClass}
+            />
+          </div>
+
+          {/* To Month */}
+          <div>
+            <label className={labelClass}>To Month</label>
+            <input
+              type="month"
+              value={toMonth}
+              onChange={(e) => setToMonth(e.target.value)}
+              className={inputClass}
+            />
+          </div>
+
+          {/* Payment Status */}
+          <div>
+            <label className={labelClass}>Status</label>
+            <select
+              value={paymentStatus}
+              onChange={(e) => setPaymentStatus(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">All Statuses</option>
+              <option value="PAID">Paid</option>
+              <option value="PARTIALLY_PAID">Partially Paid</option>
+              <option value="FINALIZED">Finalized</option>
+            </select>
+          </div>
+
+          {/* Filter Action Button */}
+          <div>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full h-[35px] bg-[#0047AB] hover:bg-[#003785] active:bg-[#002b66] text-white font-medium text-xs rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-70"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Loading...</span>
+                </>
+              ) : (
+                <>
+                  <Filter className="w-3.5 h-3.5 fill-current" />
+                  <span>Filter</span>
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      {/* Main Content Area */}
+      {!hasFiltered ? (
+        /* Empty State before Filter clicked */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 md:p-24 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <div className="text-slate-400 mb-3">
+            <Filter className="w-14 h-14 stroke-[1.25] text-slate-400" />
+          </div>
+          <p className="text-slate-400 text-sm font-medium">Please apply filters to view reports</p>
         </div>
-        <div>
-          <label className={label}>To Period</label>
-          <input type="month" className={field} value={form.toMonth} min={form.fromMonth} required onChange={(e) => setForm({ ...form, toMonth: e.target.value })} />
+      ) : isLoading ? (
+        /* Loading Skeleton */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <Loader2 className="w-10 h-10 animate-spin text-[#0047AB] mb-3" />
+          <p className="text-slate-600 text-sm font-medium">Loading Staff Salary Reports...</p>
         </div>
-        <div>
-          <label className={label}>Staff</label>
-          <select className={field} value={form.staffId || ''} onChange={(e) => setForm({ ...form, staffId: e.target.value || undefined })}>
-            <option value="">All Staff</option>
-            {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className={label}>Designation</label>
-          <select className={field} value={form.designation || ''} onChange={(e) => setForm({ ...form, designation: e.target.value || undefined })}>
-            <option value="">All</option>
-            {designations.map((d) => <option key={d} value={d}>{d}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className={label}>Payment Status</label>
-          <select className={field} value={form.paymentStatus || ''} onChange={(e) => setForm({ ...form, paymentStatus: (e.target.value || undefined) as StaffSalaryReportQuery['paymentStatus'] })}>
-            <option value="">All</option>
-            <option value="FINALIZED">Unpaid</option>
-            <option value="PARTIALLY_PAID">Partially Paid</option>
-            <option value="PAID">Paid</option>
-          </select>
-        </div>
-        <div>
-          <label className={label}>Paid Via</label>
-          <select className={field} value={form.paymentMethod || ''} onChange={(e) => setForm({ ...form, paymentMethod: (e.target.value || undefined) as StaffSalaryReportQuery['paymentMethod'] })}>
-            <option value="">Any</option>
-            <option value="CASH">Cash</option>
-            <option value="ONLINE">Online</option>
-          </select>
-        </div>
-        <div className="flex gap-1.5">
-          <button type="submit" className="flex-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold">Apply</button>
-          <button type="button" onClick={() => { setForm(initial); setApplied(initial); }} className="px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 hover:bg-slate-50" title="Reset">
-            <RefreshCw className="w-3.5 h-3.5" />
+      ) : errorMessage ? (
+        /* Error Message */
+        <div className="bg-white rounded-xl border border-rose-200 p-8 shadow-xs text-center">
+          <p className="text-rose-600 text-sm font-medium mb-3">{errorMessage}</p>
+          <button
+            onClick={() => handleApplyFilters()}
+            className="px-4 py-1.5 bg-[#0047AB] text-white text-xs font-semibold rounded-md shadow-xs hover:bg-[#003785]"
+          >
+            Retry
           </button>
         </div>
-      </form>
+      ) : (
+        /* Filtered Data Layout */
+        <div className="mb-8">
+          {/* Royal Blue Banner Header */}
+          <div className="bg-[#0047AB] text-white px-5 py-3 rounded-t-xl flex flex-wrap items-center justify-between gap-3 shadow-sm">
+            <div className="flex items-center gap-2.5">
+              <Banknote className="w-5 h-5 text-white/90" />
+              <span className="font-semibold text-sm tracking-wide">Staff Salary Register</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="bg-[#009688] hover:bg-[#00897B] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                CSV
+              </button>
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                className="bg-[#DC2626] hover:bg-[#B91C1C] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                PDF
+              </button>
+              <button
+                type="button"
+                onClick={handlePrint}
+                className="bg-[#4B5563] hover:bg-[#374151] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                Print
+              </button>
+            </div>
+          </div>
 
-      <p className="text-[11px] text-slate-500">
-        <span className="font-semibold">{branchName(applied.branchId)}</span> · Payroll period {monthLabel(applied.fromMonth)} – {monthLabel(applied.toMonth)} ·
-        {' '}Date basis: finalized payroll period (draft and cancelled runs excluded); paid date shown separately. Paid / outstanding reflect payments to date.
-      </p>
+          {/* Table Container with Horizontal Scroll */}
+          <div className="bg-white overflow-x-auto rounded-b-xl border border-t-0 border-slate-200/90 shadow-sm">
+            <table className="w-full min-w-[1300px] text-left border-collapse font-['Inter',sans-serif] text-[13px] antialiased">
+              <thead>
+                <tr className="bg-[#EAF2FB] border-b border-blue-100 text-[#475569] font-medium text-[13px]">
+                  <th className="py-3.5 px-3 text-center w-8">#</th>
+                  <th className="py-3.5 px-4 whitespace-nowrap">Period</th>
+                  <th className="py-3.5 px-4 whitespace-nowrap">Payslip #</th>
+                  <th className="py-3.5 px-4">Staff</th>
+                  <th className="py-3.5 px-4">Campus</th>
+                  <th className="py-3.5 px-4 text-right">Basic</th>
+                  <th className="py-3.5 px-4 text-right">Gross</th>
+                  <th className="py-3.5 px-4 text-right">Net Salary</th>
+                  <th className="py-3.5 px-4 text-right">Paid</th>
+                  <th className="py-3.5 px-4 text-right">Outstanding</th>
+                  <th className="py-3.5 px-4 text-center">Status</th>
+                </tr>
+              </thead>
+              <tbody className="text-[#334155]">
+                {reportData && reportData.rows.length > 0 ? (
+                  reportData.rows.map((row, idx) => {
+                    const isPaid = row.status === 'PAID';
 
-      {error && (
-        <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2"><AlertCircle className="w-4 h-4" /> {error}</div>
+                    return (
+                      <tr key={row.payslipId || idx} className="hover:bg-blue-50/20 transition-colors border-b border-dashed border-slate-200">
+                        {/* 1. # */}
+                        <td className="py-3.5 px-3 text-center font-normal text-slate-400">
+                          {idx + 1}
+                        </td>
+
+                        {/* 2. Period */}
+                        <td className="py-3.5 px-4 whitespace-nowrap font-medium text-slate-700">
+                          {row.period}
+                        </td>
+
+                        {/* 3. Payslip # */}
+                        <td className="py-3.5 px-4 font-semibold text-[#0047AB] whitespace-nowrap">
+                          {row.payslipNumber}
+                        </td>
+
+                        {/* 4. Staff */}
+                        <td className="py-3.5 px-4 whitespace-nowrap font-medium text-slate-800">
+                          {row.staffName} <span className="text-slate-400 font-normal">({row.employeeCode})</span>
+                        </td>
+
+                        {/* 5. Campus */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-slate-600">
+                          {row.branchName || 'Main Campus'}
+                        </td>
+
+                        {/* 6. Basic */}
+                        <td className="py-3.5 px-4 text-right tabular-nums text-slate-600 whitespace-nowrap">
+                          {formatPKR(row.basic)}
+                        </td>
+
+                        {/* 7. Gross */}
+                        <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-slate-800 whitespace-nowrap">
+                          {formatPKR(row.gross)}
+                        </td>
+
+                        {/* 8. Net Salary */}
+                        <td className="py-3.5 px-4 text-right tabular-nums font-bold text-[#0047AB] whitespace-nowrap">
+                          {formatPKR(row.net)}
+                        </td>
+
+                        {/* 9. Paid */}
+                        <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-[#10B981] whitespace-nowrap">
+                          {formatPKR(row.paid)}
+                        </td>
+
+                        {/* 10. Outstanding */}
+                        <td
+                          className={`py-3.5 px-4 text-right tabular-nums whitespace-nowrap ${
+                            row.outstanding > 0 ? 'text-[#EF4444] font-semibold' : 'text-slate-400'
+                          }`}
+                        >
+                          {formatPKR(row.outstanding)}
+                        </td>
+
+                        {/* 11. Status */}
+                        <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                          {isPaid ? (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#10B981] text-white shadow-2xs">
+                              PAID
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#F59E0B] text-white shadow-2xs">
+                              {row.status}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={11} className="py-12 text-center text-slate-400 font-medium">
+                      No salary records found for the selected campus, dates, and filters.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+
+              {/* Integrated Table Footer */}
+              <tfoot className="bg-[#F8FAFC] border-t-2 border-slate-200 font-['Inter',sans-serif] text-[13px] text-[#334155]">
+                {/* Row 1: TOTALS (PKR) */}
+                <tr className="border-b border-slate-200/70">
+                  <td colSpan={5} className="py-3.5 px-4 text-right font-bold text-slate-800 tracking-wide">
+                    TOTAL SALARIES (PKR)
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-slate-700">
+                    {formatPKR(totals.basic)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-slate-800">
+                    {formatPKR(totals.gross)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums font-bold text-[#0047AB]">
+                    {formatPKR(totals.net)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-[#10B981]">
+                    {formatPKR(totals.paid)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums font-bold text-[#EF4444]">
+                    {formatPKR(totals.outstanding)}
+                  </td>
+                  <td className="py-3.5 px-4"></td>
+                </tr>
+
+                {/* Row 2: Net Disbursed */}
+                <tr>
+                  <td colSpan={5} className="py-3 px-4 text-right font-medium text-slate-600">
+                    Net Paid Salary Disbursements
+                  </td>
+                  <td colSpan={6} className="py-3 px-4 text-right tabular-nums font-bold text-[#0047AB] text-sm">
+                    +{formatPKR(totals.paid)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
       )}
 
-      {/* KPI strip */}
-      <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-2">
-        {kpis.map(([k, v, cls]) => (
-          <div key={k} className="bg-white border border-slate-100 rounded-lg px-3 py-2 shadow-sm">
-            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{k}</div>
-            <div className={`text-sm font-bold ${cls}`}>{formatCurrency(v ?? 0)}</div>
-          </div>
-        ))}
+      {/* Footer Branding */}
+      <div className="text-center py-4 text-xs text-slate-400 font-medium tracking-wide">
+        © iSysware Management System
       </div>
-
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-x-auto">
-        <table className="w-full text-[11px] whitespace-nowrap">
-          <thead className="bg-slate-100/80 text-slate-600 font-semibold">
-            <tr>
-              {['Period', 'Staff', 'Branch', 'Basic', 'Attendance', 'OT', 'Allowances', 'Deductions', 'Gross', 'Net', 'Paid', 'Outstanding', 'Status', 'Paid Date', 'Processed By'].map((h, i) => (
-                <th key={h} className={`py-2 px-2.5 ${i >= 3 && i <= 11 ? 'text-right' : 'text-left'}`}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {loading && <tr><td colSpan={15} className="py-8 text-center text-slate-400">Loading…</td></tr>}
-            {!loading && report?.rows.length === 0 && (
-              <tr><td colSpan={15} className="py-8 text-center text-slate-400">No finalized payroll in this period. Finalize a payroll run first.</td></tr>
-            )}
-            {!loading && report?.rows.map((r) => (
-              <tr key={r.payslipId} className="hover:bg-slate-50/60">
-                <td className="py-1.5 px-2.5">{monthLabel(r.period)}<div className="text-[10px] text-slate-400">{r.payslipNumber}</div></td>
-                <td className="py-1.5 px-2.5"><div className="font-semibold text-slate-900">{r.staffName}</div><div className="text-[10px] text-slate-400">{r.employeeCode} • {r.designation}</div></td>
-                <td className="py-1.5 px-2.5">{r.branchName}</td>
-                <td className="py-1.5 px-2.5 text-right">{formatCurrency(r.basic)}</td>
-                <td className="py-1.5 px-2.5 text-right text-rose-600">{r.attendance ? formatCurrency(r.attendance) : '—'}</td>
-                <td className="py-1.5 px-2.5 text-right text-indigo-600">{r.overtime ? formatCurrency(r.overtime) : '—'}</td>
-                <td className="py-1.5 px-2.5 text-right text-emerald-600">{r.allowances ? formatCurrency(r.allowances) : '—'}</td>
-                <td className="py-1.5 px-2.5 text-right text-rose-600" title={r.advanceRecovery ? `Includes advance recovery ${formatCurrency(r.advanceRecovery)}` : undefined}>
-                  {r.deductions ? formatCurrency(-r.deductions) : '—'}
-                </td>
-                <td className="py-1.5 px-2.5 text-right">{formatCurrency(r.gross)}</td>
-                <td className="py-1.5 px-2.5 text-right font-bold text-slate-900">{formatCurrency(r.net)}</td>
-                <td className="py-1.5 px-2.5 text-right text-emerald-600">{formatCurrency(r.paid)}</td>
-                <td className="py-1.5 px-2.5 text-right font-semibold text-amber-600">{formatCurrency(r.outstanding)}</td>
-                <td className="py-1.5 px-2.5"><span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${STATUS_CLS[r.status]}`}>{r.status === 'FINALIZED' ? 'UNPAID' : r.status.replace('_', ' ')}</span></td>
-                <td className="py-1.5 px-2.5">{r.paidDate ?? '—'}</td>
-                <td className="py-1.5 px-2.5">{r.processedBy ?? '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-          {!loading && t && report!.rows.length > 0 && (
-            <tfoot className="bg-slate-50 font-bold text-slate-900 border-t-2 border-slate-200">
-              <tr>
-                <td className="py-2 px-2.5" colSpan={3}>Totals ({report!.rows.length} payslips)</td>
-                <td className="py-2 px-2.5 text-right">{formatCurrency(t.basic)}</td>
-                <td className="py-2 px-2.5 text-right text-rose-600">{formatCurrency(t.attendance)}</td>
-                <td className="py-2 px-2.5 text-right">{formatCurrency(t.overtime)}</td>
-                <td className="py-2 px-2.5 text-right">{formatCurrency(t.allowances)}</td>
-                <td className="py-2 px-2.5 text-right text-rose-600">{formatCurrency(t.deductions ? -t.deductions : 0)}</td>
-                <td className="py-2 px-2.5 text-right">{formatCurrency(t.gross)}</td>
-                <td className="py-2 px-2.5 text-right">{formatCurrency(t.net)}</td>
-                <td className="py-2 px-2.5 text-right text-emerald-600">{formatCurrency(t.paid)}</td>
-                <td className="py-2 px-2.5 text-right text-amber-600">{formatCurrency(t.outstanding)}</td>
-                <td colSpan={3} />
-              </tr>
-            </tfoot>
-          )}
-        </table>
-      </div>
-      <p className="text-[10px] text-slate-400">
-        Net = Basic + Overtime + Allowances + Attendance impact − Deductions (incl. salary-advance recovery). Generated by {user.name} · {new Date().toLocaleString()}
-      </p>
     </div>
   );
 };
+
+export default StaffSalaryReportPage;

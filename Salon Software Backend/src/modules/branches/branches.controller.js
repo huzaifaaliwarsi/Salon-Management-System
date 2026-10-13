@@ -33,3 +33,8 @@ export const blockers = asyncHandler(async (req, res) => {
 export const deactivate = asyncHandler(async (req, res) => {
   res.json({ data: await service.deactivateBranch(req.params.id, req.user) });
 });
+
+export const remove = asyncHandler(async (req, res) => {
+  res.json({ data: await service.deleteBranch(req.params.id, req.user) });
+});
+

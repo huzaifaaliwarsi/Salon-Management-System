@@ -62,6 +62,7 @@ import {
   Clock,
   RefreshCw,
   ShieldAlert,
+  Trash2,
 } from 'lucide-react';
 
 export const BranchManagementPage: React.FC = () => {
@@ -85,6 +86,9 @@ export const BranchManagementPage: React.FC = () => {
   const [isViewModalOpen, setIsViewModalOpen] = useState(false);
   const [isAssignAdminModalOpen, setIsAssignAdminModalOpen] = useState(false);
   const [isDeactivateAlertOpen, setIsDeactivateAlertOpen] = useState(false);
+  const [isDeleteAlertOpen, setIsDeleteAlertOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [selectedBranch, setSelectedBranch] = useState<Branch | null>(null);
   const [deactivationBlockers, setDeactivationBlockers] = useState<string[]>([]);
@@ -140,10 +144,37 @@ export const BranchManagementPage: React.FC = () => {
     return true;
   });
 
+  const generateNextBranchCode = (currentList: Branch[] = branches) => {
+    let maxNum = 0;
+    const existingCodes = new Set(
+      currentList
+        .map((b) => b.code?.trim().toUpperCase())
+        .filter(Boolean) as string[]
+    );
+
+    for (const b of currentList) {
+      if (!b.code) continue;
+      const m = b.code.match(/(\d+)$/);
+      if (m) {
+        const val = parseInt(m[1], 10);
+        if (!isNaN(val) && val > maxNum) maxNum = val;
+      }
+    }
+
+    let nextNum = maxNum + 1;
+    let candidate = `BR-${String(nextNum).padStart(2, '0')}`;
+    while (existingCodes.has(candidate)) {
+      nextNum++;
+      candidate = `BR-${String(nextNum).padStart(2, '0')}`;
+    }
+    return candidate;
+  };
+
   const handleOpenAdd = () => {
+    const autoCode = generateNextBranchCode(branches);
     setFormData({
       name: '',
-      code: '',
+      code: autoCode,
       address: '',
       city: 'Lahore',
       phone: '+92 (42) ',
@@ -301,6 +332,27 @@ export const BranchManagementPage: React.FC = () => {
       await loadData();
     } catch (err: any) {
       alert(err.message || 'Failed to reactivate branch.');
+    }
+  };
+
+  const handleOpenDeleteAlert = (branch: Branch) => {
+    setSelectedBranch(branch);
+    setDeleteError(null);
+    setIsDeleteAlertOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!selectedBranch) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await salonService.deleteBranch(selectedBranch.id, user);
+      await loadData();
+      setIsDeleteAlertOpen(false);
+    } catch (err: any) {
+      setDeleteError(err.message || 'Failed to delete branch.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -551,6 +603,16 @@ export const BranchManagementPage: React.FC = () => {
                               Reactivate Branch
                             </DropdownMenuItem>
                           )}
+
+                          <DropdownMenuSeparator />
+
+                          <DropdownMenuItem
+                            onClick={() => handleOpenDeleteAlert(branch)}
+                            className="cursor-pointer text-xs text-rose-600 focus:bg-rose-50 focus:text-rose-700 font-semibold"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 mr-2" />
+                            Delete Branch
+                          </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>
@@ -598,10 +660,10 @@ export const BranchManagementPage: React.FC = () => {
               />
 
               <Input
-                label="Unique Code * (e.g. ISB-03)"
+                label="Branch Code * (Auto-generated)"
                 type="text"
                 required
-                placeholder="e.g. ISB-03"
+                placeholder="e.g. BR-01"
                 value={formData.code}
                 onChange={(e) => setFormData({ ...formData, code: e.target.value.toUpperCase() })}
               />
@@ -975,6 +1037,63 @@ export const BranchManagementPage: React.FC = () => {
             >
               Confirm Deactivation
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* --- DELETE BRANCH CONFIRMATION --- */}
+      <AlertDialog open={isDeleteAlertOpen} onOpenChange={setIsDeleteAlertOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-rose-700">
+              <Trash2 className="w-5 h-5 text-rose-600" />
+              <span>Delete Branch: {selectedBranch?.name}</span>
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3 text-xs text-slate-600 pt-1">
+                {deleteError && (
+                  <Alert variant="destructive">
+                    <AlertTitle className="text-xs font-semibold text-rose-900">
+                      Cannot Delete Branch
+                    </AlertTitle>
+                    <AlertDescription className="text-xs text-rose-800 mt-1">
+                      {deleteError}
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-800 space-y-1.5">
+                  <p className="font-semibold text-xs text-rose-900">⚠️ Permanent Branch Deletion</p>
+                  <p className="text-[11px] leading-relaxed">
+                    Are you sure you want to permanently delete <strong className="text-rose-950 font-bold">{selectedBranch?.name} ({selectedBranch?.code})</strong>?
+                  </p>
+                  <p className="text-[11px] leading-relaxed text-rose-700">
+                    This action will purge this branch and all its operational data permanently from the system. This action <strong>CANNOT</strong> be undone.
+                  </p>
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <button
+              type="button"
+              onClick={handleConfirmDelete}
+              disabled={isDeleting}
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-md shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+            >
+              {isDeleting ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Deleting...</span>
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Confirm Delete</span>
+                </>
+              )}
+            </button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -1,5 +1,10 @@
 // Shared helpers for the read-only spec reports (spec §1 universal controls, §8.2 export rules).
 
+export const formatSignedPKR = (amount: number) => (Number(amount) || 0).toLocaleString('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
 export type DatePreset = 'TODAY' | 'YESTERDAY' | 'THIS_WEEK' | 'THIS_MONTH' | 'LAST_MONTH' | 'CUSTOM';
 
 export const DATE_PRESETS: { id: DatePreset; label: string }[] = [
@@ -121,37 +126,39 @@ export const printReportWindow = ({
     )
     .join('');
 
+  const hasIndexHeader = headers[0] === '#';
+  const displayHeaders = hasIndexHeader ? headers : ['#', ...headers];
   const headersHtml = `<tr>
-    <th style="padding:6px 8px;border:1px solid #cbd5e1;background:#ebf1fa;color:#1e293b;text-align:center;font-size:11px;width:32px;">#</th>
-    ${headers
+    ${displayHeaders
       .map(
-        (h) =>
-          `<th style="padding:6px 8px;border:1px solid #cbd5e1;background:#ebf1fa;color:#1e293b;font-size:11px;text-align:left;">${h}</th>`
+        (h, i) =>
+          `<th style="padding:6px 8px;border:1px solid #cbd5e1;background:#ebf1fa;color:#1e293b;font-size:11px;text-align:${i === 0 ? 'center' : 'left'};width:${i === 0 ? '32px' : 'auto'};">${h}</th>`
       )
       .join('')}
   </tr>`;
 
   const rowsHtml = rows
     .map(
-      (r, idx) => `<tr>
-        <td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center;font-size:11px;color:#64748b;">${idx + 1}</td>
-        ${r
-          .map((c) => {
-            const isNum = typeof c === 'number' || (typeof c === 'string' && /^-?[\d,]+(\.\d+)?$/.test(c.trim()));
-            return `<td style="padding:5px 8px;border:1px solid #e2e8f0;font-size:11px;text-align:${isNum ? 'right' : 'left'};">${c ?? '—'}</td>`;
-          })
-          .join('')}
-      </tr>`
+      (r, idx) => {
+        const displayRow = hasIndexHeader ? r : [idx + 1, ...r];
+        return `<tr>
+          ${displayRow
+            .map((c, colIdx) => {
+              const isNum = colIdx > 0 && (typeof c === 'number' || (typeof c === 'string' && /^[+-]?[\d,]+(\.\d+)?$/.test(String(c).trim())));
+              return `<td style="padding:5px 8px;border:1px solid #e2e8f0;font-size:11px;text-align:${colIdx === 0 ? 'center' : isNum ? 'right' : 'left'};">${c ?? '—'}</td>`;
+            })
+            .join('')}
+        </tr>`;
+      }
     )
     .join('');
 
   const totalsHtml = totals
     ? `<tr style="font-weight:bold;background:#f8fafc;">
-        <td style="padding:6px 8px;border:1px solid #cbd5e1;text-align:center;">Total</td>
-        ${totals
-          .map((c) => {
-            const isNum = typeof c === 'number' || (typeof c === 'string' && /^-?[\d,]+(\.\d+)?$/.test(c.trim()));
-            return `<td style="padding:6px 8px;border:1px solid #cbd5e1;text-align:${isNum ? 'right' : 'left'};font-size:11px;">${c ?? ''}</td>`;
+        ${(hasIndexHeader && totals.length === displayHeaders.length ? totals : ['Total', ...totals])
+          .map((c, colIdx) => {
+            const isNum = colIdx > 0 && (typeof c === 'number' || (typeof c === 'string' && /^[+-]?[\d,]+(\.\d+)?$/.test(String(c).trim())));
+            return `<td style="padding:6px 8px;border:1px solid #cbd5e1;text-align:${colIdx === 0 ? 'center' : isNum ? 'right' : 'left'};font-size:11px;">${c ?? ''}</td>`;
           })
           .join('')}
       </tr>`

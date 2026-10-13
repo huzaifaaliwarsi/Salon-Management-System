@@ -55,6 +55,18 @@ describe('Step 2 · Branches', () => {
 
     const re = await as('super').put(`/branches/${b.id}`, { isActive: true });
     expect(re.body.data.isActive).toBe(true);
+
+    // Delete branch test on a dedicated branch
+    const toDelete = await as('super').post('/branches', {
+      name: 'To Delete Branch', code: 'DEL-01', phone: '+92 (42) 9999-999', city: 'Lahore', address: 'Delete Rd',
+    });
+    expect(toDelete.status).toBe(201);
+    const del = await as('super').delete(`/branches/${toDelete.body.data.id}`);
+    expect(del.status).toBe(200);
+    expect(del.body.data.success).toBe(true);
+
+    const getAfter = await as('super').get(`/branches/${toDelete.body.data.id}`);
+    expect(getAfter.status).toBe(404);
   });
 });
 

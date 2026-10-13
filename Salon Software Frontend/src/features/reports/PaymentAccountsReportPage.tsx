@@ -1,39 +1,69 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { salonService } from '@/services';
 import {
   PaymentAccountsReport,
   PaymentAccountMovementRow,
   PaymentAccountsReportQuery,
-  PaymentAccountSummaryItem,
-  Branch,
 } from '@/types/salon';
 import { AccessDeniedView } from '@/features/scaffold/AccessDeniedView';
-import { formatCurrency } from '@/lib/formatters';
-import { Badge } from '@/components/ui/badge';
-import { ReportShell } from '@/features/reports/components/ReportShell';
-import { ReportTable, ColumnDef } from '@/features/reports/components/ReportTable';
 import {
   downloadReportCsv,
   downloadReportExcel,
   printReportWindow,
-  DATE_PRESETS,
-  DatePreset,
 } from '@/features/reports/reportUtils';
 import {
-  CreditCard,
-  Building2,
-  ArrowDownLeft,
-  ArrowUpRight,
-  ArrowLeftRight,
-  TrendingUp,
-  TrendingDown,
-  Info,
+  Filter,
+  FileSpreadsheet,
+  FileText,
+  Printer,
+  Loader2,
+  Landmark,
 } from 'lucide-react';
 
-const selectField = 'text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] h-8';
-const inputField = 'text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] h-8';
-const filterLabel = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1';
+const selectClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const inputClass =
+  'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
+const labelClass = 'block text-[11px] font-semibold text-[#0B2545] mb-1.5';
+
+const formatPKR = (amt: number, withSign = false) => {
+  const num = Number(amt) || 0;
+  const abs = Math.abs(num);
+  const formatted = abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (withSign) {
+    return num >= 0 ? `+${formatted}` : `-${formatted}`;
+  }
+  return formatted;
+};
+
+const formatDateParts = (dateStr: string) => {
+  if (!dateStr) return { dayMonth: '—', year: '' };
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return { dayMonth: dateStr, year: '' };
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = d.toLocaleString('en-US', { month: 'short' });
+    const year = d.getFullYear();
+    return { dayMonth: `${day} ${month}`, year: `${year}` };
+  } catch {
+    return { dayMonth: dateStr, year: '' };
+  }
+};
+
+const formatDateDisplay = (dateStr: string) => {
+  if (!dateStr) return '—';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    const day = d.getDate();
+    const month = d.toLocaleString('en-US', { month: 'short' });
+    const year = d.getFullYear();
+    return `${day} ${month}, ${year}`;
+  } catch {
+    return dateStr;
+  }
+};
 
 export const PaymentAccountsReportPage: React.FC = () => {
   const { user, activeBranchId, allBranches } = useAuth();
@@ -43,699 +73,492 @@ export const PaymentAccountsReportPage: React.FC = () => {
     return <AccessDeniedView attemptedPath="/reports/payment-accounts" />;
   }
 
-  const isSuperAdmin = user.role === 'SUPER_ADMIN';
-  const defaultBranch = isSuperAdmin ? (activeBranchId || 'ALL') : (user.branchId || '');
-
   // Filter Form State
-  const [selectedBranch, setSelectedBranch] = useState<string>(defaultBranch);
-  const [selectedAccount, setSelectedAccount] = useState<string>('ALL');
-  const [selectedPreset, setSelectedPreset] = useState<DatePreset>('THIS_MONTH');
-  const [customFrom, setCustomFrom] = useState<string>('');
-  const [customTo, setCustomTo] = useState<string>('');
-  const [selectedType, setSelectedType] = useState<string>('ALL');
+  const [selectedBranch, setSelectedBranch] = useState<string>(activeBranchId || user.branchId || 'ALL');
   const [selectedDirection, setSelectedDirection] = useState<string>('ALL');
   const [selectedSourceModule, setSelectedSourceModule] = useState<string>('ALL');
+  const [fromDate, setFromDate] = useState<string>('');
+  const [toDate, setToDate] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Applied Query State (triggers API fetch)
-  const [appliedQuery, setAppliedQuery] = useState<PaymentAccountsReportQuery>({
-    branchId: defaultBranch,
-    preset: 'THIS_MONTH',
-    accountId: 'ALL',
-    transactionType: 'ALL',
-    direction: 'ALL',
-    sourceModule: 'ALL',
-    search: '',
-  });
-
-  // Report Data State
+  // Page state: Only fetch when user explicitly clicks Filter ("filter karna sa aae default nhi")
+  const [hasFiltered, setHasFiltered] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [reportData, setReportData] = useState<PaymentAccountsReport | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Fetch report data from live backend API (100% Real DB)
-  const fetchReport = useCallback(async (q: PaymentAccountsReportQuery) => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    try {
-      const data = await salonService.getPaymentAccountsReport(q);
-      setReportData(data);
-    } catch (err: any) {
-      console.error('Failed to load Payment Accounts report:', err);
-      setErrorMessage(err.message || 'Failed to fetch live payment accounts report from server.');
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  // Fetch report data on demand from backend API
+  const fetchReport = useCallback(
+    async (q: PaymentAccountsReportQuery) => {
+      setIsLoading(true);
+      setErrorMessage(null);
+      try {
+        const data = await salonService.getPaymentAccountsReport(q);
+        setReportData(data);
+      } catch (err: any) {
+        console.error('Failed to load Payment Accounts report:', err);
+        setErrorMessage(err.message || 'Failed to fetch live payment accounts report from server.');
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    []
+  );
 
-  // Update branch state when active branch in context changes
-  useEffect(() => {
-    if (isSuperAdmin && activeBranchId && activeBranchId !== selectedBranch) {
-      setSelectedBranch(activeBranchId);
-      setAppliedQuery((prev) => ({ ...prev, branchId: activeBranchId }));
-    }
-  }, [activeBranchId, isSuperAdmin]);
-
-  // Load report when applied query changes
-  useEffect(() => {
-    fetchReport(appliedQuery);
-  }, [appliedQuery, fetchReport]);
-
-  // Handle Form Submit / Filter Button
   const handleApplyFilters = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    setAppliedQuery({
+    setHasFiltered(true);
+
+    const query: PaymentAccountsReportQuery = {
       branchId: selectedBranch,
-      accountId: selectedAccount,
-      preset: selectedPreset,
-      startDate: selectedPreset === 'CUSTOM' ? customFrom : undefined,
-      endDate: selectedPreset === 'CUSTOM' ? customTo : undefined,
-      from: selectedPreset === 'CUSTOM' ? customFrom : undefined,
-      to: selectedPreset === 'CUSTOM' ? customTo : undefined,
-      transactionType: selectedType,
-      direction: selectedDirection,
-      sourceModule: selectedSourceModule,
-      search: searchQuery.trim(),
-    });
+      startDate: fromDate || undefined,
+      endDate: toDate || undefined,
+      from: fromDate || undefined,
+      to: toDate || undefined,
+      preset: !fromDate && !toDate ? 'THIS_MONTH' : 'CUSTOM',
+      direction: selectedDirection !== 'ALL' ? selectedDirection : undefined,
+      sourceModule: selectedSourceModule !== 'ALL' ? selectedSourceModule : undefined,
+      search: searchQuery.trim() || undefined,
+    };
+
+    fetchReport(query);
   };
 
-  // Export Metadata
-  const exportMeta: [string, string][] = useMemo(() => {
-    if (!reportData) return [];
-    return [
-      ['Report Name', 'Payment Accounts Ledger & Movement Register'],
-      ['Branch / Campus', reportData.meta.branchName || 'All Branches'],
-      ['Reporting Window', `${reportData.meta.from.slice(0, 10)} to ${reportData.meta.to.slice(0, 10)}`],
-      ['Date Basis', `${reportData.meta.dateBasis} (${reportData.meta.timezone})`],
-      ['Total Opening Balance', formatCurrency(reportData.kpis.totalOpeningBalance)],
-      ['Total Money In', formatCurrency(reportData.kpis.totalMoneyIn)],
-      ['Total Money Out', formatCurrency(reportData.kpis.totalMoneyOut)],
-      ['Transfers In', formatCurrency(reportData.kpis.totalTransfersIn)],
-      ['Transfers Out', formatCurrency(reportData.kpis.totalTransfersOut)],
-      ['Total Closing Balance', formatCurrency(reportData.kpis.totalClosingBalance)],
-      ['Net Period Movement', formatCurrency(reportData.kpis.netMovement)],
-      ['Generated At', reportData.meta.generatedAt],
-      ['Generated By', reportData.meta.generatedBy],
-    ];
-  }, [reportData]);
-
-  // Export headers and rows
-  const exportHeaders = useMemo(() => [
-    'Date',
-    'Time',
-    'Account Name',
-    'Account Type',
-    'Provider / Bank',
-    'Flow Direction',
-    'Transaction Type',
-    'Reference #',
-    'Source Module',
-    'Narrative Description',
-    'Handled By',
-    'Money In (PKR)',
-    'Money Out (PKR)',
-    'Transfer (PKR)',
-    'Running Balance (PKR)',
-  ], []);
-
-  const exportRows = useMemo(() => {
-    if (!reportData?.rows) return [];
-    return reportData.rows.map((r: PaymentAccountMovementRow) => [
-      r.date,
-      r.time,
-      r.accountName,
-      r.accountType,
-      r.providerName || '',
-      r.direction,
-      r.type,
-      r.reference || '',
-      r.sourceModule,
-      r.description || '',
-      r.userName || '',
-      r.moneyIn,
-      r.moneyOut,
-      r.transfer,
-      r.runningBalance,
-    ]);
-  }, [reportData]);
-
-  // Export Handlers
-  const handleExportCsv = () => {
-    if (!reportData || !reportData.rows.length) return;
-    downloadReportCsv('payment_accounts_ledger', exportMeta, [
-      { headers: exportHeaders, rows: exportRows },
-    ]);
-  };
-
+  // Export handlers
   const handleExportExcel = () => {
     if (!reportData || !reportData.rows.length) return;
-    downloadReportExcel('payment_accounts_ledger', exportMeta, [
-      { title: 'Ledger', headers: exportHeaders, rows: exportRows },
+    const meta: [string, string][] = [
+      ['Report', 'Payment Accounts Report'],
+      ['Branch', selectedBranch === 'ALL' ? 'All Branches' : reportData.meta.branchName || selectedBranch],
+      ['From Date', fromDate || reportData.meta.from || '—'],
+      ['To Date', toDate || reportData.meta.to || '—'],
+      ['Generated At', new Date().toLocaleString()],
+    ];
+
+    const headers = [
+      '#',
+      'Date',
+      'Account',
+      'Branch',
+      'Direction',
+      'Type',
+      'Source',
+      'Reference',
+      'Description',
+      'Amount (PKR)',
+      'Balance After (PKR)',
+    ];
+
+    const rows = reportData.rows.map((r, i) => [
+      i + 1,
+      formatDateDisplay(r.date),
+      r.accountName,
+      r.branchName,
+      r.direction,
+      r.type,
+      r.sourceModule,
+      r.reference || '—',
+      r.description || '—',
+      r.amount.toFixed(2),
+      r.runningBalance.toFixed(2),
     ]);
+
+    downloadReportExcel('Payment_Accounts_Report', meta, [{ headers, rows }]);
+  };
+
+  const handleExportPdf = () => {
+    if (!reportData || !reportData.rows.length) return;
+    const meta: [string, string][] = [
+      ['Report', 'Payment Accounts Report'],
+      ['Branch', selectedBranch === 'ALL' ? 'All Branches' : reportData.meta.branchName || selectedBranch],
+      ['From Date', fromDate || reportData.meta.from || '—'],
+      ['To Date', toDate || reportData.meta.to || '—'],
+      ['Generated At', new Date().toLocaleString()],
+    ];
+
+    const headers = [
+      '#',
+      'Date',
+      'Account',
+      'Branch',
+      'Direction',
+      'Type',
+      'Source',
+      'Reference',
+      'Description',
+      'Amount (PKR)',
+      'Balance After (PKR)',
+    ];
+
+    const rows = reportData.rows.map((r, i) => [
+      i + 1,
+      formatDateDisplay(r.date),
+      r.accountName,
+      r.branchName,
+      r.direction,
+      r.type,
+      r.sourceModule,
+      r.reference || '—',
+      r.description || '—',
+      r.amount.toFixed(2),
+      r.runningBalance.toFixed(2),
+    ]);
+
+    downloadReportCsv('Payment_Accounts_Report', meta, [{ headers, rows }]);
   };
 
   const handlePrint = () => {
-    if (!reportData || !reportData.rows.length) return;
-    const totalsRow = [
-      'TOTAL',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      reportData.kpis.totalMoneyIn,
-      reportData.kpis.totalMoneyOut,
-      reportData.kpis.totalTransfersIn - reportData.kpis.totalTransfersOut,
-      reportData.kpis.totalClosingBalance,
+    if (!reportData || !reportData.rows.length) {
+      window.print();
+      return;
+    }
+    const meta: [string, string][] = [
+      ['Branch', selectedBranch === 'ALL' ? 'All Branches' : reportData.meta.branchName || selectedBranch],
+      ['From Date', fromDate || reportData.meta.from || '—'],
+      ['To Date', toDate || reportData.meta.to || '—'],
+      ['Total Money In', formatPKR(reportData.kpis.totalMoneyIn)],
+      ['Total Money Out', formatPKR(reportData.kpis.totalMoneyOut)],
+      ['Closing Balance', formatPKR(reportData.kpis.totalClosingBalance)],
     ];
+    const headers = ['#', 'Date', 'Account', 'Branch', 'Direction', 'Reference', 'Amount', 'Balance After'];
+    const rows = reportData.rows.map((r, i) => [
+      i + 1,
+      formatDateDisplay(r.date),
+      r.accountName,
+      r.branchName,
+      r.direction,
+      r.reference || '—',
+      formatPKR(r.amount),
+      formatPKR(r.runningBalance),
+    ]);
+
     printReportWindow({
-      title: 'Payment Accounts Ledger & Movement Register',
-      subtitle: `Branch: ${reportData.meta.branchName} · Window: ${reportData.meta.from.slice(0, 10)} to ${reportData.meta.to.slice(0, 10)}`,
-      meta: exportMeta,
-      headers: exportHeaders,
-      rows: exportRows,
-      totals: totalsRow,
+      title: 'Payment Accounts Report',
+      meta,
+      headers,
+      rows,
     });
   };
 
-  // Table Columns Definition
-  const columns: ColumnDef<PaymentAccountMovementRow>[] = useMemo(() => [
-    {
-      key: 'date',
-      header: 'Date & Time',
-      width: '120px',
-      render: (row) => (
-        <div>
-          <span className="font-semibold text-slate-800 text-xs block">{row.date}</span>
-          <span className="text-[10px] text-slate-400 block">{row.time}</span>
-        </div>
-      ),
-    },
-    {
-      key: 'accountName',
-      header: 'Payment Account',
-      width: '180px',
-      render: (row) => (
-        <div>
-          <span className="font-medium text-slate-900 text-xs block">{row.accountName}</span>
-          <div className="flex items-center gap-1.5 mt-0.5">
-            <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
-              {row.accountType}
-            </span>
-            {row.providerName && (
-              <span className="text-[10px] text-slate-500 truncate max-w-[100px]">
-                {row.providerName}
-              </span>
-            )}
-          </div>
-        </div>
-      ),
-    },
-    {
-      key: 'direction',
-      header: 'Direction',
-      width: '90px',
-      align: 'center',
-      render: (row) => (
-        <Badge
-          variant="outline"
-          className={`text-[10px] font-bold px-2 py-0.5 uppercase ${
-            row.direction === 'IN'
-              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-              : 'bg-rose-50 text-rose-700 border-rose-200'
-          }`}
-        >
-          {row.direction === 'IN' ? '↓ IN' : '↑ OUT'}
-        </Badge>
-      ),
-    },
-    {
-      key: 'type',
-      header: 'Tx Type',
-      width: '110px',
-      render: (row) => (
-        <span className="text-xs font-medium text-slate-700">
-          {row.type.replace(/_/g, ' ')}
-        </span>
-      ),
-    },
-    {
-      key: 'reference',
-      header: 'Reference #',
-      width: '130px',
-      render: (row) => (
-        <span className="font-mono text-xs font-semibold text-[#0047AB]">
-          {row.reference || '-'}
-        </span>
-      ),
-    },
-    {
-      key: 'sourceModule',
-      header: 'Source Module',
-      width: '130px',
-      render: (row) => (
-        <span className="text-[11px] text-slate-600 bg-slate-50 px-2 py-0.5 rounded border border-slate-200">
-          {row.sourceModule.replace(/_/g, ' ')}
-        </span>
-      ),
-    },
-    {
-      key: 'description',
-      header: 'Narrative Description',
-      width: '240px',
-      render: (row) => (
-        <span className="text-xs text-slate-600 block truncate max-w-[240px]" title={row.description}>
-          {row.description || '-'}
-        </span>
-      ),
-    },
-    {
-      key: 'userName',
-      header: 'Handled By',
-      width: '110px',
-      render: (row) => (
-        <span className="text-xs text-slate-600">{row.userName || 'System'}</span>
-      ),
-    },
-    {
-      key: 'moneyIn',
-      header: 'Money In (PKR)',
-      width: '120px',
-      align: 'right',
-      render: (row) => (
-        <span className={`text-xs font-semibold font-mono ${row.moneyIn > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>
-          {row.moneyIn > 0 ? `+${formatCurrency(row.moneyIn)}` : '-'}
-        </span>
-      ),
-    },
-    {
-      key: 'moneyOut',
-      header: 'Money Out (PKR)',
-      width: '120px',
-      align: 'right',
-      render: (row) => (
-        <span className={`text-xs font-semibold font-mono ${row.moneyOut > 0 ? 'text-rose-600' : 'text-slate-300'}`}>
-          {row.moneyOut > 0 ? `-${formatCurrency(row.moneyOut)}` : '-'}
-        </span>
-      ),
-    },
-    {
-      key: 'transfer',
-      header: 'Transfer (PKR)',
-      width: '120px',
-      align: 'right',
-      render: (row) => (
-        <span className={`text-xs font-semibold font-mono ${row.transfer !== 0 ? 'text-blue-600' : 'text-slate-300'}`}>
-          {row.transfer !== 0 ? (row.transfer > 0 ? `+${formatCurrency(row.transfer)}` : `-${formatCurrency(Math.abs(row.transfer))}`) : '-'}
-        </span>
-      ),
-    },
-    {
-      key: 'runningBalance',
-      header: 'Running Balance',
-      width: '140px',
-      align: 'right',
-      render: (row) => (
-        <span className={`text-xs font-bold font-mono ${row.runningBalance >= 0 ? 'text-[#0047AB]' : 'text-rose-600'}`}>
-          {formatCurrency(row.runningBalance)}
-        </span>
-      ),
-    },
-  ], []);
-
-  // Distinct account list for filter dropdown
-  const accountOptions = useMemo(() => {
-    if (!reportData?.accountsSummary) return [];
-    return reportData.accountsSummary;
-  }, [reportData]);
-
-  // Filter Children Component
-  const filterForm = (
-    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 w-full">
-      {/* Branch / Campus */}
-      <div>
-        <label className={filterLabel}>Campus / Branch</label>
-        <select
-          value={selectedBranch}
-          onChange={(e) => setSelectedBranch(e.target.value)}
-          disabled={!isSuperAdmin}
-          className={`${selectField} w-full`}
-        >
-          {isSuperAdmin && <option value="ALL">All Branches</option>}
-          {allBranches?.map((b: Branch) => (
-            <option key={b.id} value={b.id}>
-              {b.name}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Account Filter */}
-      <div>
-        <label className={filterLabel}>Payment Account</label>
-        <select
-          value={selectedAccount}
-          onChange={(e) => setSelectedAccount(e.target.value)}
-          className={`${selectField} w-full`}
-        >
-          <option value="ALL">All Accounts</option>
-          {accountOptions.map((acc: PaymentAccountSummaryItem) => (
-            <option key={acc.accountId} value={acc.accountId}>
-              {acc.accountName} ({acc.accountType})
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Date Presets */}
-      <div>
-        <label className={filterLabel}>Date Preset</label>
-        <select
-          value={selectedPreset}
-          onChange={(e) => setSelectedPreset(e.target.value as DatePreset)}
-          className={`${selectField} w-full`}
-        >
-          {DATE_PRESETS.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Direction Filter */}
-      <div>
-        <label className={filterLabel}>Flow Direction</label>
-        <select
-          value={selectedDirection}
-          onChange={(e) => setSelectedDirection(e.target.value)}
-          className={`${selectField} w-full`}
-        >
-          <option value="ALL">All Flows</option>
-          <option value="IN">Money In (Inflow)</option>
-          <option value="OUT">Money Out (Outflow)</option>
-        </select>
-      </div>
-
-      {/* Transaction Type */}
-      <div>
-        <label className={filterLabel}>Tx Type</label>
-        <select
-          value={selectedType}
-          onChange={(e) => setSelectedType(e.target.value)}
-          className={`${selectField} w-full`}
-        >
-          <option value="ALL">All Types</option>
-          <option value="PAYMENT">Invoice Payment</option>
-          <option value="EXPENSE">Expense Disbursement</option>
-          <option value="TRANSFER">Account Transfer</option>
-          <option value="REFUND">Customer Refund</option>
-          <option value="PETTY_CASH">Petty Cash In/Out</option>
-          <option value="PAYROLL">Payroll Salary</option>
-        </select>
-      </div>
-
-      {/* Search Input */}
-      <div>
-        <label className={filterLabel}>Search Term</label>
-        <input
-          type="text"
-          placeholder="Ref #, desc, user..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className={`${inputField} w-full`}
-        />
-      </div>
-
-      {/* Custom Date Inputs if CUSTOM selected */}
-      {selectedPreset === 'CUSTOM' && (
-        <div className="col-span-full grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
-          <div>
-            <label className={filterLabel}>Custom From Date</label>
-            <input
-              type="date"
-              value={customFrom}
-              onChange={(e) => setCustomFrom(e.target.value)}
-              className={`${inputField} w-full`}
-            />
-          </div>
-          <div>
-            <label className={filterLabel}>Custom To Date</label>
-            <input
-              type="date"
-              value={customTo}
-              onChange={(e) => setCustomTo(e.target.value)}
-              className={`${inputField} w-full`}
-            />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-
-  // KPI Summary Strip
-  const kpiStrip = reportData ? (
-    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-2">
-      {/* Total Opening Balance */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">
-          Opening Balance
-        </span>
-        <span className="text-base font-bold text-slate-800 font-mono block">
-          {formatCurrency(reportData.kpis.totalOpeningBalance)}
-        </span>
-        <span className="text-[10px] text-slate-400 mt-0.5 block">Pre-period position</span>
-      </div>
-
-      {/* Money In */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
-            Total Money In
-          </span>
-          <ArrowDownLeft className="w-3.5 h-3.5 text-emerald-500" />
-        </div>
-        <span className="text-base font-bold text-emerald-600 font-mono block">
-          +{formatCurrency(reportData.kpis.totalMoneyIn)}
-        </span>
-        <span className="text-[10px] text-emerald-600 mt-0.5 block">Direct Inflows</span>
-      </div>
-
-      {/* Money Out */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
-            Total Money Out
-          </span>
-          <ArrowUpRight className="w-3.5 h-3.5 text-rose-500" />
-        </div>
-        <span className="text-base font-bold text-rose-600 font-mono block">
-          -{formatCurrency(reportData.kpis.totalMoneyOut)}
-        </span>
-        <span className="text-[10px] text-rose-600 mt-0.5 block">Disbursements & Expenses</span>
-      </div>
-
-      {/* Transfers In */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
-            Transfers In
-          </span>
-          <ArrowLeftRight className="w-3.5 h-3.5 text-blue-500" />
-        </div>
-        <span className="text-base font-bold text-blue-600 font-mono block">
-          +{formatCurrency(reportData.kpis.totalTransfersIn)}
-        </span>
-        <span className="text-[10px] text-slate-400 mt-0.5 block">Internal Received</span>
-      </div>
-
-      {/* Transfers Out */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
-            Transfers Out
-          </span>
-          <ArrowLeftRight className="w-3.5 h-3.5 text-slate-400" />
-        </div>
-        <span className="text-base font-bold text-slate-600 font-mono block">
-          -{formatCurrency(reportData.kpis.totalTransfersOut)}
-        </span>
-        <span className="text-[10px] text-slate-400 mt-0.5 block">Internal Sent</span>
-      </div>
-
-      {/* Net Period Movement */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
-            Net Movement
-          </span>
-          {reportData.kpis.netMovement >= 0 ? (
-            <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
-          ) : (
-            <TrendingDown className="w-3.5 h-3.5 text-rose-500" />
-          )}
-        </div>
-        <span
-          className={`text-base font-bold font-mono block ${
-            reportData.kpis.netMovement >= 0 ? 'text-emerald-600' : 'text-rose-600'
-          }`}
-        >
-          {reportData.kpis.netMovement >= 0 ? '+' : ''}
-          {formatCurrency(reportData.kpis.netMovement)}
-        </span>
-        <span className="text-[10px] text-slate-400 mt-0.5 block">Δ Inflows - Outflows</span>
-      </div>
-
-      {/* Total Closing Balance */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-2xs">
-        <span className="text-[10px] font-semibold text-[#0047AB] uppercase tracking-wide block mb-1">
-          Closing Balance
-        </span>
-        <span className="text-base font-bold text-[#0047AB] font-mono block">
-          {formatCurrency(reportData.kpis.totalClosingBalance)}
-        </span>
-        <span className="text-[10px] text-slate-500 mt-0.5 block font-medium">
-          Portfolio Position
-        </span>
-      </div>
-    </div>
-  ) : null;
+  const kpis = reportData?.kpis || {
+    totalOpeningBalance: 0,
+    totalMoneyIn: 0,
+    totalMoneyOut: 0,
+    totalTransfersIn: 0,
+    totalTransfersOut: 0,
+    totalClosingBalance: 0,
+    totalMovements: 0,
+  };
 
   return (
-    <ReportShell
-      title="Payment Accounts Ledger"
-      description="Complete chronological audit register of bank accounts, mobile wallets, and digital tender movements."
-      icon={CreditCard}
-      bannerTitle="Payment Accounts Ledger & Movement Register"
-      metaNotice={
-        reportData ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <span>Branch: <strong className="text-slate-800">{reportData.meta.branchName || 'All'}</strong></span>
-            <span>·</span>
-            <span>Window: <strong className="text-slate-800">{reportData.meta.from.slice(0, 10)} to {reportData.meta.to.slice(0, 10)}</strong></span>
-            <span>·</span>
-            <span>Timezone: <strong className="text-slate-800">{reportData.meta.timezone}</strong></span>
-          </div>
-        ) : undefined
-      }
-      isFilterLoading={isLoading}
-      onFilterSubmit={handleApplyFilters}
-      onExportExcel={handleExportExcel}
-      onExportCsv={handleExportCsv}
-      onExportPdf={handlePrint}
-      onExportPrint={handlePrint}
-      filterChildren={filterForm}
-      kpiStrip={kpiStrip}
-    >
-      {/* ERROR BANNER */}
-      {errorMessage && (
-        <div className="mb-4 p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
-          <Info className="w-4 h-4 shrink-0 text-rose-500" />
-          <span>{errorMessage}</span>
+    <div className="min-h-screen bg-[#F4F6F9] px-4 py-5 md:px-8 md:py-6 text-slate-800">
+      {/* Top Header Card with Title & Filters */}
+      <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 p-5 md:p-6 mb-6">
+        <div className="mb-5">
+          <h1 className="text-xl font-bold text-[#0B2545] tracking-tight">Payment Accounts Reports</h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Cashflow audit for bank accounts, card terminals and digital wallets: opening balances, receipts, disbursements and closing reconciliations
+          </p>
         </div>
-      )}
 
-      {/* ACCOUNTS SUMMARY CARDS */}
-      {reportData && reportData.accountsSummary && reportData.accountsSummary.length > 0 && (
-        <div className="mb-4 bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-          <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-100">
-            <div className="flex items-center gap-2">
-              <Building2 className="w-4 h-4 text-[#0047AB]" />
-              <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
-                Individual Account Portfolio Breakdown
-              </h3>
-            </div>
-            <span className="text-[11px] text-slate-500 font-medium">
-              {reportData.accountsSummary.length} Active Accounts
-            </span>
+        {/* Filters Form Row */}
+        <form onSubmit={handleApplyFilters} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3.5 items-end">
+          {/* Branch Filter */}
+          <div>
+            <label className={labelClass}>Branch</label>
+            <select
+              value={selectedBranch}
+              onChange={(e) => setSelectedBranch(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">All Branches</option>
+              {allBranches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-            {reportData.accountsSummary.map((acc: PaymentAccountSummaryItem) => (
-              <div
-                key={acc.accountId}
-                className="p-3 rounded-lg border border-slate-200 bg-slate-50/50 hover:bg-slate-50 transition-colors flex flex-col justify-between"
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-semibold text-xs text-slate-800 truncate" title={acc.accountName}>
-                      {acc.accountName}
-                    </span>
-                    <Badge variant="outline" className="text-[9px] font-mono uppercase px-1.5 py-0 bg-white">
-                      {acc.accountType}
-                    </Badge>
-                  </div>
-                  {acc.accountIdentifier && (
-                    <div className="text-[10px] font-mono text-slate-500 mb-2 truncate">
-                      {acc.accountIdentifier}
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-1 text-[11px] pt-2 border-t border-slate-200/60">
-                  <div className="flex justify-between text-slate-500">
-                    <span>Opening:</span>
-                    <span className="font-mono text-slate-700">{formatCurrency(acc.openingBalance)}</span>
-                  </div>
-                  <div className="flex justify-between text-emerald-600">
-                    <span>Inflows:</span>
-                    <span className="font-mono">+{formatCurrency(acc.moneyIn + acc.transfersIn)}</span>
-                  </div>
-                  <div className="flex justify-between text-rose-600">
-                    <span>Outflows:</span>
-                    <span className="font-mono">-{formatCurrency(acc.moneyOut + acc.transfersOut)}</span>
-                  </div>
-                  <div className="flex justify-between font-bold text-slate-900 pt-1 border-t border-dashed border-slate-200">
-                    <span>Closing:</span>
-                    <span className="font-mono text-[#0047AB]">{formatCurrency(acc.closingBalance)}</span>
-                  </div>
-                </div>
-              </div>
-            ))}
+          {/* Direction Filter */}
+          <div>
+            <label className={labelClass}>Cashflow Direction</label>
+            <select
+              value={selectedDirection}
+              onChange={(e) => setSelectedDirection(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">All Directions</option>
+              <option value="MONEY_IN">Money In (Inflow)</option>
+              <option value="MONEY_OUT">Money Out (Outflow)</option>
+            </select>
           </div>
-        </div>
-      )}
 
-      {/* DYNAMIC LANDSCAPE TABLE */}
-      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
-        <ReportTable
-          columns={columns}
-          data={reportData?.rows || []}
-          loading={isLoading}
-          emptyMessage="No payment account transactions recorded for the selected filter range."
-        />
-
-        {/* Footer Summary Bar */}
-        {reportData && reportData.rows.length > 0 && (
-          <div className="bg-slate-50 border-t border-slate-200 px-4 py-3 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-600 gap-2 font-mono">
-            <div>
-              <span>Showing </span>
-              <strong className="text-slate-900">{reportData.rows.length}</strong>
-              <span> ledger entries from </span>
-              <strong>{reportData.meta.from.slice(0, 10)}</strong>
-              <span> to </span>
-              <strong>{reportData.meta.to.slice(0, 10)}</strong>
-            </div>
-
-            <div className="flex items-center gap-4 text-xs">
-              <div>
-                Inflows: <strong className="text-emerald-600">+{formatCurrency(reportData.kpis.totalMoneyIn)}</strong>
-              </div>
-              <div>
-                Outflows: <strong className="text-rose-600">-{formatCurrency(reportData.kpis.totalMoneyOut)}</strong>
-              </div>
-              <div>
-                Closing Total: <strong className="text-[#0047AB]">{formatCurrency(reportData.kpis.totalClosingBalance)}</strong>
-              </div>
-            </div>
+          {/* Source Module Filter */}
+          <div>
+            <label className={labelClass}>Source Module</label>
+            <select
+              value={selectedSourceModule}
+              onChange={(e) => setSelectedSourceModule(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">All Sources</option>
+              <option value="POS_INVOICE">POS Invoice</option>
+              <option value="EXPENSE">Expense</option>
+              <option value="PAYROLL">Payroll</option>
+              <option value="DRAWER_SETTLEMENT">Drawer Settlement</option>
+            </select>
           </div>
-        )}
+
+          {/* From Date */}
+          <div>
+            <label className={labelClass}>From Date</label>
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className={inputClass}
+            />
+          </div>
+
+          {/* To Date */}
+          <div>
+            <label className={labelClass}>To Date</label>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className={inputClass}
+            />
+          </div>
+
+          {/* Filter Action Button */}
+          <div>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full h-[35px] bg-[#0047AB] hover:bg-[#003785] active:bg-[#002b66] text-white font-medium text-xs rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-70"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Loading...</span>
+                </>
+              ) : (
+                <>
+                  <Filter className="w-3.5 h-3.5 fill-current" />
+                  <span>Filter</span>
+                </>
+              )}
+            </button>
+          </div>
+        </form>
       </div>
-    </ReportShell>
+
+      {/* Main Content Area */}
+      {!hasFiltered ? (
+        /* Empty State before Filter clicked */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 md:p-24 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <div className="text-slate-400 mb-3">
+            <Filter className="w-14 h-14 stroke-[1.25] text-slate-400" />
+          </div>
+          <p className="text-slate-400 text-sm font-medium">Please apply filters to view reports</p>
+        </div>
+      ) : isLoading ? (
+        /* Loading Skeleton */
+        <div className="bg-white rounded-xl border border-slate-200/90 p-16 flex flex-col items-center justify-center min-h-[380px] shadow-xs text-center">
+          <Loader2 className="w-10 h-10 animate-spin text-[#0047AB] mb-3" />
+          <p className="text-slate-600 text-sm font-medium">Loading Payment Accounts Reports...</p>
+        </div>
+      ) : errorMessage ? (
+        /* Error Message */
+        <div className="bg-white rounded-xl border border-rose-200 p-8 shadow-xs text-center">
+          <p className="text-rose-600 text-sm font-medium mb-3">{errorMessage}</p>
+          <button
+            onClick={() => handleApplyFilters()}
+            className="px-4 py-1.5 bg-[#0047AB] text-white text-xs font-semibold rounded-md shadow-xs hover:bg-[#003785]"
+          >
+            Retry
+          </button>
+        </div>
+      ) : (
+        /* Filtered Data Layout */
+        <div className="mb-8">
+          {/* Royal Blue Banner Header */}
+          <div className="bg-[#0047AB] text-white px-5 py-3 rounded-t-xl flex flex-wrap items-center justify-between gap-3 shadow-sm">
+            <div className="flex items-center gap-2.5">
+              <Landmark className="w-5 h-5 text-white/90" />
+              <span className="font-semibold text-sm tracking-wide">Account Cashflow Register</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="bg-[#009688] hover:bg-[#00897B] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                CSV
+              </button>
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                className="bg-[#DC2626] hover:bg-[#B91C1C] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                PDF
+              </button>
+              <button
+                type="button"
+                onClick={handlePrint}
+                className="bg-[#4B5563] hover:bg-[#374151] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                Print
+              </button>
+            </div>
+          </div>
+
+          {/* Table Container with Horizontal Scroll */}
+          <div className="bg-white overflow-x-auto rounded-b-xl border border-t-0 border-slate-200/90 shadow-sm">
+            <table className="w-full min-w-[1300px] text-left border-collapse font-['Inter',sans-serif] text-[13px] antialiased">
+              <thead>
+                <tr className="bg-[#EAF2FB] border-b border-blue-100 text-[#475569] font-medium text-[13px]">
+                  <th className="py-3.5 px-3 text-center w-8">#</th>
+                  <th className="py-3.5 px-4 whitespace-nowrap">Date</th>
+                  <th className="py-3.5 px-4">Account</th>
+                  <th className="py-3.5 px-4">Branch</th>
+                  <th className="py-3.5 px-4 text-center">Direction</th>
+                  <th className="py-3.5 px-4 whitespace-nowrap">Type</th>
+                  <th className="py-3.5 px-4 whitespace-nowrap">Source</th>
+                  <th className="py-3.5 px-4 whitespace-nowrap">Reference</th>
+                  <th className="py-3.5 px-4">Description</th>
+                  <th className="py-3.5 px-4 text-right">Amount</th>
+                  <th className="py-3.5 px-4 text-right">Balance After</th>
+                </tr>
+              </thead>
+              <tbody className="text-[#334155]">
+                {reportData && reportData.rows.length > 0 ? (
+                  reportData.rows.map((row: PaymentAccountMovementRow, idx: number) => {
+                    const isInflow = row.direction === 'IN';
+                    const dateParts = formatDateParts(row.date);
+
+                    return (
+                      <tr key={row.id || idx} className="hover:bg-blue-50/20 transition-colors border-b border-dashed border-slate-200">
+                        {/* 1. # */}
+                        <td className="py-3.5 px-3 text-center font-normal text-slate-400">
+                          {idx + 1}
+                        </td>
+
+                        {/* 2. Date */}
+                        <td className="py-3.5 px-4 whitespace-nowrap leading-tight">
+                          <div className="font-medium text-slate-800">{dateParts.dayMonth}</div>
+                          <div className="text-[11px] text-slate-400">{dateParts.year}</div>
+                        </td>
+
+                        {/* 3. Account */}
+                        <td className="py-3.5 px-4 whitespace-nowrap font-medium text-slate-800">
+                          {row.accountName}
+                        </td>
+
+                        {/* 4. Branch */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-slate-600">
+                          {row.branchName || 'Main Branch'}
+                        </td>
+
+                        {/* 5. Direction */}
+                        <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                          {isInflow ? (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#10B981] text-white shadow-2xs">
+                              Money In
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#64748B] text-white shadow-2xs">
+                              Money Out
+                            </span>
+                          )}
+                        </td>
+
+                        {/* 6. Type */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-slate-700">
+                          {row.type}
+                        </td>
+
+                        {/* 7. Source */}
+                        <td className="py-3.5 px-4 whitespace-nowrap text-slate-600">
+                          {row.sourceModule}
+                        </td>
+
+                        {/* 8. Reference */}
+                        <td className="py-3.5 px-4 text-slate-600 whitespace-nowrap">
+                          {row.reference || '—'}
+                        </td>
+
+                        {/* 9. Description */}
+                        <td className="py-3.5 px-4 text-slate-700 max-w-[220px] truncate" title={row.description}>
+                          {row.description || '—'}
+                        </td>
+
+                        {/* 10. Amount */}
+                        <td
+                          className={`py-3.5 px-4 text-right tabular-nums font-semibold whitespace-nowrap ${
+                            isInflow ? 'text-[#10B981]' : 'text-[#EF4444]'
+                          }`}
+                        >
+                          {isInflow ? `+${formatPKR(row.amount)}` : `-${formatPKR(row.amount)}`}
+                        </td>
+
+                        {/* 11. Balance After */}
+                        <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-slate-800 whitespace-nowrap">
+                          {formatPKR(row.runningBalance)}
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={11} className="py-12 text-center text-slate-400 font-medium">
+                      No account movements found for the selected branch, dates, and filters.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+
+              {/* Integrated Table Footer */}
+              <tfoot className="bg-[#F8FAFC] border-t-2 border-slate-200 font-['Inter',sans-serif] text-[13px] text-[#334155]">
+                {/* Row 1: TOTALS (PKR) */}
+                <tr className="border-b border-slate-200/70">
+                  <td colSpan={9} className="py-3.5 px-4 text-right font-bold text-slate-800 tracking-wide">
+                    TOTAL CASHFLOW (PKR)
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-[#10B981]">
+                    +{formatPKR(kpis.totalMoneyIn)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right tabular-nums font-bold text-slate-800">
+                    {formatPKR(kpis.totalClosingBalance)}
+                  </td>
+                </tr>
+
+                {/* Row 2: Net Cashflow Movement */}
+                <tr>
+                  <td colSpan={9} className="py-3 px-4 text-right font-medium text-slate-600">
+                    Net Account Position (Inflow - Outflow)
+                  </td>
+                  <td colSpan={2} className="py-3 px-4 text-right tabular-nums font-bold text-[#0047AB] text-sm">
+                    +{formatPKR(kpis.totalMoneyIn - kpis.totalMoneyOut)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Footer Branding */}
+      <div className="text-center py-4 text-xs text-slate-400 font-medium tracking-wide">
+        © iSysware Management System
+      </div>
+    </div>
   );
 };
+
+export default PaymentAccountsReportPage;

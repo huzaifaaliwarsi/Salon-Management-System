@@ -7,7 +7,7 @@ import { Card, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
-  DollarSign,
+  Banknote,
   Landmark,
   Wallet,
   TrendingUp,
@@ -50,7 +50,7 @@ export const BranchOperationalSections: React.FC<BranchOperationalSectionsProps>
           title="Gross Sales (All Invoices)"
           value={formatCurrency(metrics.grossSales)}
           subtitle={`Discounts: ${formatCurrency(metrics.totalDiscounts)} · Net Sales: ${formatCurrency(metrics.netSales)}`}
-          icon={<DollarSign className="w-4 h-4" />}
+          icon={<Banknote className="w-4 h-4" />}
           tone="primary"
           trendText="Confirmed"
         />
@@ -332,8 +332,8 @@ export const BranchOperationalSections: React.FC<BranchOperationalSectionsProps>
                         apt.status === 'COMPLETED'
                           ? 'success'
                           : apt.status === 'IN_PROGRESS'
-                          ? 'primary'
-                          : 'warning'
+                            ? 'primary'
+                            : 'warning'
                       }
                     >
                       {apt.status.replace('_', ' ')}

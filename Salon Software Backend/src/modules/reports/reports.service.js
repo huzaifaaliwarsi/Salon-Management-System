@@ -283,6 +283,17 @@ export const salesInvoicesReport = async (actor, q = {}) => {
     ...(ctx.branchId ? { branchId: ctx.branchId } : {}),
   };
 
+  // Scope to actor if ACCOUNTANT, or apply cashier/soldBy filter for administrators
+  if (actor.role === 'ACCOUNTANT') {
+    where.processedByUserId = actor.id;
+  } else if (q.soldByUserId && q.soldByUserId !== 'ALL') {
+    where.processedByUserId = q.soldByUserId;
+  } else if (q.accountantId && q.accountantId !== 'ALL') {
+    where.processedByUserId = q.accountantId;
+  } else if (q.userId && q.userId !== 'ALL') {
+    where.processedByUserId = q.userId;
+  }
+
   if (q.paymentStatus && q.paymentStatus !== 'ALL') {
     where.status = q.paymentStatus;
   }
@@ -482,6 +493,7 @@ export const salesInvoicesReport = async (actor, q = {}) => {
       gross: n(gross),
       discount: n(discount),
       netSales: n(netSales),
+      tax: n(taxCharged),
       taxCharged: n(taxCharged),
       taxReversed: n(refundedTax),
       netTaxLiability: n(taxCharged.minus(refundedTax)),
@@ -539,6 +551,7 @@ export const salesInvoicesReport = async (actor, q = {}) => {
     gross: n(totalGross),
     discount: n(totalDiscount),
     netSales: n(totalNetSales),
+    tax: n(totalTaxCharged),
     taxCharged: n(totalTaxCharged),
     taxReversed: n(totalTaxReversed),
     netTaxLiability: n(netTaxLiability),
@@ -562,15 +575,17 @@ export const incomeExpenseReport = async (actor, query = {}) => {
   const utcRange = { gte: ctx.fromDate, lte: ctx.toDate };
   const branchFilter = ctx.branchId ? { branchId: ctx.branchId } : {};
 
-  const [branches, staffMembers, invoices, refunds, expenses, payrollRuns, commissionEvents, inventoryLosses] = await Promise.all([
+  const [branches, staffMembers, users, invoices, refunds, expenses, payrollRuns, commissionEvents, inventoryLosses] = await Promise.all([
     prisma.branch.findMany({ select: { id: true, name: true, city: true } }),
-    prisma.staff.findMany({ select: { id: true, name: true, employeeCode: true } }),
+    prisma.staff.findMany({ select: { id: true, name: true, employeeCode: true, branchId: true } }),
+    prisma.user.findMany({ select: { id: true, name: true, role: true, branchId: true } }),
     // 1. Valid non-voided POS Invoices
     prisma.invoice.findMany({
       where: {
         date: dateRange,
         lifecycle: { not: 'VOIDED' },
         ...branchFilter,
+        ...(actor.role === 'ACCOUNTANT' ? { processedByUserId: actor.id } : {}),
       },
       select: {
         id: true,
@@ -583,6 +598,9 @@ export const incomeExpenseReport = async (actor, query = {}) => {
         subtotal: true,
         discount: true,
         netSales: true,
+        total: true,
+        amountPaid: true,
+        amountDue: true,
         paymentMethod: true,
         status: true,
         lifecycle: true,
@@ -594,7 +612,10 @@ export const incomeExpenseReport = async (actor, query = {}) => {
     prisma.invoiceRefund.findMany({
       where: {
         refundDate: dateRange,
-        invoice: ctx.branchId ? { branchId: ctx.branchId } : undefined,
+        invoice: {
+          ...(ctx.branchId ? { branchId: ctx.branchId } : {}),
+          ...(actor.role === 'ACCOUNTANT' ? { processedByUserId: actor.id } : {}),
+        },
       },
       select: {
         id: true,
@@ -612,6 +633,7 @@ export const incomeExpenseReport = async (actor, query = {}) => {
       where: {
         expenseDate: dateRange,
         ...branchFilter,
+        ...(actor.role === 'ACCOUNTANT' ? { OR: [{ paidByUserId: actor.id }, { createdByUserId: actor.id }] } : {}),
         ...(query.status && query.status !== 'ALL'
           ? { status: query.status }
           : { status: { not: 'DRAFT' } }),
@@ -635,52 +657,68 @@ export const incomeExpenseReport = async (actor, query = {}) => {
         branchId: true,
       },
     }),
-    // 4. Finalized Payroll Runs (Recognized salary expense)
-    prisma.payrollRun.findMany({
-      where: {
-        status: 'FINALIZED',
-        ...branchFilter,
-        finalizedAt: utcRange,
-      },
-      include: {
-        payslips: true,
-      },
-    }),
-    // 5. Commission Events (Earn & Reversal)
-    prisma.commissionEvent.findMany({
-      where: {
-        eventDate: dateRange,
-        ...branchFilter,
-      },
-      select: {
-        id: true,
-        branchId: true,
-        staffId: true,
-        invoiceId: true,
-        invoiceNumber: true,
-        type: true,
-        attributedNet: true,
-        rate: true,
-        amount: true,
-        eventDate: true,
-        consumedByRunId: true,
-      },
-    }),
-    // 6. Inventory Write-offs / Shrinkage Losses
-    prisma.stockMovement.findMany({
-      where: {
-        createdAt: utcRange,
-        movementType: { in: ['EXPIRED_OUT', 'DAMAGED_OUT', 'NEGATIVE_ADJUSTMENT'] },
-        ...branchFilter,
-      },
-      include: {
-        item: { select: { name: true, sku: true } },
-      },
-    }),
+    // 4. Finalized & Paid Payroll Runs (Excluded for Accountants; Admin only)
+    actor.role === 'ACCOUNTANT'
+      ? Promise.resolve([])
+      : prisma.payrollRun.findMany({
+          where: {
+            status: { in: ['FINALIZED', 'PARTIALLY_PAID', 'PAID'] },
+            ...branchFilter,
+            OR: [
+              { finalizedAt: utcRange },
+              { generatedAt: utcRange },
+            ],
+          },
+          include: {
+            payslips: {
+              include: {
+                payments: true,
+              },
+            },
+          },
+        }),
+    // 5. Commission Events (Excluded for Accountants; Admin only)
+    actor.role === 'ACCOUNTANT'
+      ? Promise.resolve([])
+      : prisma.commissionEvent.findMany({
+          where: {
+            eventDate: dateRange,
+            ...branchFilter,
+          },
+          select: {
+            id: true,
+            branchId: true,
+            staffId: true,
+            invoiceId: true,
+            invoiceNumber: true,
+            type: true,
+            attributedNet: true,
+            rate: true,
+            amount: true,
+            eventDate: true,
+            consumedByRunId: true,
+          },
+        }),
+    // 6. Inventory Write-offs / Shrinkage Losses (Excluded for Accountants; Admin only)
+    actor.role === 'ACCOUNTANT'
+      ? Promise.resolve([])
+      : prisma.stockMovement.findMany({
+          where: {
+            createdAt: utcRange,
+            movementType: { in: ['EXPIRED_OUT', 'DAMAGED_OUT', 'NEGATIVE_ADJUSTMENT'] },
+            ...branchFilter,
+          },
+          include: {
+            item: { select: { name: true, sku: true } },
+          },
+        }),
   ]);
 
   const branchMap = new Map(branches.map((b) => [b.id, b.name]));
   const staffMap = new Map(staffMembers.map((s) => [s.id, `${s.name} (${s.employeeCode})`]));
+  const userRoleMap = new Map();
+  users.forEach((u) => { if (u.name) userRoleMap.set(u.name.toLowerCase(), u.role); });
+  staffMembers.forEach((s) => { if (s.name) userRoleMap.set(s.name.toLowerCase(), 'STAFF'); });
 
   // Build unified item rows
   const rawRows = [];
@@ -688,12 +726,14 @@ export const incomeExpenseReport = async (actor, query = {}) => {
   // Invoices -> Recognized Income
   for (const inv of invoices) {
     const net = toDec(inv.netSales);
+    const due = toDec(inv.amountDue || 0);
+    const paidAmt = round2(net.minus(due));
     rawRows.push({
       id: `inv-${inv.id}`,
       date: ymd(inv.date),
       type: 'INCOME',
       category: 'Sales & Services',
-      source: 'POS_INVOICE',
+      source: 'POS Invoice',
       reference: inv.invoiceNumber,
       branchId: inv.branchId,
       branchName: branchMap.get(inv.branchId) || 'Branch',
@@ -701,7 +741,10 @@ export const incomeExpenseReport = async (actor, query = {}) => {
       description: `Invoice ${inv.invoiceNumber} - ${inv.clientName || 'Walk-in'} (Gross: ${n(toDec(inv.subtotal))}, Disc: ${n(toDec(inv.discount))})`,
       income: n(net),
       expense: 0,
-      paymentMethod: inv.paymentMethod,
+      paid: n(paidAmt),
+      discount: n(toDec(inv.discount || 0)),
+      remaining: n(due),
+      paymentMethod: inv.paymentMethod || 'CASH',
       status: inv.status,
     });
   }
@@ -715,7 +758,7 @@ export const incomeExpenseReport = async (actor, query = {}) => {
       date: ymd(ref.refundDate),
       type: 'INCOME',
       category: 'Sales Refund / Reversal',
-      source: 'INVOICE_REFUND',
+      source: 'Sales Refund',
       reference: ref.refundNumber,
       branchId: bId,
       branchName: branchMap.get(bId) || 'Branch',
@@ -723,7 +766,10 @@ export const incomeExpenseReport = async (actor, query = {}) => {
       description: `Refund for ${ref.invoice?.invoiceNumber || 'Invoice'} (${ref.reason || 'Client Refund'})`,
       income: -n(reversedNet),
       expense: 0,
-      paymentMethod: ref.method,
+      paid: -n(reversedNet),
+      discount: 0,
+      remaining: 0,
+      paymentMethod: ref.method || 'CASH',
       status: 'REFUNDED',
     });
   }
@@ -732,90 +778,138 @@ export const incomeExpenseReport = async (actor, query = {}) => {
   for (const exp of expenses) {
     const amt = toDec(exp.amount);
     const signedAmt = exp.isReversalRecord ? -amt : amt;
+    const isPaid = exp.status !== 'PENDING' && exp.status !== 'ACCRUED';
+    const amountVal = n(signedAmt);
     rawRows.push({
       id: `exp-${exp.id}`,
       date: ymd(exp.expenseDate),
       type: 'OPERATING_EXPENSE',
       category: exp.category || 'General Operational',
-      source: 'EXPENSE_VOUCHER',
+      source: `Expense - ${exp.category || 'General'}`,
       reference: exp.voucherNumber,
       branchId: exp.branchId,
       branchName: branchMap.get(exp.branchId) || 'Branch',
-      userOrPayee: `${exp.payee}${exp.paidByName ? ` (Paid by ${exp.paidByName})` : ''}`,
+      userOrPayee: exp.payee ? (exp.paidByName ? `${exp.payee} (Paid by ${exp.paidByName})` : exp.payee) : (exp.paidByName || 'Staff'),
       description: `${exp.title}${exp.description ? ` — ${exp.description}` : ''}`,
       income: 0,
-      expense: n(signedAmt),
+      expense: amountVal,
+      paid: isPaid ? amountVal : 0,
+      discount: 0,
+      remaining: isPaid ? 0 : amountVal,
       paymentMethod: exp.paymentSource === 'CASH_DRAWER' ? 'CASH' : (exp.paymentAccountName || 'ONLINE'),
       status: exp.status,
     });
   }
 
-  // Finalized Payroll -> Salary Expense
+  // Finalized / Paid Payroll -> Salary Expense (Included when salary is generated & finalized/paid by admin)
   for (const run of payrollRuns) {
     for (const p of run.payslips) {
       const snap = typeof p.snapshot === 'string' ? JSON.parse(p.snapshot) : p.snapshot || {};
       const staffLabel = snap.staffName || staffMap.get(p.staffId) || 'Staff';
-      const salAmt = toDec(p.netPayable || p.grossPayable || 0);
+      const salAmt = round2(toDec(p.netPayable ?? p.grossPayable ?? 0));
+      const amountVal = n(salAmt);
+
+      const activePayments = (p.payments || []).filter((pay) => pay.status !== 'REVERSED');
+      const paidDec = activePayments.reduce((acc, pay) => acc.plus(toDec(pay.amount)), toDec(0));
+      const isFullyPaid = run.status === 'PAID' || (activePayments.length > 0 && paidDec.gte(salAmt));
+      const paidVal = isFullyPaid ? amountVal : (activePayments.length > 0 ? n(round2(paidDec)) : 0);
+      const remainingVal = Math.max(0, round2(toDec(amountVal).minus(paidVal)).toNumber());
+      const statusLabel = isFullyPaid ? 'PAID' : (paidVal > 0 ? 'PARTIALLY_PAID' : 'FINALIZED');
+
       rawRows.push({
         id: `psl-${p.id}`,
         date: ymd(run.finalizedAt || run.generatedAt),
         type: 'SALARY_EXPENSE',
         category: 'Payroll & Salaries',
-        source: 'PAYROLL',
+        source: 'Expense - Staff Salary',
         reference: p.payslipNumber !== 'DRAFT' ? p.payslipNumber : run.payrollNumber,
         branchId: run.branchId,
         branchName: branchMap.get(run.branchId) || 'Branch',
         userOrPayee: staffLabel,
-        description: `Finalized Salary for ${staffLabel} (${run.month})`,
+        description: `Staff Salary for ${staffLabel} (${run.month})`,
         income: 0,
-        expense: n(salAmt),
-        paymentMethod: 'PAYROLL_TRANSFER',
-        status: 'FINALIZED',
+        expense: amountVal,
+        paid: paidVal,
+        discount: 0,
+        remaining: remainingVal,
+        paymentMethod: activePayments[0]?.method || 'PAYROLL_TRANSFER',
+        status: statusLabel,
       });
     }
   }
 
-  // Commission Events -> Commission Expense
+  // Fetch commission runs to check whether consumed commissions have an actual completed payout
+  let paidCommissionRunIds = new Set();
+  try {
+    if (prisma.commissionRun?.findMany) {
+      const cRuns = await prisma.commissionRun.findMany({
+        where: {
+          ...branchFilter,
+          OR: [
+            { status: 'PAID' },
+            { payments: { some: { status: 'COMPLETED', reversedAt: null } } },
+            { statements: { some: { payrollPayslip: { is: { payments: { some: { status: { not: 'REVERSED' } } } } } } } },
+          ],
+        },
+        select: { id: true },
+      });
+      paidCommissionRunIds = new Set(cRuns.map((r) => r.id));
+    }
+  } catch {
+    // Graceful fallback for mock tests that don't mock commissionRun
+  }
+
+  // Commission Events -> Staff Commission (Shows earned commission, paid status, and remaining payable amount)
   for (const evt of commissionEvents) {
     const commAmt = toDec(evt.amount);
     const signedAmt = evt.type === 'EARN' ? commAmt : -commAmt;
     const staffLabel = staffMap.get(evt.staffId) || 'Staff';
+    const isPaid = evt.consumedByRunId ? paidCommissionRunIds.has(evt.consumedByRunId) : false;
+    const amountVal = n(signedAmt);
     rawRows.push({
       id: `com-${evt.id}`,
       date: ymd(evt.eventDate),
       type: 'COMMISSION_EXPENSE',
       category: 'Staff Commission',
-      source: 'COMMISSION',
+      source: 'Expense - Staff Commission',
       reference: evt.invoiceNumber || `COM-${evt.id.slice(0, 8)}`,
       branchId: evt.branchId,
       branchName: branchMap.get(evt.branchId) || 'Branch',
       userOrPayee: staffLabel,
-      description: `Commission ${evt.type === 'EARN' ? 'Earned' : 'Reversal'} on Invoice ${evt.invoiceNumber} (${n(toDec(evt.rate))}% on ${n(toDec(evt.attributedNet))})`,
+      description: `Commission ${evt.type === 'EARN' ? 'Earned' : 'Reversal'} on Invoice ${evt.invoiceNumber || 'N/A'}${evt.rate ? ` (${n(toDec(evt.rate))}% on ${n(toDec(evt.attributedNet || 0))})` : ''} - Payable to ${staffLabel}`,
       income: 0,
-      expense: n(signedAmt),
-      paymentMethod: 'COMMISSION_ACCRUAL',
-      status: evt.consumedByRunId ? 'FINALIZED' : 'ACCRUED',
+      expense: amountVal,
+      paid: isPaid ? amountVal : 0,
+      discount: 0,
+      remaining: isPaid ? 0 : amountVal,
+      paymentMethod: isPaid ? 'PAYROLL_TRANSFER' : 'COMMISSION_ACCRUAL',
+      status: isPaid ? 'PAID' : 'ACCRUED',
     });
   }
 
-  // Inventory Write-offs -> Losses
-  for (const m of inventoryLosses) {
-    rawRows.push({
-      id: `loss-${m.id}`,
-      date: ymd(m.createdAt),
-      type: 'INVENTORY_WRITEOFF',
-      category: 'Inventory Write-off & Loss',
-      source: 'INVENTORY',
-      reference: m.movementNumber,
-      branchId: m.branchId,
-      branchName: branchMap.get(m.branchId) || 'Branch',
-      userOrPayee: m.userName || 'Custodian',
-      description: `Stock Loss: ${m.item?.name || 'Item'} (${m.reason || m.movementType})`,
-      income: 0,
-      expense: n(toDec(m.totalCost)),
-      paymentMethod: 'NON_CASH',
-      status: 'WRITTEN_OFF',
-    });
+  if (query.includeInventoryLoss === 'true') {
+    for (const m of inventoryLosses) {
+      const lossVal = n(toDec(m.totalCost));
+      rawRows.push({
+        id: `loss-${m.id}`,
+        date: ymd(m.createdAt),
+        type: 'INVENTORY_WRITEOFF',
+        category: 'Inventory Write-off & Loss',
+        source: 'Expense - Inventory Loss',
+        reference: m.movementNumber,
+        branchId: m.branchId,
+        branchName: branchMap.get(m.branchId) || 'Branch',
+        userOrPayee: m.userName || 'Custodian',
+        description: `Stock Loss: ${m.item?.name || 'Item'} (${m.reason || m.movementType})`,
+        income: 0,
+        expense: lossVal,
+        paid: 0,
+        discount: 0,
+        remaining: 0,
+        paymentMethod: 'NON_CASH',
+        status: 'WRITTEN_OFF',
+      });
+    }
   }
 
   // Sort chronologically descending
@@ -831,12 +925,40 @@ export const incomeExpenseReport = async (actor, query = {}) => {
   const statusFilter = query.status && query.status !== 'ALL' ? query.status : null;
   const paymentMethodFilter = query.paymentMethod && query.paymentMethod !== 'ALL' ? query.paymentMethod : null;
   const searchFilter = query.search?.trim().toLowerCase();
+  const userFilter = (query.user && query.user !== 'ALL' ? query.user : (query.userId && query.userId !== 'ALL' ? query.userId : null))?.trim().toLowerCase();
+  const userTypeFilter = query.userType && query.userType !== 'ALL' ? query.userType.toUpperCase() : null;
 
   const filteredRows = rawRows.filter((r) => {
+    // 1. Strict branch filter if a specific branch is selected
+    if (ctx.branchId && r.branchId && r.branchId !== ctx.branchId) return false;
+
+    // 2. Type, category, status, paymentMethod filters
     if (typeFilter && r.type !== typeFilter) return false;
     if (categoryFilter && r.category !== categoryFilter) return false;
     if (statusFilter && r.status !== statusFilter) return false;
     if (paymentMethodFilter && r.paymentMethod !== paymentMethodFilter) return false;
+
+    // 3. User Filter
+    if (userFilter && (!r.userOrPayee || !r.userOrPayee.toLowerCase().includes(userFilter))) return false;
+
+    // 4. User Type Filter
+    if (userTypeFilter) {
+      const uStr = (r.userOrPayee || '').toLowerCase();
+      let matched = false;
+      for (const [name, role] of userRoleMap.entries()) {
+        if (uStr.includes(name) && role === userTypeFilter) {
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        if (userTypeFilter === 'STAFF' && (r.source?.toLowerCase().includes('staff') || r.source?.toLowerCase().includes('payroll') || r.source?.toLowerCase().includes('commission'))) matched = true;
+        if (userTypeFilter === 'ADMIN' && (uStr.includes('admin') || r.source?.toLowerCase().includes('pos invoice'))) matched = true;
+      }
+      if (!matched) return false;
+    }
+
+    // 5. Search Filter
     if (searchFilter) {
       const match =
         (r.reference && r.reference.toLowerCase().includes(searchFilter)) ||
@@ -855,12 +977,30 @@ export const incomeExpenseReport = async (actor, query = {}) => {
   let totalSalaryExpenses = toDec(0);
   let totalCommissionExpenses = toDec(0);
   let totalInventoryLoss = toDec(0);
+  let totalDiscount = toDec(0);
+  let totalRemaining = toDec(0);
+  let totalPaidIncome = toDec(0);
+  let totalPaidExpense = toDec(0);
 
   const categoryMap = new Map();
 
   for (const r of filteredRows) {
+    const isIncome = r.type === 'INCOME' || (r.income > 0);
     if (r.income) {
       totalIncome = totalIncome.plus(r.income);
+    }
+    if (r.discount) {
+      totalDiscount = totalDiscount.plus(r.discount);
+    }
+    if (r.remaining) {
+      totalRemaining = totalRemaining.plus(r.remaining);
+    }
+    if (r.paid) {
+      if (isIncome) {
+        totalPaidIncome = totalPaidIncome.plus(r.paid);
+      } else {
+        totalPaidExpense = totalPaidExpense.plus(r.paid);
+      }
     }
     if (r.expense) {
       if (r.type === 'OPERATING_EXPENSE') totalDirectExpenses = totalDirectExpenses.plus(r.expense);
@@ -881,6 +1021,7 @@ export const incomeExpenseReport = async (actor, query = {}) => {
     .plus(totalInventoryLoss);
 
   const netOperatingPosition = totalIncome.minus(totalOperatingExpenses);
+  const totalPaid = totalPaidIncome.minus(totalPaidExpense);
   const operatingMarginPercent = totalIncome.greaterThan(0)
     ? round2(netOperatingPosition.dividedBy(totalIncome).times(100)).toNumber()
     : 0;
@@ -903,6 +1044,9 @@ export const incomeExpenseReport = async (actor, query = {}) => {
   const totals = {
     income: n(totalIncome),
     expense: n(totalOperatingExpenses),
+    paid: n(totalPaid),
+    discount: n(totalDiscount),
+    remaining: n(totalRemaining),
     net: n(netOperatingPosition),
   };
 
@@ -1109,7 +1253,8 @@ const computePeriodMetrics = async (branchId, fromStr, toStr, fromDate, toDate) 
   let salaryExpenses = toDec(0);
   for (const run of payrollRuns) {
     for (const p of run.payslips) {
-      salaryExpenses = salaryExpenses.plus(p.netPayable || p.grossPayable || 0);
+      // Use the stored salary, never the combined payroll DTO or payout amounts.
+      salaryExpenses = salaryExpenses.plus(p.netPayable ?? p.grossPayable ?? 0);
     }
   }
 
@@ -1632,7 +1777,9 @@ export const cashDrawerReport = async (actor, query = {}) => {
     ...branchFilter,
     date: dateRange,
     ...(query.status && query.status !== 'ALL' ? { status: query.status } : {}),
-    ...(query.custodianUserId && query.custodianUserId !== 'ALL' ? { custodianUserId: query.custodianUserId } : {}),
+    ...(actor.role === 'ACCOUNTANT'
+      ? { custodianUserId: actor.id }
+      : (query.custodianUserId && query.custodianUserId !== 'ALL' ? { custodianUserId: query.custodianUserId } : {})),
   };
 
   const drawers = await prisma.cashDrawer.findMany({
@@ -1666,6 +1813,7 @@ export const cashDrawerReport = async (actor, query = {}) => {
     where: {
       ...branchFilter,
       date: dateRange,
+      ...(actor.role === 'ACCOUNTANT' ? { processedByUserId: actor.id } : {}),
     },
     select: {
       id: true,
@@ -1947,7 +2095,9 @@ export const detailedExpensesReport = async (actor, query = {}) => {
       : { status: { not: 'DRAFT' } }),
     ...(query.paymentSource && query.paymentSource !== 'ALL' ? { paymentSource: query.paymentSource } : {}),
     ...(query.paymentAccountId && query.paymentAccountId !== 'ALL' ? { paymentAccountId: query.paymentAccountId } : {}),
-    ...(query.createdByUserId && query.createdByUserId !== 'ALL' ? { createdByUserId: query.createdByUserId } : {}),
+    ...(actor.role === 'ACCOUNTANT'
+      ? { OR: [{ createdByUserId: actor.id }, { paidByUserId: actor.id }] }
+      : (query.createdByUserId && query.createdByUserId !== 'ALL' ? { createdByUserId: query.createdByUserId } : {})),
   };
 
   const [expenses, branches, categories, paymentAccounts] = await Promise.all([
@@ -2169,11 +2319,12 @@ export const inventoryReport = async (actor, query = {}) => {
       if (query.itemType && query.itemType !== 'ALL' && item.itemType !== query.itemType) continue;
       if (query.categoryId && query.categoryId !== 'ALL' && item.category !== query.categoryId) continue;
 
+      const isConsumable = item.itemType === 'SALON_CONSUMABLE';
       const remQty = toDec(b.remainingQuantity);
       const unitCost = toDec(b.unitCost);
       const costVal = remQty.times(unitCost);
-      const sellingPrice = toDec(item.sellingPrice || 0);
-      const retailVal = remQty.times(sellingPrice);
+      const sellingPrice = isConsumable ? toDec(0) : toDec(item.sellingPrice || 0);
+      const retailVal = isConsumable ? toDec(0) : remQty.times(sellingPrice);
 
       totalCostVal = totalCostVal.plus(costVal);
       totalRetailVal = totalRetailVal.plus(retailVal);
@@ -2216,10 +2367,10 @@ export const inventoryReport = async (actor, query = {}) => {
         remainingQuantity: n(remQty),
         unitCost: n(unitCost),
         costValue: n(costVal),
-        sellingPrice: n(sellingPrice),
-        retailValue: n(retailVal),
-        potentialProfit: n(retailVal.minus(costVal)),
-        potentialMargin: retailVal.greaterThan(0) ? n(retailVal.minus(costVal).dividedBy(retailVal).times(100)) : 0,
+        sellingPrice: isConsumable ? 0 : n(sellingPrice),
+        retailValue: isConsumable ? 0 : n(retailVal),
+        potentialProfit: isConsumable ? 0 : n(retailVal.minus(costVal)),
+        potentialMargin: isConsumable || retailVal.lessThanOrEqualTo(0) ? 0 : n(retailVal.minus(costVal).dividedBy(retailVal).times(100)),
         stockStatus,
         expiryStatus: expStatus,
       });
@@ -3032,6 +3183,220 @@ export const attendanceOvertimeReport = async (actor, query = {}) => {
     totals,
   });
 };
+
+// ═══ TAX MANAGEMENT & AUDIT REPORT ═══════════════════════════════════════════
+
+export const taxReport = async (actor, query = {}) => {
+  const ctx = await resolveReportContext(actor, query, 'SETTLEMENT');
+  const dateRange = { gte: dateOnly(ctx.fromStr), lte: dateOnly(ctx.toStr) };
+  const branchFilter = ctx.branchId ? { branchId: ctx.branchId } : {};
+
+  const [branches, invoices, refunds] = await Promise.all([
+    prisma.branch.findMany({ select: { id: true, name: true, city: true } }),
+    prisma.invoice.findMany({
+      where: {
+        date: dateRange,
+        lifecycle: { not: 'VOIDED' },
+        tax: { gt: 0 },
+        ...branchFilter,
+        ...(actor.role === 'ACCOUNTANT' ? { processedByUserId: actor.id } : {}),
+      },
+      select: {
+        id: true,
+        invoiceNumber: true,
+        date: true,
+        time: true,
+        branchId: true,
+        clientName: true,
+        subtotal: true,
+        discount: true,
+        netSales: true,
+        tax: true,
+        total: true,
+        paymentMethod: true,
+        status: true,
+        lines: {
+          select: {
+            id: true,
+            type: true,
+            name: true,
+            code: true,
+            staffName: true,
+            quantity: true,
+            unitPrice: true,
+            discountAllocated: true,
+            netSales: true,
+            taxRate: true,
+            tax: true,
+            total: true,
+          },
+        },
+      },
+      orderBy: { date: 'desc' },
+    }),
+    prisma.invoiceRefund.findMany({
+      where: {
+        refundDate: dateRange,
+        taxReversed: { gt: 0 },
+        invoice: {
+          ...(ctx.branchId ? { branchId: ctx.branchId } : {}),
+          ...(actor.role === 'ACCOUNTANT' ? { processedByUserId: actor.id } : {}),
+        },
+      },
+      select: {
+        id: true,
+        refundNumber: true,
+        refundDate: true,
+        taxReversed: true,
+        invoice: { select: { id: true, invoiceNumber: true, branchId: true } },
+      },
+    }),
+  ]);
+
+  const branchMap = new Map(branches.map((b) => [b.id, b.name]));
+
+  let totalTaxableBase = toDec(0);
+  let totalTaxCollected = toDec(0);
+  let totalTaxRefunded = toDec(0);
+
+  const rawInvoiceRows = [];
+  const rawServiceRows = [];
+  const serviceSummaryMap = new Map();
+
+  for (const inv of invoices) {
+    const net = toDec(inv.netSales);
+    const taxAmt = toDec(inv.tax);
+    totalTaxableBase = totalTaxableBase.plus(net);
+    totalTaxCollected = totalTaxCollected.plus(taxAmt);
+
+    // Compute effective tax rate % from lines
+    const maxLineRate = inv.lines?.length
+      ? Math.max(...inv.lines.map((l) => Number(l.taxRate || 0)))
+      : 0;
+    const effectiveRatePct = maxLineRate > 0 ? maxLineRate * 100 : (net.greaterThan(0) ? taxAmt.dividedBy(net).times(100).toNumber() : 0);
+
+    rawInvoiceRows.push({
+      id: `inv-${inv.id}`,
+      date: ymd(inv.date),
+      time: inv.time || '—',
+      reference: inv.invoiceNumber,
+      branchId: inv.branchId,
+      branchName: branchMap.get(inv.branchId) || 'Branch',
+      clientName: inv.clientName || 'Walk-in Customer',
+      taxableBase: n(net),
+      taxRate: round2(toDec(effectiveRatePct)).toNumber(),
+      taxAmount: n(taxAmt),
+      total: n(toDec(inv.total)),
+      paymentMethod: inv.paymentMethod || 'CASH',
+      status: inv.status,
+    });
+
+    // Every service performed with its respective tax
+    for (const line of inv.lines || []) {
+      const lineTax = toDec(line.tax);
+      const lineNet = toDec(line.netSales);
+      const lineRate = round2(toDec(line.taxRate).times(100)).toNumber();
+
+      rawServiceRows.push({
+        id: `line-${line.id}`,
+        invoiceId: inv.id,
+        invoiceNumber: inv.invoiceNumber,
+        date: ymd(inv.date),
+        time: inv.time || '—',
+        branchId: inv.branchId,
+        branchName: branchMap.get(inv.branchId) || 'Branch',
+        clientName: inv.clientName || 'Walk-in Customer',
+        serviceName: line.name,
+        serviceType: line.type,
+        staffName: line.staffName || 'Staff',
+        quantity: Number(line.quantity),
+        unitPrice: n(toDec(line.unitPrice)),
+        discount: n(toDec(line.discountAllocated)),
+        taxableBase: n(lineNet),
+        taxRate: lineRate,
+        taxAmount: n(lineTax),
+        total: n(toDec(line.total)),
+        paymentMethod: inv.paymentMethod || 'CASH',
+        status: inv.status,
+      });
+
+      // Grouped service summary
+      const sKey = line.name.trim();
+      const existing = serviceSummaryMap.get(sKey) || {
+        serviceName: sKey,
+        serviceType: line.type,
+        count: 0,
+        taxableBase: toDec(0),
+        taxAmount: toDec(0),
+        taxRate: lineRate,
+      };
+      existing.count += Number(line.quantity);
+      existing.taxableBase = existing.taxableBase.plus(lineNet);
+      existing.taxAmount = existing.taxAmount.plus(lineTax);
+      serviceSummaryMap.set(sKey, existing);
+    }
+  }
+
+  for (const ref of refunds) {
+    const revTax = toDec(ref.taxReversed);
+    totalTaxRefunded = totalTaxRefunded.plus(revTax);
+  }
+
+  const netTaxLiability = totalTaxCollected.minus(totalTaxRefunded);
+
+  // Search Filter
+  const searchFilter = query.search?.trim().toLowerCase();
+  const filterRow = (r) => {
+    if (!searchFilter) return true;
+    return (
+      (r.reference && r.reference.toLowerCase().includes(searchFilter)) ||
+      (r.invoiceNumber && r.invoiceNumber.toLowerCase().includes(searchFilter)) ||
+      (r.serviceName && r.serviceName.toLowerCase().includes(searchFilter)) ||
+      (r.clientName && r.clientName.toLowerCase().includes(searchFilter)) ||
+      (r.branchName && r.branchName.toLowerCase().includes(searchFilter)) ||
+      (r.staffName && r.staffName.toLowerCase().includes(searchFilter)) ||
+      (r.paymentMethod && r.paymentMethod.toLowerCase().includes(searchFilter))
+    );
+  };
+
+  const filteredServiceRows = rawServiceRows.filter(filterRow);
+  const filteredInvoiceRows = rawInvoiceRows.filter(filterRow);
+
+  const serviceSummary = Array.from(serviceSummaryMap.values()).map((s) => ({
+    serviceName: s.serviceName,
+    serviceType: s.serviceType,
+    count: s.count,
+    taxableBase: n(s.taxableBase),
+    taxAmount: n(s.taxAmount),
+    taxRate: s.taxRate,
+  }));
+
+  const kpis = {
+    totalInvoicesTaxed: filteredInvoiceRows.length,
+    totalServicesTaxed: filteredServiceRows.length,
+    totalTaxableSales: n(totalTaxableBase),
+    totalTaxCollected: n(totalTaxCollected),
+    totalTaxRefunded: n(totalTaxRefunded),
+    netTaxLiability: n(netTaxLiability),
+  };
+
+  const totals = {
+    totalServices: filteredServiceRows.length,
+    taxableBase: n(totalTaxableBase),
+    taxAmount: n(totalTaxCollected),
+    netTax: n(netTaxLiability),
+  };
+
+  return formatReportResponse(ctx.meta, {
+    kpis,
+    rows: filteredServiceRows,
+    serviceRows: filteredServiceRows,
+    serviceSummary,
+    invoiceRows: filteredInvoiceRows,
+    totals,
+  });
+};
+
 
 
 

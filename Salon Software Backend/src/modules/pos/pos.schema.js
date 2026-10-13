@@ -24,7 +24,7 @@ const cartItem = z.object({
   quantity:       z.number(),
   staffId:        z.string().min(1, 'Every cart line needs an assigned staff member.'),
   staffName:      z.string().optional(),
-  assignedStaff:  z.array(z.object({ staffId: z.string(), staffName: z.string().optional(), staffCommissionRate: z.number().optional() }).passthrough()).optional(),
+  assignedStaff:  z.array(z.object({ staffId: z.string(), staffName: z.string().optional(), staffCommissionRate: z.number().optional(), allocatedAmount: z.number().optional() }).passthrough()).optional(),
   packageComponents: z.array(z.object({ serviceId: z.string(), staffId: z.string().optional() }).passthrough()).optional(),
 }).passthrough();
 
@@ -71,6 +71,8 @@ export const listQuery = z.object({
   startDate: ymd.optional(),
   endDate:   ymd.optional(),
   clientId:  z.string().optional(),
+  soldByUserId: z.string().optional(),
+  processedByUserId: z.string().optional(),
 });
 
 export const outstandingQuery = z.object({

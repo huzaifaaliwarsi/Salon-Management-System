@@ -78,9 +78,9 @@ import {
   ChevronDown,
   UserCheck,
   History,
-  DollarSign,
   X,
   ChevronRight,
+  Users,
 } from 'lucide-react';
 
 export const POSBillingPage: React.FC = () => {
@@ -219,15 +219,16 @@ export const POSBillingPage: React.FC = () => {
       setProducts(retailProds);
 
       const sMap: Record<string, number> = {};
+      const todayStr = demoDate || new Date().toISOString().split('T')[0];
       for (const p of retailProds) {
-        const pBatches = batchList.filter(
-          (b) =>
-            b.itemId === p.id &&
-            b.branchId === bId &&
-            b.status === 'VALID' &&
-            b.remainingQuantity > 0
-        );
-        sMap[p.id] = pBatches.reduce((sum, b) => sum + b.remainingQuantity, 0);
+        const pBatches = batchList.filter((b) => {
+          if (b.itemId !== p.id) return false;
+          if (b.branchId && b.branchId !== bId) return false;
+          if (b.status === 'QUARANTINED' || b.status === 'EXPIRED') return false;
+          if (b.expiryDate && b.expiryDate < todayStr) return false;
+          return (Number(b.remainingQuantity) || 0) > 0;
+        });
+        sMap[p.id] = pBatches.reduce((sum, b) => sum + (Number(b.remainingQuantity) || 0), 0);
       }
       setProductStockMap(sMap);
 
@@ -621,7 +622,37 @@ export const POSBillingPage: React.FC = () => {
                 return ci;
               }
             }
-            return newQty > 0 ? { ...ci, quantity: newQty } : null;
+            if (newQty <= 0) return null;
+
+            if (ci.type === 'PACKAGE' && ci.assignedStaff && ci.assignedStaff.length > 0) {
+              const newTotal = getCatalogueSellingPrice(ci.item) * newQty;
+              const count = ci.assignedStaff.length;
+              const oldTotal = getCatalogueSellingPrice(ci.item) * ci.quantity;
+
+              let updatedStaff;
+              if (oldTotal > 0) {
+                let allocated = 0;
+                updatedStaff = ci.assignedStaff.map((s, idx) => {
+                  if (idx === count - 1) {
+                    return { ...s, allocatedAmount: Math.max(0, newTotal - allocated) };
+                  }
+                  const ratio = (s.allocatedAmount ?? 0) / oldTotal;
+                  const share = Math.round(newTotal * ratio);
+                  allocated += share;
+                  return { ...s, allocatedAmount: share };
+                });
+              } else {
+                const equalShare = Math.floor(newTotal / count);
+                const rem = newTotal - equalShare * count;
+                updatedStaff = ci.assignedStaff.map((s, idx) => ({
+                  ...s,
+                  allocatedAmount: equalShare + (idx === 0 ? rem : 0),
+                }));
+              }
+              return { ...ci, quantity: newQty, assignedStaff: updatedStaff };
+            }
+
+            return { ...ci, quantity: newQty };
           }
           return ci;
         })
@@ -664,19 +695,136 @@ export const POSBillingPage: React.FC = () => {
         if (ci.cartInstanceId !== cartInstanceId) return ci;
         const currentStaff = ci.assignedStaff || [];
         if (currentStaff.some((s) => s.staffId === staffId)) return ci;
-        const updatedStaff = [
+
+        const totalLineAmount = getCatalogueSellingPrice(ci.item) * ci.quantity;
+        const newStaffList = [
           ...currentStaff,
           {
             staffId: staff.id,
             staffName: staff.name,
             staffCommissionRate: staff.commissionRate,
+            allocatedAmount: 0,
           },
         ];
+
+        // Evenly divide totalLineAmount across all staff members so it always sums to totalLineAmount
+        const count = newStaffList.length;
+        const equalShare = Math.floor(totalLineAmount / count);
+        const remainder = totalLineAmount - equalShare * count;
+
+        const updatedStaff = newStaffList.map((s, idx) => ({
+          ...s,
+          allocatedAmount: equalShare + (idx === 0 ? remainder : 0),
+        }));
+
         return {
           ...ci,
           staffId: updatedStaff[0].staffId,
           staffName: updatedStaff.map((s) => s.staffName).join(', '),
           staffCommissionRate: updatedStaff[0].staffCommissionRate,
+          assignedStaff: updatedStaff,
+        };
+      })
+    );
+  };
+
+  // Update custom sales allocation amount for a staff member on a package
+  const handleUpdateStaffPackageAmount = (
+    cartInstanceId: string,
+    staffId: string,
+    amount: number
+  ) => {
+    setCart((prev) =>
+      prev.map((ci) => {
+        if (ci.cartInstanceId !== cartInstanceId) return ci;
+        const currentStaff = ci.assignedStaff || [];
+        if (currentStaff.length === 0) return ci;
+
+        const totalLineAmount = getCatalogueSellingPrice(ci.item) * ci.quantity;
+        const targetStaff = currentStaff.find((s) => s.staffId === staffId);
+        if (!targetStaff) return ci;
+
+        // Strictly clamp amount between 0 and totalLineAmount ("packag price sa uper nhi jaega")
+        const clampedAmount = Math.max(0, Math.min(Math.round(amount), totalLineAmount));
+        const otherStaff = currentStaff.filter((s) => s.staffId !== staffId);
+
+        if (otherStaff.length === 0) {
+          // If only 1 staff member, they always get 100% of package price
+          return {
+            ...ci,
+            assignedStaff: [{ ...targetStaff, allocatedAmount: totalLineAmount }],
+          };
+        }
+
+        // The remaining balance that must be distributed across other staff
+        const remainingBalance = totalLineAmount - clampedAmount;
+
+        if (otherStaff.length === 1) {
+          // Exactly 2 staff: (e.g. package=1500, staff1=1000 => staff2=500)
+          const updatedStaff = currentStaff.map((s) => {
+            if (s.staffId === staffId) return { ...s, allocatedAmount: clampedAmount };
+            return { ...s, allocatedAmount: remainingBalance };
+          });
+          return { ...ci, assignedStaff: updatedStaff };
+        }
+
+        // More than 2 staff: distribute remainingBalance among other staff proportionally
+        const currentOtherTotal = otherStaff.reduce(
+          (sum, s) => sum + (s.allocatedAmount ?? 0),
+          0
+        );
+
+        let allocatedSoFar = 0;
+        const newOtherAllocations = new Map<string, number>();
+
+        otherStaff.forEach((s, idx) => {
+          if (idx === otherStaff.length - 1) {
+            newOtherAllocations.set(s.staffId, Math.max(0, remainingBalance - allocatedSoFar));
+          } else {
+            let share = 0;
+            if (currentOtherTotal > 0) {
+              share = Math.round(remainingBalance * ((s.allocatedAmount ?? 0) / currentOtherTotal));
+            } else {
+              share = Math.floor(remainingBalance / otherStaff.length);
+            }
+            share = Math.max(0, Math.min(share, remainingBalance - allocatedSoFar));
+            allocatedSoFar += share;
+            newOtherAllocations.set(s.staffId, share);
+          }
+        });
+
+        const updatedStaff = currentStaff.map((s) => {
+          if (s.staffId === staffId) return { ...s, allocatedAmount: clampedAmount };
+          return { ...s, allocatedAmount: newOtherAllocations.get(s.staffId) ?? 0 };
+        });
+
+        return {
+          ...ci,
+          assignedStaff: updatedStaff,
+        };
+      })
+    );
+  };
+
+  // Split package total evenly across all assigned staff
+  const handleEqualizeStaffPackageAmounts = (cartInstanceId: string) => {
+    setCart((prev) =>
+      prev.map((ci) => {
+        if (ci.cartInstanceId !== cartInstanceId) return ci;
+        const currentStaff = ci.assignedStaff || [];
+        if (currentStaff.length === 0) return ci;
+        const totalLineAmount = getCatalogueSellingPrice(ci.item) * ci.quantity;
+        const count = currentStaff.length;
+        const equalShare = Math.floor(totalLineAmount / count);
+        const remainder = totalLineAmount - equalShare * count;
+
+        const updatedStaff = currentStaff.map((s, idx) => ({
+          ...s,
+          allocatedAmount: equalShare + (idx === 0 ? remainder : 0),
+        }));
+
+        return {
+          ...ci,
           assignedStaff: updatedStaff,
         };
       })
@@ -689,12 +837,33 @@ export const POSBillingPage: React.FC = () => {
       prev.map((ci) => {
         if (ci.cartInstanceId !== cartInstanceId) return ci;
         const currentStaff = ci.assignedStaff || [];
-        const updatedStaff = currentStaff.filter((s) => s.staffId !== staffId);
+        const updatedStaffRaw = currentStaff.filter((s) => s.staffId !== staffId);
+
+        if (updatedStaffRaw.length === 0) {
+          return {
+            ...ci,
+            staffId: '',
+            staffName: '',
+            staffCommissionRate: 0,
+            assignedStaff: [],
+          };
+        }
+
+        const totalLineAmount = getCatalogueSellingPrice(ci.item) * ci.quantity;
+        const count = updatedStaffRaw.length;
+        const equalShare = Math.floor(totalLineAmount / count);
+        const remainder = totalLineAmount - equalShare * count;
+
+        const updatedStaff = updatedStaffRaw.map((s, idx) => ({
+          ...s,
+          allocatedAmount: equalShare + (idx === 0 ? remainder : 0),
+        }));
+
         return {
           ...ci,
-          staffId: updatedStaff.length > 0 ? updatedStaff[0].staffId : '',
-          staffName: updatedStaff.length > 0 ? updatedStaff.map((s) => s.staffName).join(', ') : '',
-          staffCommissionRate: updatedStaff.length > 0 ? updatedStaff[0].staffCommissionRate : 0,
+          staffId: updatedStaff[0].staffId,
+          staffName: updatedStaff.map((s) => s.staffName).join(', '),
+          staffCommissionRate: updatedStaff[0].staffCommissionRate,
           assignedStaff: updatedStaff,
         };
       })
@@ -1443,7 +1612,7 @@ export const POSBillingPage: React.FC = () => {
                   onClick={handleOpenCollectionModal}
                   className="text-xs h-8 bg-amber-600 hover:bg-amber-700 text-white font-medium"
                 >
-                  <DollarSign className="w-3.5 h-3.5 mr-1" />
+                  <Banknote className="w-3.5 h-3.5 mr-1" />
                   Collect Previous Dues
                 </Button>
               </div>
@@ -1860,53 +2029,129 @@ export const POSBillingPage: React.FC = () => {
                     ) : (
                       /* Package Multi-Staff Assignment & Commission Split */
                       <div className="pt-2 border-t border-slate-200/60 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                            Assigned Stylists ({ci.assignedStaff?.length || 0}):
+                        <div className="flex items-center justify-between flex-wrap gap-1">
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                            <Users className="w-3.5 h-3.5 text-[#2254E1]" />
+                            <span>Assigned Staff ({ci.assignedStaff?.length || 0}):</span>
                           </span>
-                          {ci.assignedStaff && ci.assignedStaff.length > 1 ? (
-                            <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200/60">
-                              Equal Split ({(100 / ci.assignedStaff.length).toFixed(1)}% each)
-                            </span>
-                          ) : ci.assignedStaff && ci.assignedStaff.length === 1 ? (
-                            <span className="text-[10px] text-slate-400">
-                              100% attributed
-                            </span>
-                          ) : (
-                            <span className="text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200/60">
-                              No stylist assigned
-                            </span>
-                          )}
+
+                          <div className="flex items-center gap-1.5">
+                            {ci.assignedStaff && ci.assignedStaff.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => handleEqualizeStaffPackageAmounts(ci.cartInstanceId)}
+                                className="text-[10px] font-medium text-[#2254E1] hover:text-[#1B44B8] underline hover:no-underline cursor-pointer"
+                                title="Split total package amount equally across assigned staff"
+                              >
+                                Split Evenly
+                              </button>
+                            )}
+                            {(() => {
+                              const totalPkgAmount = getCatalogueSellingPrice(ci.item) * ci.quantity;
+                              const currentSum = (ci.assignedStaff || []).reduce(
+                                (s, st) => s + (st.allocatedAmount ?? 0),
+                                0
+                              );
+                              const isMultiple = (ci.assignedStaff?.length || 0) > 1;
+                              if (!ci.assignedStaff || ci.assignedStaff.length === 0) {
+                                return (
+                                  <span className="text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200/60">
+                                    No staff assigned
+                                  </span>
+                                );
+                              }
+                              if (isMultiple && Math.abs(currentSum - totalPkgAmount) <= 1) {
+                                return (
+                                  <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60">
+                                    Allocated: {formatCurrency(currentSum)} / {formatCurrency(totalPkgAmount)}
+                                  </span>
+                                );
+                              }
+                              if (isMultiple) {
+                                return (
+                                  <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200/60">
+                                    Allocated: {formatCurrency(currentSum)} / {formatCurrency(totalPkgAmount)}
+                                  </span>
+                                );
+                              }
+                              return (
+                                <span className="text-[10px] text-slate-500 font-medium">
+                                  100% attributed ({formatCurrency(totalPkgAmount)})
+                                </span>
+                              );
+                            })()}
+                          </div>
                         </div>
 
-                        {/* Assigned Staff Chips */}
-                        <div className="flex flex-wrap gap-1.5 items-center">
-                          {(ci.assignedStaff || []).map((st) => {
-                            const rawRate = st.staffCommissionRate ?? 0;
-                            const displayRate = rawRate > 0 && rawRate <= 1 ? Math.round(rawRate * 100) : Math.round(rawRate);
-                            return (
-                              <span
-                                key={st.staffId}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 hover:bg-slate-200/80 text-slate-800 rounded-md text-[11px] font-medium border border-slate-200/80 transition-colors"
-                              >
-                                <span>{st.staffName}</span>
-                                <span className="text-[10px] text-slate-400 font-normal">
-                                  ({displayRate}%)
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveStaffFromPackage(ci.cartInstanceId, st.staffId)}
-                                  className="ml-0.5 text-slate-400 hover:text-rose-600 focus:outline-hidden cursor-pointer"
-                                  title="Remove staff"
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
-                              </span>
-                            );
-                          })}
+                        {/* Custom Staff Sale Allocation List */}
+                        {/* List of Assigned Staff with custom Sale Amount input */}
+                        {ci.assignedStaff && ci.assignedStaff.length > 0 && (
+                          <div className="space-y-1.5 bg-slate-50/70 p-2 rounded-lg border border-slate-200/70">
+                            {ci.assignedStaff.map((st) => {
+                              const rawRate = st.staffCommissionRate ?? 0;
+                              const displayRate = rawRate > 0 && rawRate <= 1 ? Math.round(rawRate * 100) : Math.round(rawRate);
+                              const lineTotalAmount = getCatalogueSellingPrice(ci.item) * ci.quantity;
+                              const currentAmount = st.allocatedAmount ?? (ci.assignedStaff?.length === 1 ? lineTotalAmount : Math.round(lineTotalAmount / (ci.assignedStaff?.length || 1)));
+                              const estimatedComm = (currentAmount * displayRate) / 100;
 
-                          {/* Add staff to package dropdown */}
-                          {staffList.filter((s) => !ci.assignedStaff?.some((as) => as.staffId === s.id)).length > 0 && (
+                              return (
+                                <div
+                                  key={st.staffId}
+                                  className="flex items-center justify-between gap-2 bg-white px-2.5 py-1.5 rounded-md border border-slate-200 text-xs shadow-2xs"
+                                >
+                                  <div className="flex items-center gap-1.5 min-w-[120px]">
+                                    <span className="font-semibold text-slate-800 text-xs">{st.staffName}</span>
+                                    <span className="text-[10px] font-medium px-1 py-0.2 bg-blue-50 text-[#2254E1] rounded border border-blue-100">
+                                      {displayRate}% comm.
+                                    </span>
+                                  </div>
+
+                                  <div className="flex items-center gap-1.5">
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-[10px] font-semibold text-slate-400 uppercase">Sale:</span>
+                                      <div className="relative">
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          max={lineTotalAmount}
+                                          step="1"
+                                          value={st.allocatedAmount ?? currentAmount}
+                                          onChange={(e) =>
+                                            handleUpdateStaffPackageAmount(
+                                              ci.cartInstanceId,
+                                              st.staffId,
+                                              Number(e.target.value) || 0
+                                            )
+                                          }
+                                          className="w-20 h-6 px-1.5 text-right font-mono font-bold text-xs bg-slate-50 focus:bg-white border border-slate-300 focus:border-[#2254E1] rounded focus:outline-hidden focus:ring-1 focus:ring-[#2254E1]"
+                                          placeholder="0"
+                                        />
+                                      </div>
+                                      <span className="text-[10px] text-slate-500 font-medium">PKR</span>
+                                    </div>
+
+                                    <span className="text-[10px] font-mono font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60 hidden sm:inline-block">
+                                      +{formatCurrency(estimatedComm)}
+                                    </span>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveStaffFromPackage(ci.cartInstanceId, st.staffId)}
+                                      className="p-1 text-slate-400 hover:text-rose-600 focus:outline-hidden rounded transition-colors cursor-pointer"
+                                      title="Remove staff member"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {/* Add staff to package dropdown */}
+                        {staffList.filter((s) => !ci.assignedStaff?.some((as) => as.staffId === s.id)).length > 0 && (
+                          <div className="pt-0.5">
                             <Select
                               value=""
                               onValueChange={(val) => {
@@ -1914,10 +2159,10 @@ export const POSBillingPage: React.FC = () => {
                               }}
                             >
                               <SelectTrigger
-                                className={`text-[10px] h-6 font-semibold cursor-pointer ${
+                                className={`text-[11px] h-7 font-semibold cursor-pointer ${
                                   !ci.assignedStaff || ci.assignedStaff.length === 0
-                                    ? 'w-[120px] bg-amber-50/80 border-amber-300 text-amber-800 hover:bg-amber-100/70'
-                                    : 'w-[110px] bg-blue-50/60 border-blue-200 text-[#2254E1] hover:bg-blue-100/60'
+                                    ? 'w-[140px] bg-amber-50/80 border-amber-300 text-amber-800 hover:bg-amber-100/70'
+                                    : 'w-[125px] bg-blue-50/60 border-blue-200 text-[#2254E1] hover:bg-blue-100/60'
                                 }`}
                               >
                                 <SelectValue placeholder={!ci.assignedStaff || ci.assignedStaff.length === 0 ? '+ Assign Staff' : '+ Add Staff'} />
@@ -1927,13 +2172,13 @@ export const POSBillingPage: React.FC = () => {
                                   .filter((s) => !ci.assignedStaff?.some((as) => as.staffId === s.id))
                                   .map((st) => (
                                     <SelectItem key={st.id} value={st.id} className="text-xs">
-                                      {st.name} ({st.roleTitle})
+                                      {st.name} ({st.roleTitle}) — {typeof st.commissionRate === 'number' && st.commissionRate <= 1 ? Math.round(st.commissionRate * 100) : Math.round(st.commissionRate || 0)}%
                                     </SelectItem>
                                   ))}
                               </SelectContent>
                             </Select>
-                          )}
-                        </div>
+                          </div>
+                        )}
 
                         {/* Included services in package */}
                         <div className="bg-slate-50/80 p-1.5 rounded border border-slate-200/50 space-y-1">
@@ -2321,7 +2566,7 @@ export const POSBillingPage: React.FC = () => {
         <DialogContent className="max-w-md font-sans p-6">
           <DialogHeader>
             <DialogTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <DollarSign className="w-5 h-5 text-amber-600" />
+              <Banknote className="w-5 h-5 text-amber-600" />
               Collect Previous Outstanding Dues
             </DialogTitle>
             <DialogDescription className="text-xs">
@@ -2574,7 +2819,7 @@ export const POSBillingPage: React.FC = () => {
               {isPostingCollection ? (
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />
               ) : (
-                <DollarSign className="w-3.5 h-3.5" />
+                <Banknote className="w-3.5 h-3.5" />
               )}
               Confirm Collection
             </Button>
