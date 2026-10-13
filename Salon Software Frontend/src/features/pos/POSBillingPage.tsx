@@ -78,7 +78,6 @@ import {
   ChevronDown,
   UserCheck,
   History,
-  DollarSign,
   X,
   ChevronRight,
   Users,
@@ -1613,7 +1612,7 @@ export const POSBillingPage: React.FC = () => {
                   onClick={handleOpenCollectionModal}
                   className="text-xs h-8 bg-amber-600 hover:bg-amber-700 text-white font-medium"
                 >
-                  <DollarSign className="w-3.5 h-3.5 mr-1" />
+                  <Banknote className="w-3.5 h-3.5 mr-1" />
                   Collect Previous Dues
                 </Button>
               </div>
@@ -2567,7 +2566,7 @@ export const POSBillingPage: React.FC = () => {
         <DialogContent className="max-w-md font-sans p-6">
           <DialogHeader>
             <DialogTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <DollarSign className="w-5 h-5 text-amber-600" />
+              <Banknote className="w-5 h-5 text-amber-600" />
               Collect Previous Outstanding Dues
             </DialogTitle>
             <DialogDescription className="text-xs">
@@ -2820,7 +2819,7 @@ export const POSBillingPage: React.FC = () => {
               {isPostingCollection ? (
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />
               ) : (
-                <DollarSign className="w-3.5 h-3.5" />
+                <Banknote className="w-3.5 h-3.5" />
               )}
               Confirm Collection
             </Button>

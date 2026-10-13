@@ -168,7 +168,7 @@ export const IncomeExpenseReportPage: React.FC = () => {
     if (!reportData || !reportData.rows.length) return;
     const meta: [string, string][] = [
       ['Report', 'Income & Expense Reports'],
-      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
+      ['Branch', selectedBranch === 'ALL' ? 'All Branches' : reportData.meta.branchName || selectedBranch],
       ['From Date', fromDate || reportData.meta.from || '—'],
       ['To Date', toDate || reportData.meta.to || '—'],
       ['Generated At', new Date().toLocaleString()],
@@ -179,7 +179,7 @@ export const IncomeExpenseReportPage: React.FC = () => {
       'Type',
       'Source',
       'User',
-      'Campus',
+      'Branch',
       'Title',
       'Status',
       'Amount',
@@ -213,14 +213,31 @@ export const IncomeExpenseReportPage: React.FC = () => {
       ];
     });
 
-    downloadReportExcel('Income_Expense_Report', meta, [{ headers, rows }]);
+    const signedPaidFormatted = signedPaid >= 0 ? `+${signedPaid.toFixed(2)}` : `-${Math.abs(signedPaid).toFixed(2)}`;
+    const totalsRow = [
+      'TOTALS (PKR)',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      reportData.totals.net >= 0 ? `+${reportData.totals.net.toFixed(2)}` : `-${Math.abs(reportData.totals.net).toFixed(2)}`,
+      signedPaidFormatted,
+      (reportData.totals.discount || 0).toFixed(2),
+      (reportData.totals.remaining || 0).toFixed(2),
+      '',
+      '',
+    ];
+
+    downloadReportExcel('Income_Expense_Report', meta, [{ headers, rows: [...rows, totalsRow] }]);
   };
 
   const handleExportCsv = () => {
     if (!reportData || !reportData.rows.length) return;
     const meta: [string, string][] = [
       ['Report', 'Income & Expense Reports'],
-      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
+      ['Branch', selectedBranch === 'ALL' ? 'All Branches' : reportData.meta.branchName || selectedBranch],
       ['From Date', fromDate || reportData.meta.from || '—'],
       ['To Date', toDate || reportData.meta.to || '—'],
       ['Generated At', new Date().toLocaleString()],
@@ -231,7 +248,7 @@ export const IncomeExpenseReportPage: React.FC = () => {
       'Type',
       'Source',
       'User',
-      'Campus',
+      'Branch',
       'Title',
       'Status',
       'Amount',
@@ -265,23 +282,56 @@ export const IncomeExpenseReportPage: React.FC = () => {
       ];
     });
 
-    downloadReportCsv('Income_Expense_Report', meta, [{ headers, rows }]);
+    const signedPaidFormatted = signedPaid >= 0 ? `+${signedPaid.toFixed(2)}` : `-${Math.abs(signedPaid).toFixed(2)}`;
+    const totalsRow = [
+      'TOTALS (PKR)',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      reportData.totals.net >= 0 ? `+${reportData.totals.net.toFixed(2)}` : `-${Math.abs(reportData.totals.net).toFixed(2)}`,
+      signedPaidFormatted,
+      (reportData.totals.discount || 0).toFixed(2),
+      (reportData.totals.remaining || 0).toFixed(2),
+      '',
+      '',
+    ];
+
+    downloadReportCsv('Income_Expense_Report', meta, [{ headers, rows: [...rows, totalsRow] }]);
   };
+
+  // Signed Paid total: Net cash settled = income paid - expense paid (e.g. 2,000 - 150 - 50 = PKR 1,800)
+  const signedPaid = useMemo(() => {
+    if (typeof reportData?.totals?.paid === 'number') {
+      return reportData.totals.paid;
+    }
+    if (!reportData?.rows) return 0;
+    return reportData.rows.reduce((acc, r) => {
+      const isIncome = r.income > 0 || r.type === 'INCOME';
+      const isAccruedComm = r.type === 'COMMISSION_EXPENSE' && (r.status === 'ACCRUED' || !r.paid);
+      const paidVal = isAccruedComm ? 0 : isIncome ? (r.paid ?? r.income) : (r.paid ?? r.expense);
+      return isIncome ? acc + paidVal : acc - paidVal;
+    }, 0);
+  }, [reportData]);
 
   const handleExportPdf = () => {
     if (!reportData || !reportData.rows.length) {
       window.print();
       return;
     }
+    const signedPaidFormatted = signedPaid >= 0 ? `+${formatPKR(signedPaid)}` : `-${formatPKR(Math.abs(signedPaid))}`;
     const meta: [string, string][] = [
-      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
+      ['Branch', selectedBranch === 'ALL' ? 'All Branches' : reportData.meta.branchName || selectedBranch],
       ['From Date', fromDate || reportData.meta.from || '—'],
       ['To Date', toDate || reportData.meta.to || '—'],
-      ['Total Income', formatPKR(reportData.totals.income, true)],
-      ['Total Expense', formatPKR(reportData.totals.expense, true)],
-      ['Net Position', formatPKR(reportData.totals.net, true)],
+      ['Total Income', `PKR ${formatPKR(reportData.totals.income)}`],
+      ['Total Expense', `PKR ${formatPKR(reportData.totals.expense)}`],
+      ['Net Settled (Paid)', `PKR ${signedPaidFormatted}`],
+      ['Net Position', `PKR ${reportData.totals.net >= 0 ? '+' : '-'}${formatPKR(Math.abs(reportData.totals.net))}`],
     ];
-    const headers = ['#', 'Type', 'Source', 'User', 'Campus', 'Title', 'Status', 'Amount', 'Paid', 'Discount', 'Remaining', 'Date', 'Method'];
+    const headers = ['#', 'Type', 'Source', 'User', 'Branch', 'Title', 'Status', 'Amount', 'Paid', 'Discount', 'Remaining', 'Date', 'Method'];
     const rows = reportData.rows.map((r, i) => {
       const isIncome = r.income > 0 || r.type === 'INCOME';
       const isAccruedComm = r.type === 'COMMISSION_EXPENSE' && (r.status === 'ACCRUED' || !r.paid);
@@ -312,7 +362,7 @@ export const IncomeExpenseReportPage: React.FC = () => {
       headers,
       rows,
       totals: [
-        'TOTALS',
+        'TOTALS (PKR)',
         '',
         '',
         '',
@@ -320,7 +370,7 @@ export const IncomeExpenseReportPage: React.FC = () => {
         '',
         '',
         reportData.totals.net >= 0 ? `+${formatPKR(reportData.totals.net)}` : `-${formatPKR(Math.abs(reportData.totals.net))}`,
-        `+${formatPKR(reportData.totals.paid ?? reportData.totals.income)}`,
+        signedPaidFormatted,
         `+${formatPKR(reportData.totals.discount || 0)}`,
         `+${formatPKR(reportData.totals.remaining || 0)}`,
         '',
@@ -330,52 +380,11 @@ export const IncomeExpenseReportPage: React.FC = () => {
   };
 
   const handlePrint = () => {
-    if (!reportData || !reportData.rows.length) {
-      window.print();
-      return;
-    }
-    const meta: [string, string][] = [
-      ['Campus', selectedBranch === 'ALL' ? 'All Campuses' : reportData.meta.branchName || selectedBranch],
-      ['From Date', fromDate || reportData.meta.from || '—'],
-      ['To Date', toDate || reportData.meta.to || '—'],
-      ['Total Income', formatPKR(reportData.totals.income, true)],
-      ['Total Expense', formatPKR(reportData.totals.expense, true)],
-      ['Net Position', formatPKR(reportData.totals.net, true)],
-    ];
-    const headers = ['#', 'Type', 'Source', 'User', 'Campus', 'Title', 'Status', 'Amount', 'Paid', 'Discount', 'Remaining', 'Date', 'Method'];
-    const rows = reportData.rows.map((r, i) => {
-      const isIncome = r.income > 0 || r.type === 'INCOME';
-      const isAccruedComm = r.type === 'COMMISSION_EXPENSE' && (r.status === 'ACCRUED' || !r.paid);
-      const paidVal = isAccruedComm ? 0 : isIncome ? (r.paid ?? r.income) : (r.paid ?? r.expense);
-      const remainingVal = isAccruedComm ? (r.remaining || r.expense) : (r.remaining || 0);
-
-      return [
-        i + 1,
-        isIncome ? 'Income' : 'Expense',
-        r.source || '—',
-        r.userOrPayee || '—',
-        r.branchName || '—',
-        r.description || r.reference || '—',
-        r.status || 'PAID',
-        isIncome ? `+${r.income.toFixed(2)}` : `-${r.expense.toFixed(2)}`,
-        isAccruedComm || paidVal === 0 ? '0.00' : isIncome ? `+${paidVal.toFixed(2)}` : `-${paidVal.toFixed(2)}`,
-        (r.discount || 0).toFixed(2),
-        remainingVal.toFixed(2),
-        formatDateDisplay(r.date),
-        formatMethod(r.paymentMethod),
-      ];
-    });
-
-    printReportWindow({
-      title: 'Income & Expense Reports',
-      meta,
-      headers,
-      rows,
-    });
+    handleExportPdf();
   };
 
   // Calculations for bottom summary
-  const totals = reportData?.totals || { income: 0, expense: 0, paid: 0, discount: 0, remaining: 0, net: 0 };
+  const totals = reportData?.totals ? { ...reportData.totals, paid: signedPaid } : { income: 0, expense: 0, paid: 0, discount: 0, remaining: 0, net: 0 };
   const totalCashCollected = totals.income;
   const totalExpensesRecognized = totals.expense;
   const netRealizedPosition = totals.net ?? ((totals.income || 0) - (totals.expense || 0));
@@ -387,15 +396,15 @@ export const IncomeExpenseReportPage: React.FC = () => {
         <div className="mb-5">
           <h1 className="text-xl font-bold text-[#0B2545] tracking-tight">Income & Expense Reports</h1>
           <p className="text-xs text-slate-500 mt-1">
-            Income: actual cash paid per transaction (Partial / Paid) · Expense: Expense Management + paid staff salary
+            Income: POS sales and collections · Expense: Salon operational vouchers, paid staff salaries & commissions
           </p>
         </div>
 
         {/* Filters Form Row */}
         <form onSubmit={handleApplyFilters} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3.5 items-end">
-          {/* Campus Filter */}
+          {/* Branch Filter */}
           <div>
-            <label className={labelClass}>Campus</label>
+            <label className={labelClass}>Branch</label>
             <select
               value={selectedBranch}
               onChange={(e) => {
@@ -404,7 +413,7 @@ export const IncomeExpenseReportPage: React.FC = () => {
               }}
               className={selectClass}
             >
-              <option value="ALL">All Campuses</option>
+              <option value="ALL">All Branches</option>
               {allBranches.map((b) => (
                 <option key={b.id} value={b.id}>
                   {b.name}
@@ -566,7 +575,7 @@ export const IncomeExpenseReportPage: React.FC = () => {
                   <th className="py-3.5 px-4 font-medium text-[#475569] w-24">Type</th>
                   <th className="py-3.5 px-4 font-medium text-[#475569] whitespace-nowrap">Source</th>
                   <th className="py-3.5 px-4 font-medium text-[#475569] whitespace-nowrap">User</th>
-                  <th className="py-3.5 px-4 font-medium text-[#475569] whitespace-nowrap">Campus</th>
+                  <th className="py-3.5 px-4 font-medium text-[#475569] whitespace-nowrap">Branch</th>
                   <th className="py-3.5 px-4 font-medium text-[#475569] min-w-[220px]">Title</th>
                   <th className="py-3.5 px-4 font-medium text-[#475569] text-center w-24">Status</th>
                   <th className="py-3.5 px-4 font-medium text-[#475569] text-right whitespace-nowrap">Amount</th>
@@ -618,9 +627,9 @@ export const IncomeExpenseReportPage: React.FC = () => {
                           {row.userOrPayee || 'Staff'}
                         </td>
 
-                        {/* 5. Campus */}
+                        {/* 5. Branch */}
                         <td className="py-3.5 px-4 whitespace-nowrap text-[#475569] text-[13px] font-normal">
-                          {row.branchName || 'Main Campus'}
+                          {row.branchName || 'Main Branch'}
                         </td>
 
                         {/* 6. Title */}
@@ -696,7 +705,7 @@ export const IncomeExpenseReportPage: React.FC = () => {
                 ) : (
                   <tr>
                     <td colSpan={13} className="py-16 text-center text-slate-400 font-medium">
-                      No records found for the selected campus, dates, and filters.
+                      No records found for the selected branch, dates, and filters.
                     </td>
                   </tr>
                 )}
@@ -713,9 +722,9 @@ export const IncomeExpenseReportPage: React.FC = () => {
                   <td className={`py-3.5 px-4 text-right font-bold text-[13px] tabular-nums ${totals.net >= 0 ? 'text-[#10B981]' : 'text-[#EF4444]'}`}>
                     {totals.net >= 0 ? `+${formatPKR(totals.net)}` : `-${formatPKR(Math.abs(totals.net))}`}
                   </td>
-                  {/* Col 9: Paid (Total cash settled / collected) */}
-                  <td className="py-3.5 px-4 text-right font-bold text-[13px] tabular-nums text-[#10B981]">
-                    +{formatPKR(totals.paid ?? totals.income)}
+                  {/* Col 9: Paid (Total cash settled / collected using signed amounts: income.paid - expense.paid) */}
+                  <td className={`py-3.5 px-4 text-right font-bold text-[13px] tabular-nums ${signedPaid >= 0 ? 'text-[#10B981]' : 'text-[#EF4444]'}`}>
+                    {signedPaid >= 0 ? `+${formatPKR(signedPaid)}` : `-${formatPKR(Math.abs(signedPaid))}`}
                   </td>
                   {/* Col 10: Discount */}
                   <td className="py-3.5 px-4 text-right font-medium text-[13px] tabular-nums text-[#475569]">
@@ -740,10 +749,10 @@ export const IncomeExpenseReportPage: React.FC = () => {
                   <td colSpan={2} className="py-3 px-4"></td>
                 </tr>
 
-                {/* Row 3: Total Expenses (Accrued Commission + Operating) */}
+                {/* Row 3: Total Expenses */}
                 <tr className="border-b border-slate-200/70">
                   <td colSpan={7} className="py-3 px-4 text-right font-medium text-slate-700">
-                    Total Expenses Recognized (Accrued Commission & Operating)
+                    Total Expenses (Operating, Salaries & Commissions)
                   </td>
                   <td colSpan={4} className="py-3 px-4 text-right font-bold text-[13px] tabular-nums text-[#EF4444]">
                     -{formatPKR(totalExpensesRecognized)}
@@ -751,10 +760,10 @@ export const IncomeExpenseReportPage: React.FC = () => {
                   <td colSpan={2} className="py-3 px-4"></td>
                 </tr>
 
-                {/* Row 4: Net Realized Position (Revenue − Total Expenses) */}
+                {/* Row 4: Net Position */}
                 <tr>
                   <td colSpan={7} className="py-3 px-4 text-right font-bold text-slate-800">
-                    Net Operating Profit / Position (Revenue − Total Expenses)
+                    Net Position (Revenue − Total Expenses)
                   </td>
                   <td colSpan={4} className={`py-3 px-4 text-right font-bold text-[13px] tabular-nums ${netRealizedPosition >= 0 ? 'text-[#0047AB]' : 'text-[#EF4444]'}`}>
                     {netRealizedPosition >= 0 ? `+${formatPKR(netRealizedPosition)}` : `-${formatPKR(Math.abs(netRealizedPosition))}`}

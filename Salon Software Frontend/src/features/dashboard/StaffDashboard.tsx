@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
   Scissors,
-  DollarSign,
+  Banknote,
   Coins,
   TrendingUp,
   Clock,
@@ -18,7 +18,7 @@ import {
   Building2,
   Lock,
   Wallet,
-  BadgeDollarSign,
+  Award,
 } from 'lucide-react';
 
 export const StaffDashboard: React.FC = () => {
@@ -143,7 +143,7 @@ export const StaffDashboard: React.FC = () => {
           title="Service Sales Production"
           value={formatCurrency(data.monthlyServiceSalesTotal)}
           subtitle="Gross service value created"
-          icon={<DollarSign className="w-4 h-4" />}
+          icon={<Banknote className="w-4 h-4" />}
           tone="purple"
         />
         <StatCard
@@ -238,7 +238,7 @@ export const StaffDashboard: React.FC = () => {
                     {formatCurrency(data.monthlyEarningsSummary.estimatedGrossPayout)}
                   </span>
                 </div>
-                <BadgeDollarSign className="w-6 h-6 text-[#2254E1]" />
+                <Award className="w-6 h-6 text-[#2254E1]" />
               </div>
               <p className="text-[11px] text-slate-500 leading-tight">
                 Informational summary. Base salary, tiered commissions, direct client gratuities, and overtime are separate line items with distinct payout schedules.

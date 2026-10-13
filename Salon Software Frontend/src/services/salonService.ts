@@ -55,6 +55,8 @@ import {
   SalesInvoicesReportQuery,
   IncomeExpenseReport,
   IncomeExpenseReportQuery,
+  TaxReport,
+  TaxReportQuery,
   OperatingProfitReport,
   OperatingProfitReportQuery,
   PaymentAccountsReport,
@@ -519,6 +521,7 @@ export interface SalonServiceContract {
   getStaffCommissionReport(query: StaffCommissionReportQuery): Promise<StaffCommissionReport>;
   getSalesInvoicesReport(query: SalesInvoicesReportQuery): Promise<SalesInvoicesReport>;
   getIncomeExpenseReport(query: IncomeExpenseReportQuery): Promise<IncomeExpenseReport>;
+  getTaxReport(query: TaxReportQuery): Promise<TaxReport>;
   getOperatingProfitReport(query: OperatingProfitReportQuery): Promise<OperatingProfitReport>;
   getPaymentAccountsReport(query: PaymentAccountsReportQuery): Promise<PaymentAccountsReport>;
   getCashDrawerReport(query: CashDrawerReportQuery): Promise<CashDrawerReport>;

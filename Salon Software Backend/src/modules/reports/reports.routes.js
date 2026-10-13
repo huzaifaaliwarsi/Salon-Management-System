@@ -210,3 +210,19 @@ reportRoutes.get(
   validate(attendanceOvertimeQuery, 'query'),
   send((req) => r.attendanceOvertimeReport(req.user, req.query))
 );
+
+const taxReportQuery = z.object({
+  branchId: z.string().optional(),
+  preset: z.string().optional(),
+  startDate: ymd.optional(),
+  endDate: ymd.optional(),
+  from: ymd.optional(),
+  to: ymd.optional(),
+  search: z.string().optional(),
+});
+reportRoutes.get(
+  '/tax',
+  authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'),
+  validate(taxReportQuery, 'query'),
+  send((req) => r.taxReport(req.user, req.query))
+);

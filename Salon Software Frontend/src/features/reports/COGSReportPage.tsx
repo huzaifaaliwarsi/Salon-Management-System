@@ -20,7 +20,7 @@ import {
   DATE_PRESETS,
   DatePreset,
   downloadReportCsv,
-  downloadReportExcel,
+  formatSignedPKR,
   printReportWindow,
   resolvePreset,
 } from './reportUtils';
@@ -31,13 +31,7 @@ const inputClass =
   'w-full text-xs border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-[#0047AB] focus:border-[#0047AB] transition-colors';
 const labelClass = 'block text-[11px] font-semibold text-[#0B2545] mb-1.5';
 
-const formatPKR = (amt: number) => {
-  const num = Number(amt) || 0;
-  return Math.abs(num).toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-};
+const formatPKR = formatSignedPKR;
 
 export const COGSReportPage: React.FC = () => {
   const { user, activeBranchId, allBranches, demoDate } = useAuth();
@@ -162,13 +156,6 @@ export const COGSReportPage: React.FC = () => {
   const handleExportCsv = () => {
     if (!reportData || !reportData.rows.length) return;
     downloadReportCsv('operating_profit_statement', exportMeta, [
-      { headers: exportHeaders, rows: exportRows },
-    ]);
-  };
-
-  const handleExportExcel = () => {
-    if (!reportData || !reportData.rows.length) return;
-    downloadReportExcel('operating_profit_statement', exportMeta, [
       { headers: exportHeaders, rows: exportRows },
     ]);
   };
@@ -370,7 +357,7 @@ export const COGSReportPage: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={handleExportExcel}
+                onClick={handlePrint}
                 className="bg-[#DC2626] hover:bg-[#B91C1C] active:bg-[#991B1B] text-white text-xs font-semibold px-3.5 py-1.5 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
               >
                 <FileText className="w-3.5 h-3.5" />
@@ -434,10 +421,10 @@ export const COGSReportPage: React.FC = () => {
                             <td className="py-2.5 px-4 text-center text-[10px] text-slate-500 font-mono">
                               {line.isFinalNet ? 'NET RESULT' : 'SUBTOTAL'}
                             </td>
-                            <td className="py-2.5 px-4 text-right font-mono font-bold text-[#0B2545]">
+                            <td className={`py-2.5 px-4 text-right font-mono font-bold ${line.isFinalNet || line.section === 'GROSS_PROFIT' ? (line.currentAmount < 0 ? 'text-red-600' : 'text-green-600') : 'text-[#0B2545]'}`}>
                               {formatPKR(line.currentAmount)}
                             </td>
-                            <td className="py-2.5 px-4 text-right font-mono text-slate-600">
+                            <td className={`py-2.5 px-4 text-right font-mono ${line.isFinalNet ? (line.currentAmount < 0 ? 'text-red-600' : 'text-green-600') : 'text-slate-600'}`}>
                               {line.percentOfRevenue}%
                             </td>
                             <td className="py-2.5 px-4 text-right font-mono text-slate-500">
@@ -539,7 +526,7 @@ export const COGSReportPage: React.FC = () => {
                       <td className="py-2.5 px-3 text-left">Totals</td>
                       <td className="py-2.5 px-3">—</td>
                       <td className="py-2.5 px-3">{reportData.rows.length} Items</td>
-                      <td className="py-2.5 px-3 text-right text-[#0B2545]">
+                      <td className={`py-2.5 px-3 text-right ${reportData.totals.netProfit < 0 ? 'text-red-600' : 'text-green-600'}`}>
                         {formatPKR(reportData.totals.netProfit)}
                       </td>
                       <td className="py-2.5 px-3 text-right">{reportData.kpis.operatingMarginPercent}%</td>

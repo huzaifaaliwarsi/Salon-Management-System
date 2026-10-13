@@ -135,12 +135,13 @@ export const StaffAttendancePage: React.FC = () => {
 
         if (existing) {
           let mappedStatus: EditableAttendanceRow['status'] = 'PRESENT';
-          if (existing.status === 'ABSENT') mappedStatus = 'ABSENT';
-          else if (existing.status === 'HALF_DAY') mappedStatus = 'HALF_DAY';
-          else if (existing.status === 'PAID_LEAVE') mappedStatus = 'PAID_LEAVE';
-          else if (existing.status === 'UNPAID_LEAVE') mappedStatus = 'UNPAID_LEAVE';
-          else if (existing.status === 'HOLIDAY') mappedStatus = 'HOLIDAY';
-          else if (existing.status === 'WEEKLY_OFF') mappedStatus = 'WEEKLY_OFF';
+          const exStatus = existing.status as string;
+          if (exStatus === 'ABSENT') mappedStatus = 'ABSENT';
+          else if (exStatus === 'HALF_DAY') mappedStatus = 'HALF_DAY';
+          else if (exStatus === 'PAID_LEAVE') mappedStatus = 'PAID_LEAVE';
+          else if (exStatus === 'UNPAID_LEAVE') mappedStatus = 'UNPAID_LEAVE';
+          else if (exStatus === 'HOLIDAY') mappedStatus = 'HOLIDAY';
+          else if (exStatus === 'WEEKLY_OFF') mappedStatus = 'WEEKLY_OFF';
           else mappedStatus = 'PRESENT';
 
           return {
@@ -433,6 +434,7 @@ export const StaffAttendancePage: React.FC = () => {
             date: parts[1] || selectedDate,
             checkIn: parts[2] || '09:00',
             checkOut: parts[3] || undefined,
+            status: 'VALID',
           });
         }
       });
@@ -443,7 +445,7 @@ export const StaffAttendancePage: React.FC = () => {
       }
 
       const res = await salonService.importAttendanceCSV(effectiveBranchId, rowsToImport, user);
-      toast.success(`Import complete! Accepted: ${res.acceptedCount}, Rejected: ${res.rejectedCount}`);
+      toast.success(`Import complete! Accepted: ${res.acceptedRows}, Rejected: ${res.rejectedRows}`);
       setShowImportModal(false);
       setImportCsvText('');
       await loadAttendanceData(effectiveBranchId, selectedDate);

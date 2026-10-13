@@ -2032,6 +2032,101 @@ export interface IncomeExpenseReport {
   categories: string[];
 }
 
+export interface TaxReportRow {
+  id: string;
+  date: string;
+  time: string;
+  reference: string;
+  branchId: string;
+  branchName: string;
+  clientName: string;
+  taxableBase: number;
+  taxRate: number;
+  taxAmount: number;
+  total: number;
+  paymentMethod: string;
+  status: string;
+}
+
+export interface TaxReportServiceRow {
+  id: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  date: string;
+  time: string;
+  branchId: string;
+  branchName: string;
+  clientName: string;
+  serviceName: string;
+  serviceType: string;
+  staffName: string;
+  quantity: number;
+  unitPrice: number;
+  discount: number;
+  taxableBase: number;
+  taxRate: number;
+  taxAmount: number;
+  total: number;
+  paymentMethod: string;
+  status: string;
+}
+
+export interface TaxReportServiceSummary {
+  serviceName: string;
+  serviceType: string;
+  count: number;
+  taxableBase: number;
+  taxAmount: number;
+  taxRate: number;
+}
+
+export interface TaxReportKPIs {
+  totalInvoicesTaxed: number;
+  totalServicesTaxed?: number;
+  totalTaxableSales: number;
+  totalTaxCollected: number;
+  totalTaxRefunded: number;
+  netTaxLiability: number;
+}
+
+export interface TaxReportTotals {
+  totalServices?: number;
+  taxableBase: number;
+  taxAmount: number;
+  netTax: number;
+  total?: number;
+}
+
+export interface TaxReportQuery {
+  branchId?: string;
+  preset?: string;
+  startDate?: string;
+  endDate?: string;
+  from?: string;
+  to?: string;
+  search?: string;
+}
+
+export interface TaxReport {
+  meta: {
+    branchId: string;
+    branchName: string;
+    from: string;
+    to: string;
+    preset: string;
+    dateBasis: string;
+    timezone: string;
+    generatedAt: string;
+    generatedBy: string;
+  };
+  kpis: TaxReportKPIs;
+  rows: TaxReportServiceRow[] | any[];
+  serviceRows?: TaxReportServiceRow[];
+  serviceSummary?: TaxReportServiceSummary[];
+  invoiceRows?: TaxReportRow[];
+  totals: TaxReportTotals;
+}
+
 export interface OperatingProfitStatementRow {
   id: string;
   name: string;

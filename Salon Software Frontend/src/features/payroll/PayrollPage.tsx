@@ -1004,7 +1004,7 @@ export const PayrollPage: React.FC = () => {
                             <span className="text-rose-600 font-semibold">{s.name}</span>
                             <span className="text-slate-300">|</span>
                             <span className="text-slate-600 capitalize">
-                              {s.designation || s.role || 'Staff'}
+                              {s.designation || s.roleTitle || 'Staff'}
                             </span>
                             {loan && (
                               <span className="ml-1 px-2.5 py-0.5 bg-[#ff9800] text-white text-[11px] font-bold rounded-full shadow-xs">

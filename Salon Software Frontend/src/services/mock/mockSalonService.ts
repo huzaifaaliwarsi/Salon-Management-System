@@ -118,6 +118,7 @@ import {
   CreateStockSettlementInput,
   SalesInvoicesReport,
   IncomeExpenseReport,
+  TaxReport,
   OperatingProfitReport,
   PaymentAccountsReport,
   CashDrawerReport,
@@ -7227,6 +7228,7 @@ class MockSalonService implements SalonServiceContract {
   async getStaffCommissionReport(): Promise<StaffCommissionReport> { return this.apiOnly(); }
   async getSalesInvoicesReport(): Promise<SalesInvoicesReport> { return this.apiOnly(); }
   async getIncomeExpenseReport(): Promise<IncomeExpenseReport> { return this.apiOnly(); }
+  async getTaxReport(): Promise<TaxReport> { return this.apiOnly(); }
   async getOperatingProfitReport(): Promise<OperatingProfitReport> { return this.apiOnly(); }
   async getPaymentAccountsReport(): Promise<PaymentAccountsReport> { return this.apiOnly(); }
   async getCashDrawerReport(): Promise<CashDrawerReport> { return this.apiOnly(); }
